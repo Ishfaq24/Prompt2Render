@@ -200,7 +200,14 @@ def _gate_dead_air(g: Gates, final: Path) -> None:
 
 
 def _gate_black(g: Gates, final: Path) -> None:
-    hits = _detect(final, "blackdetect=d=0.10:pix_th=0.10",
+    # pix_th must sit below scenekit.BG's own luma (~6.5% for #0d1117) or
+    # every sparse, mostly-background state -- a title card, a closing
+    # teaser -- reads as "black" on nothing but its dark theme, not because
+    # anything is actually missing. 0.05/d=0.05 is empirically the tightest
+    # band that still catches the real fade from (0,0,0) at the open (a
+    # single 0.1s hit, verified against a shipped render) while clearing
+    # every dark-but-populated state.
+    hits = _detect(final, "blackdetect=d=0.05:pix_th=0.05",
                    r"black_duration:\s*([\d.]+)")
     # A dip to black is intentional only at the opening fade.
     if len(hits) > 1:
