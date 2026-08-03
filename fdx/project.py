@@ -1,8 +1,8 @@
 """Create a project folder and parse its script.md.
 
 script.md is the single source of truth: your narration, your section
-titles, and the animation notes handed to Code2Video. Everything
-downstream (audio, sync, captions, chapters) is derived from it.
+titles, and the animation brief handed to `fdx scenes` for storyboarding.
+Everything downstream (audio, sync, captions, chapters) is derived from it.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ audience: undergraduate computer science
 
 <!-- HOW THIS FILE WORKS
      Each "## N - Title" block is one section.
-     The "> ANIM:" line is what Code2Video animates.
+     The "> ANIM:" line is the brief `fdx scenes` storyboards against scenekit.
      Everything else is what YOU say. Write it in your own voice.
      Aim ~140 spoken words per minute; 8-12 min total = 1100-1700 words. -->
 

@@ -115,10 +115,25 @@ only once the step has reached it:
 '''
 
 
-def _client():
-    key = os.environ.get("GEMINI_API_KEY", "")
-    if not key:
+def _keys() -> list[str]:
+    """GEMINI_API_KEY, plus any GEMINI_API_KEY_BACKUP* for failover.
+
+    Gemini's free tier caps requests *per day per model*, and the 429 it
+    returns names a retry-after of tens of seconds — misleading for a quota
+    that will not clear until tomorrow. A second key on a separate quota is
+    the only thing that actually unblocks a run in progress.
+    """
+    keys = [os.environ.get("GEMINI_API_KEY", "")]
+    for name, val in sorted(os.environ.items()):
+        if name.startswith("GEMINI_API_KEY_BACKUP") and val:
+            keys.append(val)
+    keys = [k for k in keys if k]
+    if not keys:
         sys.exit("[fdx] GEMINI_API_KEY not set (it lives in .env)")
+    return keys
+
+
+def _client(key: str):
     try:
         from openai import OpenAI
     except ImportError:
@@ -205,23 +220,44 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3) -> Path:
     outdir.mkdir(parents=True, exist_ok=True)
     dst = outdir / f"scene_{sec.stem}.py"
 
-    client = _client()
+    keys = _keys()
+    key_i = 0
+    client = _client(keys[key_i])
     model = os.environ.get("FDX_SCENE_MODEL", "gemini-3.6-flash")
     prompt = build_prompt(script, sec, sents)
     feedback = ""
 
-    for attempt in range(1, retries + 2):
-        cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt})")
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt + feedback}],
-            max_tokens=16000,
-            # Gemini 3.x spends completion budget thinking before it emits
-            # code. The drawing API is small and fully specified, so there is
-            # little to reason about; capping this keeps a call inside a
-            # minute and stops thinking eating the whole token budget.
-            extra_body={"reasoning_effort": os.environ.get("FDX_REASONING", "low")},
-        )
+    attempt = 1
+    while attempt <= retries + 1:
+        cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}"
+                + (f", key {key_i + 1}/{len(keys)}" if len(keys) > 1 else "") + ")")
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt + feedback}],
+                max_tokens=16000,
+                # Gemini 3.x spends completion budget thinking before it emits
+                # code. The drawing API is small and fully specified, so there
+                # is little to reason about; capping this keeps a call inside
+                # a minute and stops thinking eating the whole token budget.
+                extra_body={"reasoning_effort": os.environ.get("FDX_REASONING", "low")},
+            )
+        except Exception as e:                    # noqa: BLE001
+            # A 429 is an account-level quota, not a content problem — it does
+            # not deserve one of the content-retry attempts above, and
+            # retrying the same key just burns the SDK's own retry budget on
+            # a wall that will not move. Rotate to the next key if there is
+            # one; only count this against `attempt` once every key is spent.
+            if type(e).__name__ != "RateLimitError":
+                raise
+            if key_i + 1 < len(keys):
+                key_i += 1
+                cfg.warn(f"section {sec.stem}: key {key_i}/{len(keys)} "
+                         f"rate-limited, switching to the next key")
+                client = _client(keys[key_i])
+                continue
+            sys.exit(f"[fdx] section {sec.stem}: all {len(keys)} Gemini "
+                     f"key(s) are rate-limited — {e}")
         choice = resp.choices[0] if resp.choices else None
         code = (choice.message.content if choice else "") or ""
         if not code.strip():
@@ -241,6 +277,7 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3) -> Path:
             # it *where two things collided, in pixels*. Both go back verbatim.
             feedback = ("\n\nYour previous answer was rejected. Fix it and "
                         "return the whole corrected module.\n\nPROBLEM:\n" + err)
+            attempt += 1
             continue
 
         used = getattr(resp, "usage", None)

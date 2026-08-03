@@ -47,11 +47,13 @@ def cmd_doctor(a):
 
 
 def cmd_models(a):
-    from fdx import asrmodel
+    from fdx import asrmodel, voice
     if a.asr:
         asrmodel.fetch_asr(a.asr, force=a.force)
     if a.vad or a.asr:
         asrmodel.fetch_vad(force=a.force)
+    if a.kokoro:
+        voice.fetch_kokoro(force=a.force, int8=a.kokoro_int8)
 
 
 def cmd_voices(a):
@@ -222,10 +224,14 @@ def main() -> None:
 
     add("doctor", cmd_doctor, "check the environment before you spend an hour")
 
-    m = add("models", cmd_models, "download the ASR models used by `align`")
+    m = add("models", cmd_models, "download the models `voice`/`align` need")
     m.add_argument("--asr", default="base.en",
                    help="tiny.en | base.en | small.en")
     m.add_argument("--vad", action="store_true")
+    m.add_argument("--kokoro", action="store_true",
+                   help="the TTS voice weights (~350 MB, one time)")
+    m.add_argument("--kokoro-int8", action="store_true", dest="kokoro_int8",
+                   help="~92 MB instead of ~326 MB, small quality cost")
     m.add_argument("--force", action="store_true")
 
     add("voices", cmd_voices, "list the available kokoro voices")

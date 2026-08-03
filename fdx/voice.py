@@ -45,11 +45,42 @@ _kokoro = None
 
 # ------------------------------------------------------------- backends ----
 
+KOKORO_RELEASE = ("https://github.com/thewh1teagle/kokoro-onnx/releases/"
+                  "download/model-files-v1.0")
+#: name -> (url, approximate MB), same shape and same _download() as the
+#: whisper models in asrmodel.py — sizes are sanity bounds, not checksums.
+KOKORO_FILES = {
+    "kokoro-v1.0.onnx":      (f"{KOKORO_RELEASE}/kokoro-v1.0.onnx", 326),
+    "kokoro-v1.0.int8.onnx": (f"{KOKORO_RELEASE}/kokoro-v1.0.int8.onnx", 92),
+    "voices-v1.0.bin":       (f"{KOKORO_RELEASE}/voices-v1.0.bin", 28),
+}
+
+
 def _kokoro_paths() -> tuple[Path, Path]:
     kdir = cfg.ROOT / Path(os.environ.get("FDX_KOKORO_DIR", "tools/kokoro"))
     model = kdir / os.environ.get("FDX_KOKORO_MODEL", "kokoro-v1.0.onnx")
     voices = kdir / "voices-v1.0.bin"
     return model, voices
+
+
+def fetch_kokoro(force: bool = False, int8: bool = False) -> tuple[Path, Path]:
+    """Download the kokoro weights `fdx models --kokoro` needs once.
+
+    int8 gets you a ~92 MB model instead of ~326 MB, at a small quality cost —
+    the right trade on a CPU-only box. Same atomic-download discipline as the
+    whisper models: fetch to .part, size-check, then rename into place.
+    """
+    from . import asrmodel
+    kdir = cfg.ROOT / Path(os.environ.get("FDX_KOKORO_DIR", "tools/kokoro"))
+    mname = "kokoro-v1.0.int8.onnx" if int8 else "kokoro-v1.0.onnx"
+    for fname in (mname, "voices-v1.0.bin"):
+        dst = kdir / fname
+        if dst.exists() and not force:
+            cfg.say(f"{fname} already present ({dst.stat().st_size/1e6:.1f} MB)")
+            continue
+        url, mb = KOKORO_FILES[fname]
+        asrmodel._download(url, dst, mb)
+    return kdir / mname, kdir / "voices-v1.0.bin"
 
 
 def kokoro():
@@ -61,9 +92,7 @@ def kokoro():
     if not model.exists() or not voices.exists():
         sys.exit(
             f"[fdx] kokoro model files not found under {model.parent}\n"
-            "      get kokoro-v1.0.onnx and voices-v1.0.bin from\n"
-            "      https://github.com/thewh1teagle/kokoro-onnx/releases/"
-            "tag/model-files-v1.0")
+            "      run: python fdx.py models --kokoro  (~350 MB, one time)")
     try:
         from kokoro_onnx import Kokoro
     except ImportError:

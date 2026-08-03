@@ -38,53 +38,34 @@ Say "creating virtualenv .venv"
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip wheel --quiet
 
-Say "installing fdx deps + Manim"
+Say "installing fdx deps + Manim (Manim is only used by the 'fdx manim' hand-authored escape hatch)"
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
 & .\.venv\Scripts\python.exe -m pip install "manim==0.19.0" --quiet
-
-# --------------------------------------------------------------- Code2Video
-$c2v = Join-Path (Split-Path $PSScriptRoot -Parent) "Code2Video"
-if (-not (Test-Path $c2v)) {
-  Say "cloning Code2Video into $c2v"
-  git clone --depth 1 https://github.com/showlab/Code2Video.git $c2v
-} else { Say "Code2Video already at $c2v" }
-
-Say "installing Code2Video deps"
-try { & .\.venv\Scripts\python.exe -m pip install -r (Join-Path $c2v "src\requirements.txt") --quiet }
-catch { Warn "Code2Video deps failed — 'fdx import' and 'fdx placeholders' still work" }
 
 # ------------------------------------------------------------------- .env
 if (-not (Test-Path .env)) {
   Copy-Item .env.example .env
-  (Get-Content .env) -replace '^CODE2VIDEO_DIR=.*', "CODE2VIDEO_DIR=$($c2v -replace '\\','/')" |
-    Set-Content .env
-  Say "created .env — put your Gemini key in it"
+  Say "created .env — put your GEMINI_API_KEY in it (used by 'fdx scenes')"
 }
+
+# ---------------------------------------------------------- local models
+Say "fetching the local ASR/VAD/voice models (one time, a few hundred MB)"
+& .\.venv\Scripts\python.exe fdx.py models --asr base.en --vad --kokoro
 
 # ----------------------------------------------------------------- verify
 Say "verifying"
-& .\.venv\Scripts\python.exe -c @"
-import shutil
-for t in ('ffmpeg','ffprobe','bash'):
-    p = shutil.which(t)
-    print(f'  {t:9s} ' + ('OK  ' + p if p else 'MISSING'))
-try:
-    import manim; print('  manim     OK ' + manim.__version__)
-except Exception as e: print('  manim     MISSING', e)
-try:
-    import edge_tts; print('  edge-tts  OK')
-except ImportError: print('  edge-tts  MISSING')
-"@
+& .\.venv\Scripts\python.exe fdx.py doctor
 
 Write-Host @"
 
 Setup done. Every new PowerShell session, activate first:
 
   .\.venv\Scripts\Activate.ps1
-  python fdx.py new smoke-test
-  python fdx.py placeholders smoke-test
-  python fdx.py assemble smoke-test --tts
+  python fdx.py new my-first-video
+  # write projects/my-first-video/script.md, then:
+  python fdx.py build my-first-video
 
-Then put your Gemini key in Code2Video\src\api_config.json as well as .env.
+`build` runs voice -> align -> scenes -> stills -> plan -> encode -> finish ->
+check. Put your Gemini key in .env first -- 'fdx scenes' needs it.
 
 "@ -ForegroundColor Green

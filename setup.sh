@@ -50,45 +50,22 @@ pip install --upgrade pip wheel
 say "installing fdx python deps"
 pip install -r requirements.txt
 
-say "installing Manim Community"
+say "installing Manim Community (only used by the 'fdx manim' hand-authored escape hatch)"
 pip install "manim==0.19.0"
-
-# ------------------------------------------------------------- Code2Video
-C2V_DIR="${CODE2VIDEO_DIR:-$(cd .. && pwd)/Code2Video}"
-if [ ! -d "$C2V_DIR" ]; then
-  say "cloning Code2Video into $C2V_DIR"
-  git clone --depth 1 https://github.com/showlab/Code2Video.git "$C2V_DIR"
-else
-  say "Code2Video already at $C2V_DIR"
-fi
-
-say "installing Code2Video deps"
-( cd "$C2V_DIR/src" && pip install -r requirements.txt ) \
-  || warn "Code2Video deps failed — you can still use 'fdx import' and 'fdx placeholders'"
 
 # ------------------------------------------------------------------- .env
 if [ ! -f .env ]; then
   cp .env.example .env
-  sed -i.bak "s|^CODE2VIDEO_DIR=.*|CODE2VIDEO_DIR=$C2V_DIR|" .env && rm -f .env.bak
-  say "created .env — put your API keys in it"
+  say "created .env — put your GEMINI_API_KEY in it (used by 'fdx scenes')"
 fi
+
+# ---------------------------------------------------------- local models
+say "fetching the local ASR/VAD/voice models (one time, a few hundred MB)"
+python fdx.py models --asr base.en --vad --kokoro
 
 # ----------------------------------------------------------------- verify
 say "verifying"
-python3 - <<'PY'
-import shutil, sys
-ok = True
-for tool in ("ffmpeg", "ffprobe", "manim"):
-    found = shutil.which(tool)
-    print(f"  {tool:10s} {'OK  ' + found if found else 'MISSING'}")
-    ok &= bool(found)
-try:
-    import edge_tts  # noqa: F401
-    print("  edge-tts   OK")
-except ImportError:
-    print("  edge-tts   MISSING (fine if you record your own voice)")
-sys.exit(0 if ok else 1)
-PY
+python fdx.py doctor
 
 cat <<'EOF'
 
@@ -96,9 +73,9 @@ Setup done.
 
   source .venv/bin/activate
   python fdx.py new my-first-video
-  # write projects/my-first-video/script.md
-  python fdx.py run my-first-video --tts
+  # write projects/my-first-video/script.md, then:
+  python fdx.py build my-first-video
 
-Also fill in Code2Video's own src/api_config.json — it reads keys from
-there, not from .env.
+`build` runs voice -> align -> scenes -> stills -> plan -> encode -> finish ->
+check. Put your Gemini key in .env first — 'fdx scenes' needs it.
 EOF
