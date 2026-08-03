@@ -28,6 +28,7 @@ import importlib.util
 import inspect
 import json
 import sys
+import traceback
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -39,7 +40,16 @@ def load(path: Path):
     spec = importlib.util.spec_from_file_location("fdx_scene_mod", path)
     mod = importlib.util.module_from_spec(spec)
     mod.k = k                      # the kit is injected, not imported
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except SystemExit:
+        raise
+    except Exception:
+        # A stray `import k`, a typo, anything that blows up at module scope —
+        # this is exactly the kind of mistake the generator's retry loop
+        # should see and fix, not a reason to crash the whole batch.
+        raise SystemExit("scene module failed to load:\n"
+                         + traceback.format_exc(limit=6))
     return mod
 
 
@@ -100,10 +110,18 @@ def render(scene: Path, outdir: Path, max_cue: int | None = None,
         n_steps = _steps_for(fn, opts)
         for step in range(n_steps):
             fig, ax = k.canvas()
-            if n_steps > 1 or len(inspect.signature(fn).parameters) >= 2:
-                fn(ax, step)           # a raised exception here fails the check
-            else:
-                fn(ax)
+            try:
+                if n_steps > 1 or len(inspect.signature(fn).parameters) >= 2:
+                    fn(ax, step)
+                else:
+                    fn(ax)
+            except SystemExit:
+                raise
+            except Exception:
+                plt.close(fig)
+                where = name if n_steps == 1 else f"{name} step {step}"
+                raise SystemExit(f"state {where} raised while drawing:\n"
+                                 + traceback.format_exc(limit=6))
 
             for p in k.audit(fig, ax, name if n_steps == 1
                              else f"{name} step {step}"):
