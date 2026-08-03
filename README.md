@@ -126,7 +126,7 @@ python fdx.py align booths-algorithm         # word-level timing
 python fdx.py scenes booths-algorithm        # ask the model to storyboard
 python fdx.py stills booths-algorithm        # render + audit the PNGs
 python fdx.py plan booths-algorithm          # decide when each still appears
-python fdx.py encode booths-algorithm --all  # one clip per still
+python fdx.py encode booths-algorithm --all --jobs 2  # one clip per still, 2 at a time
 python fdx.py finish booths-algorithm        # concat, mux, caption, chapter
 python fdx.py check booths-algorithm --strict
 ```
@@ -159,6 +159,45 @@ Produces `out/final.mp4`, `out/captions.srt`, `out/thumb_source.png`, and
 `out/upload.md` with a description, chapters and a pre-upload checklist.
 Work through that checklist — it is short and it is the part that protects
 the channel.
+
+---
+
+## Web dashboard
+
+```bash
+python fdx.py serve             # http://127.0.0.1:8787, localhost-only by default
+```
+
+A local, single-user dashboard over the same pipeline — nothing here that
+`python fdx.py <stage>` doesn't already do; it just makes long stages
+watchable instead of something you poll from a terminal. Each stage runs
+as its own subprocess, exactly like the CLI, so a stage's own live
+`cfg.say()` output streams to the page over Server-Sent Events as it runs,
+with a progress bar computed from files already on disk (never guessed).
+
+- **Script** — an editor for `script.md` (title/topic/audience, per-section
+  title/ANIM/narration, live word-count and pacing feedback). A **Draft
+  with AI** button can prefill a rough first pass via `GEMINI_API_KEY`, but
+  it only ever fills the form in your browser — nothing is written to disk
+  until you hit Save. This project's own rule stands: the script is
+  written by you.
+- **Pipeline** — one button per stage plus **Build all**, with the live
+  log and progress bar described above.
+- **Scenes** — a thumbnail gallery per section from each `manifest.json`,
+  with a **Regenerate section** action that clears the old storyboard and
+  stills and re-runs `fdx scenes --section N`.
+- **Upload** — record-your-own-narration per section (for `--backend own`),
+  or point `fdx import` at a folder of pre-made clips.
+- **Review** — `out/final.mp4`, the `out/qc.json` gate table, and the
+  `out/upload.md` packet.
+
+Only one job runs at a time, server-wide — this pipeline is CPU-heavy
+enough on a modest machine that two stages fighting for the same cores
+would undo the `--jobs` parallelism below rather than add to it.
+
+`--host 0.0.0.0` exposes the dashboard (and anything it can trigger,
+including Gemini calls) to your LAN with no authentication — leave it at
+the localhost-only default unless you specifically want that.
 
 ---
 
@@ -217,14 +256,15 @@ fdx/scenes.py           asks the model to storyboard against scenekit
 fdx/scenekit.py         the drawing primitives + the layout-audit critic
 fdx/stills.py           executes a scene module to PNG stills
 fdx/timeline.py         when every still appears, fit to the frame
-fdx/encode.py           one clip per still, dissolve baked into the head
+fdx/encode.py           one clip per still, dissolve baked into the head, --jobs parallel
 fdx/finish.py           concat, mux, caption, chapter — the final assembly
 fdx/captions.py         SRT/ASS generation from the alignment
-fdx/qc.py               the quality gates behind `fdx check`
+fdx/qc.py               the quality gates behind `fdx check`, caption drift parallelized
 fdx/publish.py          upload packet (description, chapters, checklist)
 fdx/doctor.py           environment check
 fdx/visuals.py          import/placeholder/manim escape hatches
 fdx/assemble.py         legacy sync path, for `fdx import`ed clips only
+fdx/web/                the `fdx serve` dashboard — FastAPI + SSE over the same stages
 docs/RETIRED.md         why the old Code2Video path was replaced, and by what
 topics/backlog.yaml     the 30-video queue
 projects/<slug>/        script.md, sections/, audio/, build/, out/
@@ -242,4 +282,6 @@ projects/<slug>/        script.md, sections/, audio/, build/, out/
 | `fdx scenes` keeps rejecting a section | open `build/scenes/scene_NN.py` — the audit error in the terminal names the exact overlap or off-frame text; fix the `k.` call or delete the file and regenerate |
 | `fdx check` fails "caption drift" | a section's audio was replaced after `fdx align` ran — re-run `align` then `plan`/`encode --all`/`finish` |
 | `fdx finish` refuses to concat | clips were encoded with mixed profiles (a `--preview` pass mixed with a final one) — delete `build/clips` and `fdx encode --all` again |
-| Rate-limited on `fdx scenes` | Gemini's free tier caps requests/day per model — set `FDX_SCENE_MODEL` to a different model, or wait for the quota to reset |
+| Rate-limited on `fdx scenes` | Gemini's free tier caps requests/day per model — add a `GEMINI_API_KEY_BACKUP*` key in `.env` for automatic failover, or wait for the quota to reset |
+| `fdx encode --jobs N` isn't faster | this machine may already be CPU-bound (other processes, `-preset veryfast` already threading per call) — try `--jobs 1` and compare wall-clock before assuming higher is better |
+| `fdx serve` says "a job is already running" | only one pipeline job runs at a time, server-wide, by design (see **Web dashboard**) — wait for it to finish or cancel it from the Pipeline page |

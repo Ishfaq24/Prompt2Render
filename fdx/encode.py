@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import cfg
@@ -27,6 +29,14 @@ DISSOLVE = {
     "section": 0.50,
 }
 OPEN_FADE = 0.60         # from black, on the very first clip
+
+# ffmpeg subprocess calls release the GIL while waiting on the child process,
+# so threads (not processes) give real concurrency here at no pickling cost.
+# print() isn't guaranteed atomic across threads, so every _encode_one's
+# cfg.say() shares this lock -- otherwise two clips finishing close together
+# can interleave mid-line, which would also corrupt anything parsing this
+# stage's stdout for progress (see fdx/web/progress.py).
+_LOG_LOCK = threading.Lock()
 
 
 def _clip_paths(proj: Path, row: dict) -> tuple[Path, Path, Path | None]:
@@ -63,7 +73,26 @@ def _cmd(row: dict, png: Path, prev: Path | None, out: Path,
         "-frames:v", str(n), *vopts, str(out)]
 
 
-def encode(proj: Path, limit: int | None = None, preview: bool = False) -> int:
+def _encode_one(row: dict, proj: Path, vopts: list[str]) -> None:
+    clip, png, prev = _clip_paths(proj, row)
+    if not png.exists():
+        sys.exit(f"[fdx] missing still {png} — run `fdx stills`")
+
+    # Encode to a sidecar and move it into place, so a run cut short never
+    # leaves a half-written clip that the resume check trusts.
+    part = clip.with_name(clip.stem + ".part.mp4")
+    cfg.run(_cmd(row, png, prev, part, vopts))
+    try:
+        part.replace(clip)
+    except OSError:
+        shutil.copyfile(part, clip)
+        part.unlink(missing_ok=True)
+    with _LOG_LOCK:
+        cfg.say(f"  {clip.name}  {row['seconds']}s  {row['kind']}")
+
+
+def encode(proj: Path, limit: int | None = None, preview: bool = False,
+           jobs: int = 1) -> int:
     from . import timeline
     plan = timeline.load(proj)
     rows = plan["clips"]
@@ -73,27 +102,34 @@ def encode(proj: Path, limit: int | None = None, preview: bool = False) -> int:
         cfg.warn("preview encode (nvenc) — do not mix these clips with a "
                  "final render; re-encode before `fdx finish`")
 
-    done = 0
+    # Selection stays serial and in plan order -- a clip only ever needs its
+    # own still and the previous still's PNG (both already on disk from
+    # `fdx stills`), never another clip's encoded output, so the encodes
+    # themselves are independent and safe to run concurrently.
+    todo = []
     for row in rows:
-        clip, png, prev = _clip_paths(proj, row)
+        clip = proj / row["clip"]
         if clip.exists() and clip.stat().st_size > 2048:
             continue
-        if limit is not None and done >= limit:
+        if limit is not None and len(todo) >= limit:
             break
-        if not png.exists():
-            sys.exit(f"[fdx] missing still {png} — run `fdx stills`")
+        todo.append(row)
 
-        # Encode to a sidecar and move it into place, so a run cut short never
-        # leaves a half-written clip that the resume check trusts.
-        part = clip.with_name(clip.stem + ".part.mp4")
-        cfg.run(_cmd(row, png, prev, part, vopts))
-        try:
-            part.replace(clip)
-        except OSError:
-            shutil.copyfile(part, clip)
-            part.unlink(missing_ok=True)
-        done += 1
-        cfg.say(f"  {clip.name}  {row['seconds']}s  {row['kind']}")
+    done = 0
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            futures = [pool.submit(_encode_one, row, proj, vopts) for row in todo]
+            try:
+                for fut in as_completed(futures):
+                    fut.result()
+                    done += 1
+            except BaseException:
+                # Fail fast, same as the old serial loop: a broken clip
+                # should stop the pass, not leave the rest to encode
+                # against a still that's already proven bad.
+                for f in futures:
+                    f.cancel()
+                raise
 
     remaining = sum(1 for r in rows
                     if not ((proj / r["clip"]).exists()

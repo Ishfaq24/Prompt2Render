@@ -9,9 +9,11 @@ independent, and it is the only honest definition of "sync is correct".
 from __future__ import annotations
 
 import json
+import os
 import re
 import statistics
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import align, asrmodel, captions, cfg, stills, textseg, timeline, voice
@@ -116,34 +118,62 @@ def _gate_alignment(g: Gates, proj: Path, script: Script) -> None:
                                  f"(min confidence {worst:.2f})")
 
 
+def _drift_for_section(sec, proj: Path, o: dict, work: Path, wav: Path,
+                       model: Path) -> list[float]:
+    """One section's alignment deltas against its shipped captions."""
+    # align.transcribe() writes a fixed "words.srt" into whatever workdir
+    # it's given -- fine for the single call transcribe_programme() makes,
+    # but concurrent sections sharing one `work` dir would race on that
+    # same filename (two threads unlink/write it at once). Each section
+    # gets its own subdirectory instead.
+    sub = work / f"_{sec.stem}"
+    sub.mkdir(exist_ok=True)
+    part = sub / f"{sec.stem}.wav"
+    align._slice(wav, o["start"], o["dur"], part)
+    asr = align.transcribe(part, model, sub)
+    deltas: list[float] = []
+    if asr:
+        sents = textseg.sentences(sec.narration)
+        fresh, conf = align.reconcile(sents, align._asr_tokens(asr), o["dur"])
+        if conf >= align.CONF_FLOOR:
+            shipped = align.load(proj, sec.stem)["sentences"]
+            for a, b in zip(shipped, fresh):
+                deltas.append(abs(a["start"] - b["start"]))
+    cfg.say(f"caption drift: section {sec.stem} checked")
+    return deltas
+
+
 def _gate_caption_drift(g: Gates, proj: Path, script: Script,
-                        final: Path) -> None:
-    """The decisive gate: re-align the shipped audio, compare to the shipped SRT."""
+                        final: Path, jobs: int | None = None) -> None:
+    """The decisive gate: re-align the shipped audio, compare to the shipped SRT.
+
+    Each section's re-transcription is a fully independent whisper pass over
+    its own audio slice, so this is parallelized the same way `fdx encode`
+    is: a thread pool per section (each blocks on its own ffmpeg/whisper
+    subprocess, releasing the GIL while waiting), with `deltas` aggregated
+    only in the main thread as futures complete -- no lock needed, and it's
+    what keeps the p95/max maths correct regardless of finishing order.
+    """
     model = asrmodel.available()
     if model is None:
         g.add(SKIP, "caption drift", "no ASR model — cannot verify independently")
         return
     amap = voice.audio_map(proj)
+    n = max(1, jobs or cfg.env_int("FDX_QC_JOBS", 3))
+    n = min(n, len(script.sections) or 1, os.cpu_count() or n)
+
     deltas: list[float] = []
     with tempfile.TemporaryDirectory(prefix="fdx-qc-") as td:
         work = Path(td)
         wav = work / "final.wav"
         cfg.run(["ffmpeg", "-y", "-v", "error", "-i", str(final),
                  "-map", "0:a:0", "-ac", "1", "-c:a", "pcm_s16le", str(wav)])
-        for sec in script.sections:
-            o = amap["sections"][sec.stem]
-            part = work / f"{sec.stem}.wav"
-            align._slice(wav, o["start"], o["dur"], part)
-            asr = align.transcribe(part, model, work)
-            if not asr:
-                continue
-            sents = textseg.sentences(sec.narration)
-            fresh, conf = align.reconcile(sents, align._asr_tokens(asr), o["dur"])
-            if conf < align.CONF_FLOOR:
-                continue
-            shipped = align.load(proj, sec.stem)["sentences"]
-            for a, b in zip(shipped, fresh):
-                deltas.append(abs(a["start"] - b["start"]))
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            futures = [pool.submit(_drift_for_section, sec, proj,
+                                   amap["sections"][sec.stem], work, wav, model)
+                      for sec in script.sections]
+            for fut in as_completed(futures):
+                deltas.extend(fut.result())
     if not deltas:
         g.add(SKIP, "caption drift", "alignment produced nothing to compare")
         return
@@ -302,28 +332,39 @@ def _gate_concat(g: Gates, proj: Path) -> None:
 
 # --------------------------------------------------------------- driver ----
 
+def _run_gate(name: str, fn, *a, **kw) -> None:
+    # check() used to run all ~13 gates back-to-back with zero printed
+    # output between them -- on the caption-drift gate alone that's tens of
+    # minutes of a stage that looks hung. This is the only signal `fdx check`
+    # gives between gates; the caption-drift gate adds its own per-section
+    # progress on top (see _drift_for_section).
+    cfg.say(f"gate: {name}")
+    fn(*a, **kw)
+
+
 def check(proj: Path, script: Script, strict: bool = False) -> int:
     cfg.need("ffmpeg", "ffprobe")
     final = proj / "out" / "final.mp4"
     g = Gates()
 
-    _gate_layout(g, proj, script)
-    _gate_alignment(g, proj, script)
-    _gate_captions(g, proj, script)
-    _gate_pacing(g, proj)
-    _gate_concat(g, proj)
+    _run_gate("layout", _gate_layout, g, proj, script)
+    _run_gate("alignment", _gate_alignment, g, proj, script)
+    _run_gate("captions", _gate_captions, g, proj, script)
+    _run_gate("pacing", _gate_pacing, g, proj)
+    _run_gate("concat safety", _gate_concat, g, proj)
 
     if not final.exists():
         g.add(SKIP, "final.mp4", "not built yet — run `fdx finish`")
     else:
         amap = voice.audio_map(proj)
-        _gate_av_sync(g, proj, script, final)
-        _gate_loudness(g, final, amap.get("lufs_target", cfg.LUFS))
-        _gate_clipping(g, final)
-        _gate_dead_air(g, final)
-        _gate_black(g, final)
-        _gate_freeze(g, final)
-        _gate_caption_drift(g, proj, script, final)
+        _run_gate("a/v sync", _gate_av_sync, g, proj, script, final)
+        _run_gate("loudness", _gate_loudness, g, final,
+                  amap.get("lufs_target", cfg.LUFS))
+        _run_gate("clipping", _gate_clipping, g, final)
+        _run_gate("dead air", _gate_dead_air, g, final)
+        _run_gate("black frames", _gate_black, g, final)
+        _run_gate("frozen picture", _gate_freeze, g, final)
+        _run_gate("caption drift", _gate_caption_drift, g, proj, script, final)
 
     g.show()
     (proj / "out").mkdir(exist_ok=True)

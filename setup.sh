@@ -78,4 +78,8 @@ Setup done.
 
 `build` runs voice -> align -> scenes -> stills -> plan -> encode -> finish ->
 check. Put your Gemini key in .env first — 'fdx scenes' needs it.
+
+Or skip the terminal for the long stages:
+
+  python fdx.py serve
 EOF

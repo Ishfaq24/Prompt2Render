@@ -64,6 +64,11 @@ def cmd_voices(a):
         print("  " + "  ".join(n.ljust(12) for n in names[i:i + 6]))
 
 
+def cmd_serve(a):
+    import uvicorn
+    uvicorn.run("fdx.web.app:app", host=a.host, port=a.port, reload=a.reload)
+
+
 # ----------------------------------------------------------------- stages ---
 
 def cmd_voice(a):
@@ -111,7 +116,8 @@ def cmd_encode(a):
     from fdx import encode
     d, _ = _load(a.slug)
     limit = None if a.all else a.limit
-    left = encode.encode(d, limit=limit, preview=a.preview)
+    jobs = a.jobs or cfg.env_int("FDX_ENCODE_JOBS", 1)
+    left = encode.encode(d, limit=limit, preview=a.preview, jobs=jobs)
     sys.exit(0 if left == 0 else 7)          # 7 = more passes needed
 
 
@@ -141,7 +147,8 @@ def cmd_build(a):
         stills.render(stills.scene_path(d, sec.stem),
                       stills.stills_dir(d, sec.stem), max_cue=n - 1)
     timeline.build(d, s, motion=a.motion)
-    if encode.encode(d, limit=None) != 0:
+    jobs = a.jobs or cfg.env_int("FDX_ENCODE_JOBS", 1)
+    if encode.encode(d, limit=None, jobs=jobs) != 0:
         sys.exit("[fdx] encode did not finish")
     finish.finish(d, s, burn=a.burn)
     publish.build_packet(d, s)
@@ -236,6 +243,13 @@ def main() -> None:
 
     add("voices", cmd_voices, "list the available kokoro voices")
 
+    sv = add("serve", cmd_serve, "start the local web dashboard")
+    sv.add_argument("--host", default="127.0.0.1",
+                    help="127.0.0.1 is local-only (default) — 0.0.0.0 exposes "
+                         "unauthenticated pipeline/Gemini triggers to your LAN")
+    sv.add_argument("--port", type=int, default=8787)
+    sv.add_argument("--reload", action="store_true")
+
     # --- stages -------------------------------------------------------------
     v = add("voice", cmd_voice, "synthesise and master the narration")
     v.add_argument("slug")
@@ -272,6 +286,10 @@ def main() -> None:
     en.add_argument("--limit", type=int, default=10)
     en.add_argument("--all", action="store_true")
     en.add_argument("--preview", action="store_true", help="fast nvenc pass")
+    en.add_argument("--jobs", type=int, default=None,
+                    help="encode this many clips concurrently "
+                         "(default 1, or $FDX_ENCODE_JOBS; try 2 on a "
+                         "multi-core machine)")
 
     fi = add("finish", cmd_finish, "concat, mux, caption, chapter")
     fi.add_argument("slug"); fi.add_argument("--burn", action="store_true")
@@ -287,6 +305,8 @@ def main() -> None:
     bd.add_argument("--lufs", type=float)
     bd.add_argument("--burn", action="store_true")
     bd.add_argument("--strict", action="store_true")
+    bd.add_argument("--jobs", type=int, default=None,
+                    help="parallel encode workers (default 1, or $FDX_ENCODE_JOBS)")
 
     # --- escape hatches -----------------------------------------------------
     im = add("import", cmd_import, "import section clips from a folder")

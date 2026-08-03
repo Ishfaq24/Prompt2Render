@@ -13,6 +13,13 @@ onnxruntime>=1.20        # CPU EP is the right choice here — see docs/VOICE.md
 # --- scene generation ---
 openai>=1.90             # Gemini over its OpenAI-compatible endpoint
 
+# --- web dashboard (`fdx serve`) ---
+fastapi>=0.115
+uvicorn>=0.32            # deliberately not uvicorn[standard]: uvloop isn't
+                         # available on Windows and isn't needed for SSE
+python-multipart>=0.0.9  # required by Starlette's UploadFile (audio upload)
+Jinja2>=3.1              # already a transitive dep elsewhere; used directly here
+
 # --- optional ---
 # edge-tts>=6.1.9        # online voice; kokoro is the supported default
 # manim==0.19.0          # hand-authored hero scenes only; MathTex needs LaTeX
