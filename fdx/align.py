@@ -28,7 +28,6 @@ import json
 import re
 import sys
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import asrmodel, cfg, textseg, voice
@@ -42,16 +41,6 @@ CONF_FLOOR = 0.60              # below this, discard the ASR entirely
 
 TS = re.compile(r"(\d\d):(\d\d):(\d\d)[,.](\d\d\d)\s*-->\s*"
                 r"(\d\d):(\d\d):(\d\d)[,.](\d\d\d)")
-
-
-@dataclass
-class Aligned:
-    source: str
-    confidence: float
-    sentences: list[dict] = field(default_factory=list)
-    audio_dur: float = 0.0
-    model: str = ""
-    words_per_cue: float = 0.0
 
 
 # ------------------------------------------------------------- srt parse ---
@@ -311,12 +300,10 @@ def snap(sents: list[dict], gaps: list[tuple]) -> int:
         best = min(((abs(s["start"] - end), end) for _, end in gaps),
                    default=(9e9, 0.0))
         if best[0] <= SNAP_WINDOW:
-            shift = best[1] - s["start"]
             s["start"] = round(best[1], 3)
             if s["words"]:
                 s["words"][0]["s"] = s["start"]
             moved += 1
-            del shift
     for a, b in zip(sents, sents[1:]):
         if a["end"] > b["start"]:
             a["end"] = b["start"]
@@ -425,7 +412,6 @@ def align(proj: Path, script: Script, only: str | None = None,
 
     tokens = transcribe_programme(proj, master, model) if model else []
     gaps = silences(master) if tokens else []
-    wpc = len(tokens) / max(len(tokens), 1)
 
     for sec in script.sections:
         if only and sec.stem != only:

@@ -72,6 +72,20 @@ LAYOUT RULES (these matter more than cleverness):
   * A caption at y=0.85 is always safe.
   * Nothing may cross the frame edge. Keep every element within x=0.4..15.6
     and y=0.4..8.6.
+
+COLOR RULES (measured, not eyeballed — k.GOOD vs k.BAD is a near-collision for
+red-green colorblind viewers, about 8% of men, so color alone never carries
+the point):
+  * k.GOOD/k.BAD/k.WARN mean state (correct/wrong/caution). Never repurpose
+    them as arbitrary identity colors for two things that are just different,
+    not right-vs-wrong (use k.ONE and k.ACCENT for that instead, e.g. lo vs
+    hi pointers).
+  * Every time k.GOOD or k.BAD marks something, pair it with a second signal:
+    a symbol (checkmark/cross), a text label, or position (e.g. above vs
+    below a line) — never color as the only distinguishing cue between a good
+    thing and a bad thing sitting in the same frame.
+  * k.badge already does this (✓/✗ plus color) — prefer it over hand-rolled
+    green/red text for a verdict.
 '''
 
 REVEAL_DOC = '''
