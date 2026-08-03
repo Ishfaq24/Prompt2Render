@@ -1,0 +1,25 @@
+# Secrets — never commit these.
+.env
+*.key
+
+# Vendored external project (retired path — see docs/RETIRED.md). Its own
+# clone is a broken/incomplete nested .git with no commits; don't fight that
+# state, just keep it out of our history entirely.
+vendor/Code2Video/
+
+# Generated media
+projects/*/sections/
+projects/*/audio/
+projects/*/build/
+projects/*/out/
+!.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

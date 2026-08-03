@@ -1,0 +1,21 @@
+# fdx-studio — what the code actually imports.
+# Verify after installing with:  python fdx.py doctor
+
+# --- core ---
+numpy>=2.0
+matplotlib>=3.8          # the scenekit renderer draws every frame
+python-dotenv>=1.1       # optional; cfg.load_env works without it
+
+# --- voice (local, offline, deterministic) ---
+kokoro-onnx>=0.5.0
+onnxruntime>=1.20        # CPU EP is the right choice here — see docs/VOICE.md
+
+# --- scene generation ---
+openai>=1.90             # Gemini over its OpenAI-compatible endpoint
+
+# --- optional ---
+# edge-tts>=6.1.9        # online voice; kokoro is the supported default
+# manim==0.19.0          # hand-authored hero scenes only; MathTex needs LaTeX
+
+# Forced alignment needs NO Python package: it uses the whisper filter built
+# into ffmpeg. Fetch the model once with:  python fdx.py models --asr base.en
