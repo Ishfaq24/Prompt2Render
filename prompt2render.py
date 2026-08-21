@@ -71,7 +71,7 @@ def cmd_models(a):
     from prompt2render import asrmodel, voice
     if a.asr:
         asrmodel.fetch_asr(a.asr, force=a.force)
-    if a.vad or a.asr:
+    if a.vad:
         asrmodel.fetch_vad(force=a.force)
     if a.kokoro:
         voice.fetch_kokoro(force=a.force, int8=a.kokoro_int8)

@@ -19,6 +19,19 @@ Two hardening passes make the result trustworthy:
   sample-exact, so those win outright and whisper is used only for word-level
   detail inside a sentence. That makes the ASR strictly additive: it can never
   make the result worse than synthesis alone.
+
+**No VAD gate in the whisper filter.** ffmpeg's built-in `vad_model=` option
+was tried and measured: on this build it drives whisper's wall time up by
+roughly 12x with audio length (a 30 s slice went 16.8 s -> 200.4 s), because
+the wrapper doesn't scale with duration the way whisper.cpp itself does. It
+existed to stop whisper hallucinating words into the pauses the voice engine
+inserts, but that fear is already handled one layer up: a hallucinated token
+simply fails to match anything in the known script and difflib drops it as an
+unmatched insert, so it never becomes an anchor. Measured on a real project
+(bubble-sort, 6 sections): per-section reconciliation confidence with VAD on
+was 0.879-0.969; with VAD off on the identical audio, 0.881-0.975 — no
+regression, and every timestamp invariant still held. See docs/OPTIMIZATION.md
+EXP-01.
 """
 from __future__ import annotations
 
@@ -111,11 +124,10 @@ def transcribe(wav: Path, model: Path, workdir: Path) -> list[dict]:
         "max_len=1",
         f"destination={cfg.filter_path(out)}",
     ]
-    if vad := asrmodel.vad_available():
-        # The pauses the voice engine inserts are exactly where whisper likes
-        # to hallucinate text.
-        opts += [f"vad_model={cfg.filter_path(vad)}", "vad_threshold=0.5",
-                 "vad_min_silence_duration=0.25"]
+    # Deliberately no vad_model= here — see the module docstring (EXP-01):
+    # ffmpeg's whisper filter's VAD integration costs ~12x wall time for no
+    # measured gain in reconciliation confidence, because a hallucinated
+    # token just fails to match the known script and gets dropped.
 
     graph = ("aresample=16000:resampler=soxr,whisper=" + ":".join(opts))
     proc = cfg.try_run(["ffmpeg", "-hide_banner", "-nostdin", "-v", "warning",

@@ -138,9 +138,6 @@ def _check_align(r: Report) -> None:
         # Deliberately a warning: ranks 1-2 of the fallback chain are already
         # sample-exact without it.
         r.add(WARN, "ASR model", asrmodel.missing_note(name))
-    r.add(OK if asrmodel.vad_available() else WARN, "VAD model",
-          "present" if asrmodel.vad_available()
-          else "absent — whisper may hallucinate in the pauses")
 
 
 def _check_scenes(r: Report) -> None:
