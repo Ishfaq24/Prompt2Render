@@ -406,7 +406,10 @@ def array(ax, values, y=5.0, x0=1.0, x1=15.0, lo=None, hi=None, mid=None,
     for name, i, col in (("lo", lo, ONE), ("hi", hi, ACCENT)):
         if i is None:
             continue
-        yy = ptr_y - (0.62 if (lo == hi and name == "hi") else 0)
+        # 0.62 measured too close: the audit still caught the "hi" label
+        # overlapping "lo" by ~12px on the rendered figure. 0.85 clears it
+        # with margin (0.70 was the bare minimum in testing).
+        yy = ptr_y - (0.85 if (lo == hi and name == "hi") else 0)
         ax.annotate(name, xy=(px(i), yy + 0.30), xytext=(px(i), yy - 0.22),
                     ha="center", va="top", color=col, fontsize=23,
                     fontfamily=MONO, fontweight="bold", zorder=6,
