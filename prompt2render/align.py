@@ -353,6 +353,22 @@ def path_for(proj: Path, stem: str) -> Path:
     return proj / "build" / "align" / f"{stem}.json"
 
 
+def _section_sig(narration: str, start: float, dur: float, master_stamp: int) -> str:
+    """Fingerprint of everything that can make a cached alignment wrong.
+
+    The "already aligned, skipping" check below used to trust the file's
+    mere existence, so editing a section's narration in script.md and
+    re-running `align` without --force silently kept the old timing against
+    the new text. narration text and the section's placement/duration catch
+    a script edit; master.wav's mtime (not a full content hash -- that would
+    mean re-reading the whole programme on every untouched run) catches a
+    re-synthesis. A false cache miss just costs a recompute; a false hit
+    ships wrong captions.
+    """
+    raw = f"{narration}|{start:.6f}|{dur:.6f}|{master_stamp}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def load(proj: Path, stem: str) -> dict:
     """Read an alignment, lifting the old bare-list format to v2."""
     p = path_for(proj, stem)
@@ -534,16 +550,25 @@ def align(proj: Path, script: Script, only: str | None = None,
     else:
         tokens, gaps = [], []
 
+    master_stamp = master.stat().st_mtime_ns
     for sec in script.sections:
         if only and sec.stem != only:
             continue
         dst = path_for(proj, sec.stem)
-        if dst.exists() and not force:
-            cfg.say(f"section {sec.stem}: already aligned, skipping")
-            continue
-
         info = amap["sections"][sec.stem]
         start, dur = info["start"], info["dur"]
+        sig = _section_sig(sec.narration, start, dur, master_stamp)
+        if dst.exists() and not force:
+            try:
+                cached_sig = json.loads(dst.read_text(encoding="utf-8")).get("sig")
+            except (OSError, ValueError):
+                cached_sig = None
+            if cached_sig == sig:
+                cfg.say(f"section {sec.stem}: already aligned, skipping")
+                continue
+            cfg.say(f"section {sec.stem}: narration or audio changed since "
+                    "last align, redoing")
+
         sents = textseg.sentences(sec.narration)
         prior = voice.section_cues(proj, sec.stem)
         asr = _window(tokens, start, dur)
@@ -557,7 +582,7 @@ def align(proj: Path, script: Script, only: str | None = None,
 
         source = _source(prior, asr, conf)
         dst.write_text(json.dumps({
-            "version": VERSION, "source": source,
+            "version": VERSION, "sig": sig, "source": source,
             "confidence": round(conf, 3),
             "audio_dur": round(dur, 3),
             "model": model.name if model else "",
