@@ -1,5 +1,10 @@
 # Prompt2Render
 
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+![Status](https://img.shields.io/badge/status-active--development-yellow)
+![Local--first](https://img.shields.io/badge/pipeline-local--first%20%2B%201%20API-informational)
+
 End-to-end pipeline for narrated, code-animated explainer videos, built to
 frame accuracy.
 
@@ -29,6 +34,25 @@ YouTube's inauthentic-content rule.
 > [Code2Video](https://github.com/showlab/Code2Video) to render Manim clips,
 > then force-fit them to narration by holding the last frame. That path is
 > retired — see `docs/RETIRED.md` for why, and what replaced it.
+
+---
+
+## Quickstart
+
+Already installed (see **Install** below)? This is the whole loop, start to
+finish, on a different topic than the walkthrough further down:
+
+```bash
+python prompt2render.py new twos-complement
+# write projects/twos-complement/script.md — this is the one manual step
+python prompt2render.py build twos-complement
+python prompt2render.py check twos-complement --strict
+```
+
+`build` chains `voice -> align -> scenes -> stills -> plan -> encode -> finish
+-> check` for you; `out/final.mp4` and `out/upload.md` are what you get at
+the end. See **Making a video** for the stage-by-stage version and what to
+do when `check` rejects a scene.
 
 ---
 
@@ -129,6 +153,7 @@ for it:
 python prompt2render.py voice booths-algorithm         # synthesises with kokoro by default;
                                               # --backend own uses projects/.../audio/NN.wav
                                               # if you recorded your own narration
+python prompt2render.py voices                         # list kokoro voice names for --voice
 python prompt2render.py align booths-algorithm         # word-level timing
 python prompt2render.py scenes booths-algorithm        # ask the model to storyboard
 python prompt2render.py stills booths-algorithm        # render + audit the PNGs
@@ -346,3 +371,4 @@ projects/<slug>/        script.md, sections/, audio/, build/, out/
 | `prompt2render stills` says "current, skipping" | expected — `prompt2render scenes` already rendered them. Edit the scene module and it re-renders that section; `--force` does the lot |
 | `prompt2render scenes` returns 429s it didn't before | sections are storyboarded three at a time now, which meters against the free tier's per-minute cap — `--jobs 1` restores the old one-at-a-time pace |
 | `prompt2render serve` says "a job is already running" | only one pipeline job runs at a time, server-wide, by design (see **Web dashboard**) — wait for it to finish or cancel it from the Pipeline page |
+| `prompt2render animate` exits immediately | retired — it drove the old Manim/Code2Video path. Use `prompt2render scenes` instead; see `docs/RETIRED.md` |
