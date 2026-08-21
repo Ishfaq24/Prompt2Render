@@ -30,7 +30,7 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
 
 foreach ($t in @("python","git","ffmpeg","ffprobe")) {
   if (Get-Command $t -ErrorAction SilentlyContinue) { Write-Host "  $t OK" }
-  else { Warn "$t not on PATH yet — close PowerShell, reopen, and re-run this script" }
+  else { Warn "$t not on PATH yet - close PowerShell, reopen, and re-run this script" }
 }
 
 # ------------------------------------------------------------------- python
@@ -45,7 +45,7 @@ Say "installing prompt2render deps + Manim (Manim is only used by the 'prompt2re
 # ------------------------------------------------------------------- .env
 if (-not (Test-Path .env)) {
   Copy-Item .env.example .env
-  Say "created .env — put your GEMINI_API_KEY in it (used by 'prompt2render scenes')"
+  Say "created .env - put your GEMINI_API_KEY in it (used by 'prompt2render scenes')"
 }
 
 # ---------------------------------------------------------- local models

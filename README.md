@@ -91,6 +91,20 @@ python prompt2render.py check smoke-test
 python prompt2render.py new booths-algorithm
 ```
 
+The scaffold defaults to a 6-section, ~10-minute outline (hook, 4 body
+beats, recap). Scale it with `--minutes` or pick an exact count with
+`--sections`:
+
+```bash
+python prompt2render.py new booths-algorithm --minutes 5    # shorter -> fewer body beats
+python prompt2render.py new booths-algorithm --sections 9   # exact count
+```
+
+Section titles beyond the first four body beats are generic (`Body beat N`)
+— it's a starting outline to rename, not a topic-aware one. Add, remove or
+retitle sections in `script.md` freely; nothing downstream cares how many
+there are.
+
 **1. Write `projects/booths-algorithm/script.md`.** This is the real work
 and takes an hour. Format:
 
@@ -113,6 +127,22 @@ caught, and deliberately awkward good ones that must not be, because a critic
 that fails a clean frame spends the model's retries teaching it to avoid a
 layout that was fine. Everything else is spoken and
 captioned. Target 1100–1700 words for 8–12 minutes.
+
+Don't want a blank page? `prompt2render draft <slug>` asks Gemini for a first
+pass at any section still holding the `new` placeholder text, and writes it
+straight into `script.md`:
+
+```bash
+python prompt2render.py draft booths-algorithm            # fills in unwritten sections only
+python prompt2render.py draft booths-algorithm --force    # redrafts every section, incl. ones you edited
+```
+
+It's a starting point, not step 1 of an unattended pipeline — read it, fix
+what's wrong, put it in your own voice, *then* build. The rule from the top
+of this section still applies to whatever's in `script.md` when you run
+`build`, drafted or not: it's what keeps the channel clear of the
+inauthentic-content rule, and disclosure in YouTube Studio is on you if you
+ship AI-drafted narration close to as-is.
 
 **2. Run the chain.**
 

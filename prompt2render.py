@@ -2,7 +2,8 @@
 """prompt2render — narrated, code-animated explainer videos, built to frame accuracy.
 
     python prompt2render.py new binary-search
-    # write script.md in your own words, then:
+    # write script.md in your own words (or `prompt2render draft binary-search`
+    # for a first pass to rewrite), then:
     python prompt2render.py build binary-search
 
 `build` runs the whole chain. The stages exist separately because each one is
@@ -36,7 +37,14 @@ def _load(slug: str):
 # ------------------------------------------------------------- scaffolding --
 
 def cmd_new(a):
-    d = project.new_project(a.slug, a.title)
+    if a.ai:
+        from prompt2render import outline
+        title = a.title or a.slug.replace("-", " ").title()
+        secs = outline.generate(title, title, "undergraduate computer science",
+                                minutes=a.minutes, sections=a.sections)
+        d = project.new_project_from_sections(a.slug, title, secs, minutes=a.minutes)
+    else:
+        d = project.new_project(a.slug, a.title, minutes=a.minutes, sections=a.sections)
     print(f"\ncreated {d}\n\nNext: open {d/'script.md'} and write the narration.\n"
           "That script is the whole moat — it is the part no tool makes for you.\n")
 
@@ -44,6 +52,12 @@ def cmd_new(a):
 def cmd_doctor(a):
     from prompt2render import doctor
     sys.exit(doctor.doctor())
+
+
+def cmd_draft(a):
+    from prompt2render import draft
+    d = cfg.project_dir(a.slug)
+    draft.draft(d, force=a.force)
 
 
 def cmd_models(a):
@@ -244,6 +258,22 @@ def main() -> None:
 
     n = add("new", cmd_new, "scaffold a new video project")
     n.add_argument("slug"); n.add_argument("--title")
+    n.add_argument("--minutes", type=float,
+                   help="target length; scales the number of body sections "
+                        "(default 10 min = 6 sections, the old fixed template)")
+    n.add_argument("--sections", type=int,
+                   help="exact section count instead of deriving it from "
+                        "--minutes")
+    n.add_argument("--ai", action="store_true",
+                   help="ask Gemini to propose section count/titles/ANIM "
+                        "briefs for this specific topic, instead of the "
+                        "fixed generic arc (needs GEMINI_API_KEY; narration "
+                        "is still left as a placeholder either way)")
+
+    dr = add("draft", cmd_draft, "ask Gemini to draft narration for script.md")
+    dr.add_argument("slug")
+    dr.add_argument("--force", action="store_true",
+                    help="overwrite sections that already have real narration")
 
     add("doctor", cmd_doctor, "check the environment before you spend an hour")
 
