@@ -129,6 +129,30 @@ Section titles beyond the first four body beats are generic (`Body beat N`)
 retitle sections in `script.md` freely; nothing downstream cares how many
 there are.
 
+Want the outline itself tailored to the topic instead — a real title, a
+distinct `topic:` summary, and section titles/ANIM briefs specific to what
+you're actually explaining, not the generic arc above? Add `--ai` (needs
+`GEMINI_API_KEY`):
+
+```bash
+python prompt2render.py new merge-sort --ai --minutes 8
+```
+
+```
+---
+title: Merge Sort: Splitting Your Way to O(n log n)
+topic: merge sort - divide and conquer, the merge step, O(n log n) complexity, stability
+audience: undergraduate computer science
+---
+```
+
+`--ai` still leaves every section's narration as a `"Narration."` placeholder
+— it decides structure and titling, not what gets said; combine with
+`prompt2render draft` (below) or your own hand for the words. Pass `--title`
+to keep your own title verbatim while still getting an AI-written `topic:`
+line and section structure; omit it and the model proposes its own title too.
+`--sections N` forces an exact count the same way it does without `--ai`.
+
 **1. Write `projects/booths-algorithm/script.md`.** This is the real work
 and takes an hour. Format:
 

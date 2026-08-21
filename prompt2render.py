@@ -39,10 +39,13 @@ def _load(slug: str):
 def cmd_new(a):
     if a.ai:
         from prompt2render import outline
-        title = a.title or a.slug.replace("-", " ").title()
-        secs = outline.generate(title, title, "undergraduate computer science",
-                                minutes=a.minutes, sections=a.sections)
-        d = project.new_project_from_sections(a.slug, title, secs, minutes=a.minutes)
+        seed = a.title or a.slug.replace("-", " ").title()
+        out = outline.generate(seed, seed, "undergraduate computer science",
+                               minutes=a.minutes, sections=a.sections,
+                               fixed_title=bool(a.title))
+        title = a.title or out["title"]
+        d = project.new_project_from_sections(a.slug, title, out["sections"],
+                                              minutes=a.minutes, topic=out["topic"])
     else:
         d = project.new_project(a.slug, a.title, minutes=a.minutes, sections=a.sections)
     print(f"\ncreated {d}\n\nNext: open {d/'script.md'} and write the narration.\n"

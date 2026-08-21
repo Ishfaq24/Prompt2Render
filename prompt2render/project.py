@@ -94,12 +94,13 @@ def render_template(title: str, minutes: float | None = None,
     return "".join(parts)
 
 
-def _front_matter(title: str, minutes: float, n: int, ai: bool = False) -> str:
+def _front_matter(title: str, minutes: float, n: int, ai: bool = False,
+                  topic: str | None = None) -> str:
     words = round(minutes * 140)
     note = ("This outline was AI-suggested" if ai else "This is a starting outline")
     return f"""---
 title: {title}
-topic: {title}
+topic: {topic or title}
 audience: undergraduate computer science
 ---
 
@@ -114,17 +115,19 @@ audience: undergraduate computer science
 
 
 def render_from_sections(title: str, sections: list[dict],
-                         minutes: float | None = None) -> str:
+                         minutes: float | None = None,
+                         topic: str | None = None) -> str:
     """Render script.md from an explicit [{"title", "anim"}, ...] list.
 
-    Used by `new --ai`: the section structure (count, titles, briefs) comes
-    from outline.generate() rather than the fixed archetypes above, but
-    narration is still left as a placeholder either way -- see draft.py.
+    Used by `new --ai`: the section structure (count, titles, briefs), and
+    optionally a distinct topic summary, come from outline.generate()
+    rather than the fixed archetypes above -- but narration is still left
+    as a placeholder either way -- see draft.py.
     """
     n = len(sections)
     if minutes is None:
         minutes = max(3, 2 * (n - 2) + 1) if n > 2 else 3.0
-    parts = [_front_matter(title, minutes, n, ai=True)]
+    parts = [_front_matter(title, minutes, n, ai=True, topic=topic)]
     for i, s in enumerate(sections, start=1):
         parts.append(f"\n## {i} - {s['title']}\n> ANIM: {s['anim']}\n\nNarration.\n")
     return "".join(parts)
@@ -223,10 +226,12 @@ def new_project(slug: str, title: str | None = None, minutes: float | None = Non
 
 
 def new_project_from_sections(slug: str, title: str, sections: list[dict],
-                              minutes: float | None = None) -> Path:
+                              minutes: float | None = None,
+                              topic: str | None = None) -> Path:
     """Like new_project(), but the section structure is already decided --
     used by `new --ai` with outline.generate()'s output."""
     d = _scaffold_dirs(slug)
     (d / "script.md").write_text(
-        render_from_sections(title, sections, minutes=minutes), encoding="utf-8")
+        render_from_sections(title, sections, minutes=minutes, topic=topic),
+        encoding="utf-8")
     return d
