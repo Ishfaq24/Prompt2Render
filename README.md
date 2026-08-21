@@ -354,7 +354,7 @@ in descending order:
 |---|---|---|
 | `align` | one whisper pass over the whole programme | `--asr-jobs N` |
 | `encode` | one process per clip — NVENC + `--jobs 3` automatically where available, libx264 + `--jobs 1` otherwise | `--jobs N` |
-| `voice` | kokoro inference, sentence by sentence, no concurrency yet | `$P2R_TTS_THREADS` |
+| `voice` | kokoro inference, sentence by sentence | `$P2R_VOICE_JOBS`, `$P2R_TTS_THREADS` |
 | `scenes` | waiting on Gemini | `--jobs N` (default 3) |
 | `check` | re-transcribing each section to verify sync | `$P2R_QC_JOBS` |
 | `stills` | matplotlib | usually skipped; `--jobs N` |
@@ -386,6 +386,16 @@ initialise the filter and encoder) — on a five-second clip that fixed part
 is about a tenth, and it is the only part a second job can recover there.
 Pass `--jobs` explicitly to override either default; time it before
 believing anything else.
+
+**`$P2R_VOICE_JOBS`** synthesises several sentences at once, each in its own
+process (not a thread — kokoro's tokenizer binds espeak-ng in-process via
+ctypes, with no documented thread-safety guarantee, so this sidesteps that
+question rather than gambling on it). Verified bit-identical output against
+serial synthesis at every job count tested. Default 1: each worker pays
+kokoro's own ~2s model-load cost independently, which eats into the win on
+a short section — measured +18% faster on a realistic 15-sentence section
+at `$P2R_VOICE_JOBS=3`, barely anything on a 5-sentence one. Worth setting
+on a longer section; time it on yours before assuming it helps.
 
 The rest is free and on by default: the layout audit is recorded when the
 stills are drawn rather than recomputed by `prompt2render check`, the frames are
