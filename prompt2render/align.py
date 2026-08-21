@@ -305,9 +305,18 @@ def _spread(sentences: list[textseg.Sentence], dur: float) -> list[dict]:
 # ------------------------------------------------------------ hardening ----
 
 def snap(sents: list[dict], gaps: list[tuple]) -> int:
-    """Pull sentence boundaries onto real silence edges. Returns count moved."""
-    if not gaps:
-        return 0
+    """Pull sentence boundaries onto real silence edges. Returns count moved.
+
+    The final monotonicity clamp below must run even when there is nothing
+    to snap to: a section with no detected silence (most likely a
+    `--backend own` recording with no natural pauses between sentences,
+    since kokoro's own path always inserts one) is exactly the case where an
+    interpolated or ASR-estimated boundary is most likely to overlap the
+    next sentence, and least likely to have clamp_to_prior() available to
+    fix it afterward (an own recording has no exact prior cues). An early
+    `if not gaps: return 0` here used to skip this clamp along with the
+    (harmless to skip) snapping loop, silently leaving that overlap in.
+    """
     moved = 0
     for s in sents:
         best = min(((abs(s["start"] - end), end) for _, end in gaps),
