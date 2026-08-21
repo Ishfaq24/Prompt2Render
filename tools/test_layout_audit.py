@@ -105,6 +105,12 @@ def bad_two_compares_overlapping(ax):
     k.compare(ax, 3, 4, 8.3, 5.1, op="<", winner="right")
 
 
+def bad_blocks_overlapping(ax):
+    k.title(ax, "two datapath blocks drawn on top of each other")
+    k.block(ax, "ALU", 8.0, 5.0, w=3.0, h=1.5)
+    k.block(ax, "Register File", 8.5, 5.2, w=3.0, h=1.5)
+
+
 # ----------------------------------------------------------------- good ----
 
 def good_compare_with_labels(ax):
@@ -112,6 +118,23 @@ def good_compare_with_labels(ax):
     k.compare(ax, 23, 45, 8.0, 5.0, op="<", winner="left",
              label_a="arr[i]", label_b="pivot")
     k.caption(ax, "23 is smaller, so it stays on the left side")
+
+
+def good_datapath_pipeline(ax):
+    k.title(ax, "register file feeds the ALU feeds memory")
+    rf = k.block(ax, "Register\nFile", 3.0, 5.0)
+    alu = k.block(ax, "ALU", 8.0, 5.0, active=True)
+    mem = k.block(ax, "Memory", 13.0, 5.0)
+    k.bus(ax, rf["right"], alu["left"], label="32-bit", active=True)
+    k.bus(ax, alu["right"], mem["left"], label="addr")
+    k.caption(ax, "the ALU computes the effective address")
+
+
+def good_datapath_bent_bus(ax):
+    k.title(ax, "a control signal routed with a right-angle bend")
+    cu = k.block(ax, "Control\nUnit", 8.0, 7.0, w=2.4, h=1.1)
+    alu = k.block(ax, "ALU", 4.0, 4.5, active=True)
+    k.bus(ax, cu["bottom"], alu["top"], label="op", active=True)
 
 
 def good_array_annotated(ax):

@@ -79,13 +79,24 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
            independent of highlight_row.
   k.curves(ax, y=4.6, w=9.0, h=4.2, show=("linear","log"))
         -> linear vs logarithmic on shared axes. Needs the whole w x h box.
+  k.block(ax, "ALU", x, y, w=2.6, h=1.4, active=False, size=24)
+        -> a labeled functional-unit box for datapath/block diagrams (cache
+           mapping, pipelining, hazards, addressing modes, DMA, fetch-decode-
+           execute). active=True outlines it ACCENT -- the unit doing work in
+           this step. Returns {"left","right","top","bottom","center"}: edge
+           anchor points to hand to k.bus() instead of guessing coordinates.
+  k.bus(ax, p1, p2, label=None, active=False)
+        -> a right-angle wire between two k.block() anchors (e.g.
+           rf["right"], alu["left"]). active=True makes it the signal path
+           actually carrying data this step, thicker and ACCENT-colored.
 
 LAYOUT RULES (these matter more than cleverness):
   * EVERY k. CALL OWNS AN EXCLUSIVE REGION OF THE FRAME. Two of them may
     never share space. This is checked against the real drawn geometry --
     the boxes, circles, panels and rules, not just the text -- so a diagram
-    laid over another is always caught and always sent back. Arrows, strikes
-    and braces are the exception: they are meant to touch what they point at.
+    laid over another is always caught and always sent back. Arrows, strikes,
+    braces and buses are the exception: they are meant to touch what they
+    connect.
   * The title occupies y=7.6..8.6. Never draw anything else above y=7.4.
   * k.addition centred at y needs the whole band y-2.2 .. y+2.9 to itself.
   * k.dial with r=2.6 needs a 7.4x7.4 box around (cx, cy). With

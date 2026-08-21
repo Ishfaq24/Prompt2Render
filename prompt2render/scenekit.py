@@ -523,6 +523,62 @@ def predicate_strip(ax, flags, y=5.0, x0=2.0, x1=14.0, boundary=True,
                 va="top", color=DIM, fontsize=24, fontfamily=SANS)
 
 
+# --------------------------------------------------- datapath / block diagram
+
+
+def block(ax, text, x, y, w=2.6, h=1.4, active=False, size=24):
+    """A labeled functional-unit box -- ALU, register file, cache, control
+    unit -- for datapath/block diagrams (pipelining, cache mapping,
+    addressing modes, DMA, fetch-decode-execute).
+
+    active: outlines and labels the block ACCENT instead of neutral -- the
+    unit actually doing work in this step of the trace.
+    Returns a dict of edge anchor points {"left","right","top","bottom",
+    "center"} (each an (x, y) tuple) so k.bus() can route to a precise edge
+    instead of a guessed coordinate.
+    """
+    ec = ACCENT if active else DIM
+    ax.add_patch(FancyBboxPatch(
+        (x - w / 2, y - h / 2), w, h,
+        boxstyle="round,pad=0.03,rounding_size=0.10",
+        facecolor=BG, edgecolor=ec, linewidth=3.2 if active else 2.0, zorder=2))
+    ax.text(x, y, text, ha="center", va="center", zorder=3,
+            color=ACCENT if active else FG, fontsize=size, fontfamily=SANS,
+            fontweight="bold" if active else "normal")
+    return {"left": (x - w / 2, y), "right": (x + w / 2, y),
+            "top": (x, y + h / 2), "bottom": (x, y - h / 2),
+            "center": (x, y)}
+
+
+def bus(ax, p1, p2, label=None, active=False, lw=2.5):
+    """An orthogonal wire between two block anchor points -- the right-angle
+    routing convention for a datapath diagram, distinct from k.arrow's
+    direct diagonal line.
+
+    p1, p2  : (x, y) tuples, typically two of k.block()'s returned anchors.
+    active  : thicker and ACCENT-colored -- the signal path actually
+              carrying data in this step, versus the diagram's other wires.
+    label   : an optional data-width/signal name drawn at the bend.
+    """
+    x1, y1 = p1
+    x2, y2 = p2
+    color = ACCENT if active else DIM
+    w = 3.5 if active else lw
+    if abs(x1 - x2) < 0.05 or abs(y1 - y2) < 0.05:
+        arrow(ax, x1, y1, x2, y2, color=color, lw=w)
+        lx, ly = (x1 + x2) / 2, max(y1, y2) + 0.28
+    else:
+        # One right-angle bend: horizontal off the source, then vertical
+        # into the target -- the standard bus-routing convention, and it
+        # keeps two parallel buses from reading as one diagonal crossing.
+        ax.plot([x1, x2], [y1, y1], color=color, lw=w, zorder=4)
+        arrow(ax, x2, y1, x2, y2, color=color, lw=w)
+        lx, ly = x2, max(y1, y2) + 0.28
+    if label:
+        ax.text(lx, ly, label, ha="center", va="bottom", color=DIM,
+                fontsize=17, fontfamily=MONO, zorder=4)
+
+
 def code(ax, lines, x=8.0, y=5.0, highlight=None, hcolor=WARN, size=27,
          width=None, title_text=None):
     """A monospace code block, optionally with lines called out.
@@ -647,7 +703,7 @@ def curves(ax, n_max=64, x=8.0, y=4.6, w=9.0, h=4.2, show=("linear", "log"),
 #: something else. An arrow that did not reach its target would be the bug.
 #: They are still held to the frame edge; they are simply never accused of
 #: colliding with what they point at.
-CONNECTOR_KINDS = {"arrow", "strike", "bit_brace"}
+CONNECTOR_KINDS = {"arrow", "strike", "bit_brace", "bus"}
 
 #: Every public drawing call, and the element kind it produces. Wrapping them
 #: from one table rather than decorating sixteen definitions keeps the drawing
@@ -661,6 +717,7 @@ _ELEMENT_KINDS = {
     "number_line": "number_line", "dial": "dial", "register": "register",
     "array": "array", "predicate_strip": "predicate_strip",
     "code": "code", "table": "table", "curves": "curves",
+    "block": "block", "bus": "bus",
 }
 
 #: Artist containers on an Axes that can hold something visible.
