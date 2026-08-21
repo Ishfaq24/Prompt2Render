@@ -305,9 +305,18 @@ def _spread(sentences: list[textseg.Sentence], dur: float) -> list[dict]:
 # ------------------------------------------------------------ hardening ----
 
 def snap(sents: list[dict], gaps: list[tuple]) -> int:
-    """Pull sentence boundaries onto real silence edges. Returns count moved."""
-    if not gaps:
-        return 0
+    """Pull sentence boundaries onto real silence edges. Returns count moved.
+
+    The final monotonicity clamp below must run even when there is nothing
+    to snap to: a section with no detected silence (most likely a
+    `--backend own` recording with no natural pauses between sentences,
+    since kokoro's own path always inserts one) is exactly the case where an
+    interpolated or ASR-estimated boundary is most likely to overlap the
+    next sentence, and least likely to have clamp_to_prior() available to
+    fix it afterward (an own recording has no exact prior cues). An early
+    `if not gaps: return 0` here used to skip this clamp along with the
+    (harmless to skip) snapping loop, silently leaving that overlap in.
+    """
     moved = 0
     for s in sents:
         best = min(((abs(s["start"] - end), end) for _, end in gaps),
@@ -351,6 +360,22 @@ def clamp_to_prior(sents: list[dict], prior: list[voice.Cue]) -> list[dict]:
 
 def path_for(proj: Path, stem: str) -> Path:
     return proj / "build" / "align" / f"{stem}.json"
+
+
+def _section_sig(narration: str, start: float, dur: float, master_stamp: int) -> str:
+    """Fingerprint of everything that can make a cached alignment wrong.
+
+    The "already aligned, skipping" check below used to trust the file's
+    mere existence, so editing a section's narration in script.md and
+    re-running `align` without --force silently kept the old timing against
+    the new text. narration text and the section's placement/duration catch
+    a script edit; master.wav's mtime (not a full content hash -- that would
+    mean re-reading the whole programme on every untouched run) catches a
+    re-synthesis. A false cache miss just costs a recompute; a false hit
+    ships wrong captions.
+    """
+    raw = f"{narration}|{start:.6f}|{dur:.6f}|{master_stamp}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def load(proj: Path, stem: str) -> dict:
@@ -534,16 +559,25 @@ def align(proj: Path, script: Script, only: str | None = None,
     else:
         tokens, gaps = [], []
 
+    master_stamp = master.stat().st_mtime_ns
     for sec in script.sections:
         if only and sec.stem != only:
             continue
         dst = path_for(proj, sec.stem)
-        if dst.exists() and not force:
-            cfg.say(f"section {sec.stem}: already aligned, skipping")
-            continue
-
         info = amap["sections"][sec.stem]
         start, dur = info["start"], info["dur"]
+        sig = _section_sig(sec.narration, start, dur, master_stamp)
+        if dst.exists() and not force:
+            try:
+                cached_sig = json.loads(dst.read_text(encoding="utf-8")).get("sig")
+            except (OSError, ValueError):
+                cached_sig = None
+            if cached_sig == sig:
+                cfg.say(f"section {sec.stem}: already aligned, skipping")
+                continue
+            cfg.say(f"section {sec.stem}: narration or audio changed since "
+                    "last align, redoing")
+
         sents = textseg.sentences(sec.narration)
         prior = voice.section_cues(proj, sec.stem)
         asr = _window(tokens, start, dur)
@@ -557,7 +591,7 @@ def align(proj: Path, script: Script, only: str | None = None,
 
         source = _source(prior, asr, conf)
         dst.write_text(json.dumps({
-            "version": VERSION, "source": source,
+            "version": VERSION, "sig": sig, "source": source,
             "confidence": round(conf, 3),
             "audio_dur": round(dur, 3),
             "model": model.name if model else "",

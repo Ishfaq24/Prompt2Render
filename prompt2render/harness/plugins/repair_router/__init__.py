@@ -13,9 +13,9 @@ real, working detection today — verifier_spatial), this will rarely actually t
 scenes.py generate()'s own internal accept/reject loop already resolves layout conflicts before a
 section is ever recorded as "accepted" — so by the time verifier_spatial runs, code_artifacts are
 already past that gate. This router is real and load-bearing for when verifier_semantic /
-verifier_lifecycle / evaluator_vlm grow real detection logic (all currently stubs, per Stage 3),
-and it's fully exercised by tests/harness/test_repair_router.py with dummy plugins — but it is not
-something a `hash-tables` harness run today will visibly exercise.
+verifier_lifecycle grow real detection logic (both currently stubs, per Stage 3), and it's fully
+exercised by tests/harness/test_repair_router.py with dummy plugins — but it is not something a
+`hash-tables` harness run today will visibly exercise.
 """
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ _DEFAULT_FINDING_TYPE = {
     "verifier_semantic": "semantic_mismatch",
     "verifier_lifecycle": "lifecycle_violation",
     "verifier_audio": "audio_visual_mismatch",
-    "evaluator_vlm": "vlm_post_render_defect",
 }
 
 

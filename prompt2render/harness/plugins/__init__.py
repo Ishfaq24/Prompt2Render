@@ -15,7 +15,6 @@ from .verifier_lifecycle import VerifierLifecyclePlugin
 from .verifier_audio import VerifierAudioPlugin
 from .renderer_stills import RendererStillsPlugin
 from .renderer_manim import RendererManimPlugin
-from .evaluator_vlm import EvaluatorVlmPlugin
 from .feedback_hitl import FeedbackHitlPlugin
 from .repair_router import RepairRouterPlugin
 
@@ -35,7 +34,6 @@ REGISTRY: dict[str, type] = {
     "verifier_spatial": VerifierSpatialPlugin,
     "verifier_lifecycle": VerifierLifecyclePlugin,
     "verifier_audio": VerifierAudioPlugin,
-    "evaluator_vlm": EvaluatorVlmPlugin,
     "feedback_hitl": FeedbackHitlPlugin,
     # repair_router is deliberately NOT part of the ordinary pipeline — it's an event
     # subscriber (see its own docstring), instantiated separately by

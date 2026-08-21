@@ -99,7 +99,43 @@ def bad_dial_offframe(ax):
     k.dial(ax, 4, 13.6, 4.5, 3.4)
 
 
+def bad_two_compares_overlapping(ax):
+    k.title(ax, "two comparisons drawn on top of each other")
+    k.compare(ax, 1, 2, 8.0, 5.0, op="<", winner="left")
+    k.compare(ax, 3, 4, 8.3, 5.1, op="<", winner="right")
+
+
+def bad_blocks_overlapping(ax):
+    k.title(ax, "two datapath blocks drawn on top of each other")
+    k.block(ax, "ALU", 8.0, 5.0, w=3.0, h=1.5)
+    k.block(ax, "Register File", 8.5, 5.2, w=3.0, h=1.5)
+
+
 # ----------------------------------------------------------------- good ----
+
+def good_compare_with_labels(ax):
+    k.title(ax, "comparing two labelled values")
+    k.compare(ax, 23, 45, 8.0, 5.0, op="<", winner="left",
+             label_a="arr[i]", label_b="pivot")
+    k.caption(ax, "23 is smaller, so it stays on the left side")
+
+
+def good_datapath_pipeline(ax):
+    k.title(ax, "register file feeds the ALU feeds memory")
+    rf = k.block(ax, "Register\nFile", 3.0, 5.0)
+    alu = k.block(ax, "ALU", 8.0, 5.0, active=True)
+    mem = k.block(ax, "Memory", 13.0, 5.0)
+    k.bus(ax, rf["right"], alu["left"], label="32-bit", active=True)
+    k.bus(ax, alu["right"], mem["left"], label="addr")
+    k.caption(ax, "the ALU computes the effective address")
+
+
+def good_datapath_bent_bus(ax):
+    k.title(ax, "a control signal routed with a right-angle bend")
+    cu = k.block(ax, "Control\nUnit", 8.0, 7.0, w=2.4, h=1.1)
+    alu = k.block(ax, "ALU", 4.0, 4.5, active=True)
+    k.bus(ax, cu["bottom"], alu["top"], label="op", active=True)
+
 
 def good_array_annotated(ax):
     k.title(ax, "an ordinary annotated array")
@@ -168,6 +204,14 @@ def good_table_and_caption(ax):
     k.table(ax, [("1,000", "10"), ("1,000,000", "20")],
             headers=("size", "steps"), y=5.0, col_w=[5.0, 3.0])
     k.caption(ax, "doubling the input costs one more step")
+
+
+def good_table_highlight_cells(ax):
+    k.title(ax, "a DP table with cells highlighted, packed tight")
+    k.table(ax, [("", "0", "1", "2"), ("0", "0", "1", "2"), ("1", "1", "0", "1")],
+            headers=("", "a", "b", "c"), y=4.5, col_w=[1.6, 1.6, 1.6, 1.6],
+            highlight_row=2, highlight_cells=[(2, 3), (1, 3), (2, 2)])
+    k.caption(ax, "cell (2,3) depends on (1,3) and (2,2)")
 
 
 def good_number_line_alone(ax):

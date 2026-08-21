@@ -212,6 +212,49 @@ def badge(ax, x, y, text, color=GOOD, size=30):
             fontfamily=SANS, fontweight="bold")
 
 
+def compare(ax, a, b, x, y, op="<", winner=None, size=40,
+           label_a=None, label_b=None):
+    """Two values side by side with a comparator glyph between them --
+    the generic version of what k.array's own lo/hi/mid coloring does,
+    for a comparison that isn't happening inside an array.
+
+    winner : None | "left" | "right" -- outlines that side GOOD and stamps
+             a checkmark on it (color is never the only signal). The other
+             side stays neutral, never BAD: losing a comparison is an
+             outcome, not an error.
+    op     : the comparator glyph shown between the two boxes.
+    Returns (left_x, right_x), the box centres, so callers can hang their
+    own annotations off either side.
+    """
+    def _w(v):
+        return max(1.3, 0.34 * len(str(v)) + 0.75)
+    wa, wb = _w(a), _w(b)
+    glyph_gap = 1.2
+    lx = x - glyph_gap / 2 - wa / 2
+    rx = x + glyph_gap / 2 + wb / 2
+    h = 1.3
+
+    for side, cx, w, v, lbl in (("left", lx, wa, a, label_a),
+                                ("right", rx, wb, b, label_b)):
+        win = winner == side
+        ec = GOOD if win else DIM
+        ax.add_patch(FancyBboxPatch(
+            (cx - w / 2, y - h / 2), w, h,
+            boxstyle="round,pad=0.03,rounding_size=0.12",
+            facecolor=ZERO, edgecolor=ec, linewidth=3.5 if win else 2.0, zorder=2))
+        ax.text(cx, y, str(v), ha="center", va="center", zorder=3,
+                color=GOOD if win else FG, fontsize=size, fontfamily=MONO,
+                fontweight="bold" if win else "normal")
+        if win:
+            badge(ax, cx, y + h / 2 + 0.42, "✓", GOOD, size=int(size * 0.55))
+        if lbl:
+            ax.text(cx, y - h / 2 - 0.30, lbl, ha="center", va="top",
+                    color=DIM, fontsize=17, fontfamily=MONO)
+
+    label(ax, x, y, op, size=int(size * 0.7), color=ACCENT, weight="bold")
+    return lx, rx
+
+
 # ------------------------------------------------- column addition block
 
 
@@ -406,7 +449,10 @@ def array(ax, values, y=5.0, x0=1.0, x1=15.0, lo=None, hi=None, mid=None,
     for name, i, col in (("lo", lo, ONE), ("hi", hi, ACCENT)):
         if i is None:
             continue
-        yy = ptr_y - (0.62 if (lo == hi and name == "hi") else 0)
+        # 0.62 measured too close: the audit still caught the "hi" label
+        # overlapping "lo" by ~12px on the rendered figure. 0.85 clears it
+        # with margin (0.70 was the bare minimum in testing).
+        yy = ptr_y - (0.85 if (lo == hi and name == "hi") else 0)
         ax.annotate(name, xy=(px(i), yy + 0.30), xytext=(px(i), yy - 0.22),
                     ha="center", va="top", color=col, fontsize=23,
                     fontfamily=MONO, fontweight="bold", zorder=6,
@@ -477,6 +523,62 @@ def predicate_strip(ax, flags, y=5.0, x0=2.0, x1=14.0, boundary=True,
                 va="top", color=DIM, fontsize=24, fontfamily=SANS)
 
 
+# --------------------------------------------------- datapath / block diagram
+
+
+def block(ax, text, x, y, w=2.6, h=1.4, active=False, size=24):
+    """A labeled functional-unit box -- ALU, register file, cache, control
+    unit -- for datapath/block diagrams (pipelining, cache mapping,
+    addressing modes, DMA, fetch-decode-execute).
+
+    active: outlines and labels the block ACCENT instead of neutral -- the
+    unit actually doing work in this step of the trace.
+    Returns a dict of edge anchor points {"left","right","top","bottom",
+    "center"} (each an (x, y) tuple) so k.bus() can route to a precise edge
+    instead of a guessed coordinate.
+    """
+    ec = ACCENT if active else DIM
+    ax.add_patch(FancyBboxPatch(
+        (x - w / 2, y - h / 2), w, h,
+        boxstyle="round,pad=0.03,rounding_size=0.10",
+        facecolor=BG, edgecolor=ec, linewidth=3.2 if active else 2.0, zorder=2))
+    ax.text(x, y, text, ha="center", va="center", zorder=3,
+            color=ACCENT if active else FG, fontsize=size, fontfamily=SANS,
+            fontweight="bold" if active else "normal")
+    return {"left": (x - w / 2, y), "right": (x + w / 2, y),
+            "top": (x, y + h / 2), "bottom": (x, y - h / 2),
+            "center": (x, y)}
+
+
+def bus(ax, p1, p2, label=None, active=False, lw=2.5):
+    """An orthogonal wire between two block anchor points -- the right-angle
+    routing convention for a datapath diagram, distinct from k.arrow's
+    direct diagonal line.
+
+    p1, p2  : (x, y) tuples, typically two of k.block()'s returned anchors.
+    active  : thicker and ACCENT-colored -- the signal path actually
+              carrying data in this step, versus the diagram's other wires.
+    label   : an optional data-width/signal name drawn at the bend.
+    """
+    x1, y1 = p1
+    x2, y2 = p2
+    color = ACCENT if active else DIM
+    w = 3.5 if active else lw
+    if abs(x1 - x2) < 0.05 or abs(y1 - y2) < 0.05:
+        arrow(ax, x1, y1, x2, y2, color=color, lw=w)
+        lx, ly = (x1 + x2) / 2, max(y1, y2) + 0.28
+    else:
+        # One right-angle bend: horizontal off the source, then vertical
+        # into the target -- the standard bus-routing convention, and it
+        # keeps two parallel buses from reading as one diagonal crossing.
+        ax.plot([x1, x2], [y1, y1], color=color, lw=w, zorder=4)
+        arrow(ax, x2, y1, x2, y2, color=color, lw=w)
+        lx, ly = x2, max(y1, y2) + 0.28
+    if label:
+        ax.text(lx, ly, label, ha="center", va="bottom", color=DIM,
+                fontsize=17, fontfamily=MONO, zorder=4)
+
+
 def code(ax, lines, x=8.0, y=5.0, highlight=None, hcolor=WARN, size=27,
          width=None, title_text=None):
     """A monospace code block, optionally with lines called out.
@@ -520,14 +622,20 @@ def code(ax, lines, x=8.0, y=5.0, highlight=None, hcolor=WARN, size=27,
 
 
 def table(ax, rows, headers=None, x=8.0, y=5.0, col_w=None, size=27,
-          highlight_row=None):
-    """A small comparison table. rows is a list of tuples of strings."""
+          highlight_row=None, highlight_cells=None):
+    """A small comparison table. rows is a list of tuples of strings.
+
+    highlight_cells: iterable of (row, col) pairs highlighted individually,
+    for DP-style grids where the cell being filled (and/or the specific
+    cells it depends on) matters, not a whole row.
+    """
     ncol = len(rows[0])
     col_w = col_w or [3.4] * ncol
     total = sum(col_w)
     rh = 0.78
     x0 = x - total / 2
     ytop = y + (len(rows) + (1 if headers else 0)) * rh / 2
+    highlight_cells = set(highlight_cells or ())
 
     if headers:
         for c, htxt in enumerate(headers):
@@ -544,8 +652,14 @@ def table(ax, rows, headers=None, x=8.0, y=5.0, col_w=None, size=27,
                                    facecolor=WARN, alpha=0.14, zorder=1))
         for c, cell in enumerate(row):
             cx = x0 + sum(col_w[:c]) + col_w[c] / 2
+            cell_hl = (r, c) in highlight_cells
+            if cell_hl:
+                ax.add_patch(Rectangle(
+                    (cx - col_w[c] / 2 + 0.08, yy - rh * 0.42),
+                    col_w[c] - 0.16, rh * 0.84,
+                    facecolor=WARN, alpha=0.22, zorder=2))
             ax.text(cx, yy, str(cell), ha="center", va="center", zorder=3,
-                    color=WARN if r == highlight_row else FG,
+                    color=WARN if (r == highlight_row or cell_hl) else FG,
                     fontsize=size, fontfamily=MONO)
 
 
@@ -589,7 +703,7 @@ def curves(ax, n_max=64, x=8.0, y=4.6, w=9.0, h=4.2, show=("linear", "log"),
 #: something else. An arrow that did not reach its target would be the bug.
 #: They are still held to the frame edge; they are simply never accused of
 #: colliding with what they point at.
-CONNECTOR_KINDS = {"arrow", "strike", "bit_brace"}
+CONNECTOR_KINDS = {"arrow", "strike", "bit_brace", "bus"}
 
 #: Every public drawing call, and the element kind it produces. Wrapping them
 #: from one table rather than decorating sixteen definitions keeps the drawing
@@ -599,9 +713,11 @@ _ELEMENT_KINDS = {
     "title": "title", "caption": "caption", "label": "label",
     "badge": "badge", "bits": "bits", "bit_brace": "bit_brace",
     "arrow": "arrow", "strike": "strike", "addition": "addition",
+    "compare": "compare",
     "number_line": "number_line", "dial": "dial", "register": "register",
     "array": "array", "predicate_strip": "predicate_strip",
     "code": "code", "table": "table", "curves": "curves",
+    "block": "block", "bus": "bus",
 }
 
 #: Artist containers on an Axes that can hold something visible.

@@ -24,10 +24,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from . import align, cfg, stills
+from . import align, cfg, llm, stills
 from .project import Script
-
-ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 #: Sections are storyboarded concurrently (see default_jobs), but the *render*
 #: that judges each answer is matplotlib, and matplotlib shares one FreeType
@@ -51,6 +49,11 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
   k.arrow(ax, x1, y1, x2, y2, color=k.ACCENT, lw=3.0)
   k.strike(ax, x1, x2, y, color=k.BAD)
   k.badge(ax, x, y, "OK", k.GOOD, 60)
+  k.compare(ax, a, b, x, y, op="<", winner=None, size=40, label_a=None, label_b=None)
+        -> two boxed values side by side with a comparator glyph between them.
+           winner: None | "left" | "right" -- outlines that side and stamps a
+           checkmark on it; the other side stays neutral, never k.BAD (losing
+           a comparison is an outcome, not an error). Returns (left_x, right_x).
   k.addition(ax, top, bottom, result, x, y, carry=None, ok=None, size=40)
         -> a column sum; top/bottom/result are bit strings; occupies y-2.2 .. y+2.9
   k.number_line(ax, lo, hi, y, x0=1.4, x1=14.6, ticks=[...], marks={val:(text,colour)})
@@ -69,16 +72,31 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
         -> a monospace block; it shrinks its own font to fit. Keep lines
            under 52 characters. Height is about 0.65 per line.
   k.table(ax, [("1,000","10")], headers=("size","steps"), y=5.0,
-          col_w=[5.0,3.0], highlight_row=1)   -> about 0.78 per row plus header
+          col_w=[5.0,3.0], highlight_row=1, highlight_cells=[(0,1)])
+        -> about 0.78 per row plus header. highlight_cells is a list of
+           (row, col) pairs for highlighting individual cells (e.g. a DP
+           table's current cell and the specific cells it depends on),
+           independent of highlight_row.
   k.curves(ax, y=4.6, w=9.0, h=4.2, show=("linear","log"))
         -> linear vs logarithmic on shared axes. Needs the whole w x h box.
+  k.block(ax, "ALU", x, y, w=2.6, h=1.4, active=False, size=24)
+        -> a labeled functional-unit box for datapath/block diagrams (cache
+           mapping, pipelining, hazards, addressing modes, DMA, fetch-decode-
+           execute). active=True outlines it ACCENT -- the unit doing work in
+           this step. Returns {"left","right","top","bottom","center"}: edge
+           anchor points to hand to k.bus() instead of guessing coordinates.
+  k.bus(ax, p1, p2, label=None, active=False)
+        -> a right-angle wire between two k.block() anchors (e.g.
+           rf["right"], alu["left"]). active=True makes it the signal path
+           actually carrying data this step, thicker and ACCENT-colored.
 
 LAYOUT RULES (these matter more than cleverness):
   * EVERY k. CALL OWNS AN EXCLUSIVE REGION OF THE FRAME. Two of them may
     never share space. This is checked against the real drawn geometry --
     the boxes, circles, panels and rules, not just the text -- so a diagram
-    laid over another is always caught and always sent back. Arrows, strikes
-    and braces are the exception: they are meant to touch what they point at.
+    laid over another is always caught and always sent back. Arrows, strikes,
+    braces and buses are the exception: they are meant to touch what they
+    connect.
   * The title occupies y=7.6..8.6. Never draw anything else above y=7.4.
   * k.addition centred at y needs the whole band y-2.2 .. y+2.9 to itself.
   * k.dial with r=2.6 needs a 7.4x7.4 box around (cx, cy). With
@@ -136,35 +154,8 @@ only once the step has reached it:
 '''
 
 
-def _keys() -> list[str]:
-    """GEMINI_API_KEY, plus any GEMINI_API_KEY_BACKUP* for failover.
-
-    Gemini's free tier caps requests *per day per model*, and the 429 it
-    returns names a retry-after of tens of seconds — misleading for a quota
-    that will not clear until tomorrow. A second key on a separate quota is
-    the only thing that actually unblocks a run in progress.
-    """
-    keys = [os.environ.get("GEMINI_API_KEY", "")]
-    for name, val in sorted(os.environ.items()):
-        if name.startswith("GEMINI_API_KEY_BACKUP") and val:
-            keys.append(val)
-    keys = [k for k in keys if k]
-    if not keys:
-        sys.exit("[prompt2render] GEMINI_API_KEY not set (it lives in .env)")
-    return keys
-
-
-def _client(key: str):
-    try:
-        from openai import OpenAI
-    except ImportError:
-        sys.exit("[prompt2render] openai not installed — pip install -r requirements.txt")
-    # The SDK rather than curl: the key stops appearing in process listings,
-    # and retries and timeouts come for free.
-    return OpenAI(api_key=key, base_url=ENDPOINT, timeout=300.0, max_retries=2)
-
-
-def build_prompt(script: Script, sec, sents: list[dict]) -> str:
+def build_prompt(script: Script, sec, sents: list[dict],
+                 include_reveal: bool = True) -> str:
     # Give the model the clock, not just the words. Without timings it cannot
     # tell that two adjacent cues are 30 seconds apart, and it leaves frames
     # sitting on screen long past the point they stop being interesting.
@@ -188,7 +179,7 @@ def build_prompt(script: Script, sec, sents: list[dict]) -> str:
 {numbered}
 
     {API_DOC}
-    {REVEAL_DOC}
+    {REVEAL_DOC if include_reveal else ""}
 
     Write a module with exactly this shape and nothing else:
 
@@ -242,10 +233,10 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
     outdir.mkdir(parents=True, exist_ok=True)
     dst = outdir / f"scene_{sec.stem}.py"
 
-    keys = _keys()
-    key_i = 0
-    client = _client(keys[key_i])
-    model = os.environ.get("P2R_SCENE_MODEL", "gemini-3.6-flash")
+    keys = llm.keys()
+    models = llm.model_chain("P2R_SCENE_MODEL", "gemini-3.6-flash")
+    key_i = model_i = 0
+    client = llm.client(keys[key_i])
     prompt = build_prompt(script, sec, sents)
     # extra_feedback: repair_router's harness-level cycle (prompt2render/harness/plugins/repair_router)
     # seeds diagnostics from *its own* prior repair attempts here — separate from this loop's own
@@ -254,6 +245,7 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
 
     attempt = 1
     while attempt <= retries + 1:
+        model = models[model_i]
         cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}"
                 + (f", key {key_i + 1}/{len(keys)}" if len(keys) > 1 else "") + ")")
         try:
@@ -272,17 +264,27 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
             # not deserve one of the content-retry attempts above, and
             # retrying the same key just burns the SDK's own retry budget on
             # a wall that will not move. Rotate to the next key if there is
-            # one; only count this against `attempt` once every key is spent.
+            # one; once every key is spent on this model, rotate to the next
+            # model instead of giving up — Gemini's free tier meters quota
+            # per (key, model) pair, so a different model resets it. Only
+            # count this against `attempt` once every (key, model) combination
+            # is spent.
             if type(e).__name__ != "RateLimitError":
                 raise
             if key_i + 1 < len(keys):
                 key_i += 1
                 cfg.warn(f"section {sec.stem}: key {key_i}/{len(keys)} "
-                         f"rate-limited, switching to the next key")
-                client = _client(keys[key_i])
+                         f"rate-limited on {model}, switching to the next key")
+                client = llm.client(keys[key_i])
+                continue
+            if model_i + 1 < len(models):
+                key_i, model_i = 0, model_i + 1
+                cfg.warn(f"section {sec.stem}: all {len(keys)} key(s) "
+                         f"rate-limited on {model}, switching to {models[model_i]}")
+                client = llm.client(keys[key_i])
                 continue
             sys.exit(f"[prompt2render] section {sec.stem}: all {len(keys)} Gemini "
-                     f"key(s) are rate-limited — {e}")
+                     f"key(s) rate-limited on every model ({', '.join(models)}) — {e}")
         choice = resp.choices[0] if resp.choices else None
         code = (choice.message.content if choice else "") or ""
         if not code.strip():
@@ -310,6 +312,13 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
             feedback = extra_feedback + (
                         "\n\nYour previous answer was rejected. Fix it and "
                         "return the whole corrected module.\n\nPROBLEM:\n" + err)
+            # The rejected code already shows whether this section wants
+            # progressive reveal (the {"steps": N} opts dict) — REVEAL_DOC's
+            # ~280 tokens of explanation are dead weight on every retry that
+            # doesn't use it, resent unchanged on top of the same API_DOC
+            # every attempt already pays for.
+            if "steps" not in code:
+                prompt = build_prompt(script, sec, sents, include_reveal=False)
             attempt += 1
             continue
 
@@ -345,8 +354,13 @@ def generate_all(proj: Path, script: Script, index: int | None = None,
     for sec in script.sections:
         if index is not None and sec.index != index:
             continue
-        dst = proj / "build" / "scenes" / f"scene_{sec.stem}.py"
-        if dst.exists():
+        dst = stills.scene_path(proj, sec.stem)
+        # dst.exists() alone isn't "done": generate() writes the .py file
+        # before the audit runs, so a section that exhausted its retries
+        # (raising SystemExit, which used to abort the whole run) leaves a
+        # rejected module on disk. is_current() requires the manifest and
+        # audit.json render() only writes once the audit actually passed.
+        if stills.is_current(dst, stills.stills_dir(proj, sec.stem)):
             cfg.say(f"section {sec.stem}: scene already written, skipping "
                     "(delete it to regenerate)")
             continue

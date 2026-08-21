@@ -72,6 +72,12 @@ def build_prompt(script: Script, todo: list) -> str:
       * The last section should end on the question the next video answers.
       * Write ONLY the narration prose. No stage directions, no headers
         restating the ANIM brief, no markdown formatting, no bullet points.
+      * When an ANIM line names a concrete running example (specific
+        numbers or values), actually narrate what happens to those exact
+        values at each step -- state the comparison, the swap, the move,
+        whatever the step is -- not just the general rule it demonstrates.
+        Reuse the same values in every section that continues the same
+        trace; never switch to a different example partway through.
 
     Output format -- exactly this, one block per section, nothing else
     (bare "## <number>", no title, no dash):

@@ -25,7 +25,7 @@ import os
 import sys
 import tempfile
 import wave
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -195,17 +195,31 @@ def pause_after(sent: textseg.Sentence, is_last: bool, pauses: dict) -> float:
     return pauses["sentence"] / 1000
 
 
+def _synth_one(args: tuple) -> tuple[np.ndarray, int]:
+    """Pool worker. Top-level and tuple-argued so it pickles on Windows.
+
+    A dedicated process, not a thread: kokoro-onnx's tokenizer binds
+    espeak-ng in-process via ctypes (phonemizer's EspeakWrapper), and that
+    binding carries no documented thread-safety guarantee -- concurrent
+    calls sharing one loaded library risk silently wrong phonemes, not just
+    contention, the same class of hazard stills.py's own docstring notes
+    for FreeType. A separate process gets its own espeak-ng load, sidestepping
+    the question rather than gambling on it. Each worker pays kokoro()'s
+    model-load cost once, amortised across every sentence it synthesises --
+    the same tradeoff align.py's --asr-jobs already makes.
+    """
+    text, voice_name, speed = args
+    pcm, sr = kokoro().create(text, voice=voice_name, speed=speed, lang="en-us")
+    return np.asarray(pcm, dtype=np.float32), sr
+
+
 def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
-               pauses: dict) -> tuple[np.ndarray, list[Cue]]:
+               pauses: dict, jobs: int | None = None) -> tuple[np.ndarray, list[Cue]]:
     """Render sentences to one f32 track at KOKORO_SR, with measured cues."""
     k = kokoro()
     if voice not in k.get_voices():
         sys.exit(f"[prompt2render] kokoro voice '{voice}' not available — "
                  "run: python prompt2render.py voices")
-
-    chunks: list[np.ndarray] = []
-    cues: list[Cue] = []
-    cursor = 0                                   # in samples
 
     # Break anything the synthesiser could not take whole *before* rendering,
     # so a long sentence becomes two clauses with a short pause rather than a
@@ -214,13 +228,36 @@ def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
     for s in sentences:
         prepared.extend(textseg.fit_to_synthesiser(s, phoneme_len, PHONEME_LIMIT))
 
+    # The ONNX inference is what actually costs time; everything below stays
+    # strictly sequential regardless (cursor position depends on every prior
+    # sentence's length, so cue bookkeeping can't parallelise anyway) -- this
+    # only precomputes each non-blank sentence's audio, in order, before that
+    # loop runs. voice.py used to be the one pipeline stage with no
+    # concurrency knob at all; every other stage (align, encode, scenes,
+    # check) already has one.
+    jobs = jobs or cfg.env_int("P2R_VOICE_JOBS", 1)
+    idx_text = [(i, s.text) for i, s in enumerate(prepared) if s.text.strip()]
+    if jobs > 1 and len(idx_text) > 1:
+        n = max(1, min(jobs, len(idx_text)))
+        cfg.say(f"synthesising {len(idx_text)} sentences, {n} at a time")
+        payload = [(t, voice, speed) for _, t in idx_text]
+        with ProcessPoolExecutor(max_workers=n) as pool:
+            computed = list(pool.map(_synth_one, payload))
+    else:
+        computed = [_synth_one((t, voice, speed)) for _, t in idx_text]
+    pcm_by_index = dict(zip((i for i, _ in idx_text), computed))
+
+    chunks: list[np.ndarray] = []
+    cues: list[Cue] = []
+    cursor = 0                                   # in samples
+
     for n, sent in enumerate(prepared):
         if not sent.text.strip():
             continue
-        pcm, sr = k.create(sent.text, voice=voice, speed=speed, lang="en-us")
+        pcm, sr = pcm_by_index[n]
         if sr != KOKORO_SR:                      # future-proof, not expected
             sys.exit(f"[prompt2render] kokoro returned {sr} Hz, expected {KOKORO_SR}")
-        pcm = _fade(np.asarray(pcm, dtype=np.float32), sr)
+        pcm = _fade(pcm, sr)
 
         start = cursor / sr
         chunks.append(pcm)

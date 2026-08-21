@@ -53,10 +53,6 @@ renderer_manim:
   enabled: false                 # opt-in escape hatch, disabled by default (Stage 0 §5)
   gate_override: null
 
-evaluator_vlm:
-  enabled: true                  # stub — no live vision-model call exists anywhere in prompt2render
-  gate_override: false
-
 feedback_hitl:
   enabled: true                   # manual/async — never blocks an automated run
   gate_override: false

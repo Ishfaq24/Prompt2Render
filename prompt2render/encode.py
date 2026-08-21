@@ -73,6 +73,33 @@ def _cmd(row: dict, png: Path, prev: Path | None, out: Path,
         "-frames:v", str(n), *vopts, str(out)]
 
 
+def _needs_encode(proj: Path, row: dict) -> bool:
+    """Missing, truncated, or older than the still(s) it was rendered from.
+
+    A clip used to be considered done purely because a same-named file
+    existed above a size floor -- so re-rendering a still after fixing it
+    (`prompt2render stills` / `scenes --section N`) left the *old* clip in place
+    forever, silently shipping the old frame in `final.mp4`, with no --force
+    flag on this stage to force past it.
+    """
+    clip, png, prev = _clip_paths(proj, row)
+    try:
+        st = clip.stat()
+    except OSError:
+        return True
+    if st.st_size <= 2048:
+        return True
+    for src in (png, prev):
+        if src is None:
+            continue
+        try:
+            if src.stat().st_mtime_ns > st.st_mtime_ns:
+                return True
+        except OSError:
+            pass          # a missing source is _encode_one's problem, not staleness
+    return False
+
+
 def _encode_one(row: dict, proj: Path, vopts: list[str]) -> None:
     clip, png, prev = _clip_paths(proj, row)
     if not png.exists():
@@ -108,8 +135,7 @@ def encode(proj: Path, limit: int | None = None, preview: bool = False,
     # themselves are independent and safe to run concurrently.
     todo = []
     for row in rows:
-        clip = proj / row["clip"]
-        if clip.exists() and clip.stat().st_size > 2048:
+        if not _needs_encode(proj, row):
             continue
         if limit is not None and len(todo) >= limit:
             break
@@ -131,12 +157,6 @@ def encode(proj: Path, limit: int | None = None, preview: bool = False,
                     f.cancel()
                 raise
 
-    def missing(r: dict) -> bool:
-        try:
-            return (proj / r["clip"]).stat().st_size <= 2048
-        except OSError:
-            return True
-
-    remaining = sum(1 for r in rows if missing(r))
+    remaining = sum(1 for r in rows if _needs_encode(proj, r))
     cfg.say(f"encoded {done} this pass, {remaining} remaining")
     return remaining

@@ -272,7 +272,14 @@ the channel.
 
 ---
 
-## Web dashboard
+## Web dashboard (not built yet)
+
+**`prompt2render serve` currently exits with `ModuleNotFoundError: No module named
+'prompt2render.web'` — the `prompt2render/web/` package described below does not exist
+in this repository yet.** Everything past this line is the intended design,
+kept because it's a complete spec for whoever builds it, not a description
+of working software. Use the CLI stages directly (`python prompt2render.py
+<stage> <slug>`) until this lands.
 
 ```bash
 python prompt2render.py serve             # http://127.0.0.1:8787, localhost-only by default
@@ -346,8 +353,8 @@ in descending order:
 | Stage | What dominates | Knob |
 |---|---|---|
 | `align` | one whisper pass over the whole programme | `--asr-jobs N` |
-| `encode` | libx264, one process per clip | `--jobs N`, or NVENC |
-| `voice` | kokoro inference, sentence by sentence | `$P2R_TTS_THREADS` |
+| `encode` | one process per clip — NVENC + `--jobs 3` automatically where available, libx264 + `--jobs 1` otherwise | `--jobs N` |
+| `voice` | kokoro inference, sentence by sentence | `$P2R_VOICE_JOBS`, `$P2R_TTS_THREADS` |
 | `scenes` | waiting on Gemini | `--jobs N` (default 3) |
 | `check` | re-transcribing each section to verify sync | `$P2R_QC_JOBS` |
 | `stills` | matplotlib | usually skipped; `--jobs N` |
@@ -362,15 +369,33 @@ whisper's context across a join, which can move a word timing by a few
 milliseconds, and every cut in the video is timed off these numbers. Default
 1. On a machine with spare cores, `--asr-jobs 4` is close to four times
 faster and the drift gate in `prompt2render check` will tell you honestly if it cost
-you anything.
+you anything. Separately, `align` no longer feeds ffmpeg's whisper filter its
+own `vad_model=` option — measured at roughly a 12x wall-time cost for no
+change in reconciliation confidence; see `docs/OPTIMIZATION.md` for the
+experiment log.
 
 **`encode --jobs`** cannot change a byte of any clip — each one is an
-independent ffmpeg process — so this is purely a question of whether your
-machine has cores x264 is not already using. Measured on a 1080p clip: ~27 ms
-per frame of encoding, against ~0.46 s of fixed cost per call (spawn, decode
-the PNG, initialise the filter and encoder). On a five-second clip that fixed
-part is about a tenth, and it is the only part a second job can recover.
-Default 1; time it before believing anything else.
+independent ffmpeg process. `cfg.default_encode_jobs()` already picks 3 on a
+machine with a working NVENC encoder (a fixed-function chip; a couple of
+clips in flight lets CPU-side decode/filter for clip N+1 overlap the GPU
+actually encoding clip N) and 1 on CPU-only libx264, where more jobs just
+means more processes contending for the cores x264 already threads
+internally. Measured on a 1080p clip on the CPU path: ~27 ms per frame of
+encoding, against ~0.46 s of fixed cost per call (spawn, decode the PNG,
+initialise the filter and encoder) — on a five-second clip that fixed part
+is about a tenth, and it is the only part a second job can recover there.
+Pass `--jobs` explicitly to override either default; time it before
+believing anything else.
+
+**`$P2R_VOICE_JOBS`** synthesises several sentences at once, each in its own
+process (not a thread — kokoro's tokenizer binds espeak-ng in-process via
+ctypes, with no documented thread-safety guarantee, so this sidesteps that
+question rather than gambling on it). Verified bit-identical output against
+serial synthesis at every job count tested. Default 1: each worker pays
+kokoro's own ~2s model-load cost independently, which eats into the win on
+a short section — measured +18% faster on a realistic 15-sentence section
+at `$P2R_VOICE_JOBS=3`, barely anything on a 5-sentence one. Worth setting
+on a longer section; time it on yours before assuming it helps.
 
 The rest is free and on by default: the layout audit is recorded when the
 stills are drawn rather than recomputed by `prompt2render check`, the frames are
