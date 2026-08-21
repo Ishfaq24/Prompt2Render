@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fdx setup — detects your OS and installs everything the pipeline needs.
+# prompt2render setup — detects your OS and installs everything the pipeline needs.
 # Safe to re-run.
 set -euo pipefail
 
@@ -47,39 +47,39 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel
 
-say "installing fdx python deps"
+say "installing prompt2render python deps"
 pip install -r requirements.txt
 
-say "installing Manim Community (only used by the 'fdx manim' hand-authored escape hatch)"
+say "installing Manim Community (only used by the 'prompt2render manim' hand-authored escape hatch)"
 pip install "manim==0.19.0"
 
 # ------------------------------------------------------------------- .env
 if [ ! -f .env ]; then
   cp .env.example .env
-  say "created .env — put your GEMINI_API_KEY in it (used by 'fdx scenes')"
+  say "created .env — put your GEMINI_API_KEY in it (used by 'prompt2render scenes')"
 fi
 
 # ---------------------------------------------------------- local models
 say "fetching the local ASR/VAD/voice models (one time, a few hundred MB)"
-python fdx.py models --asr base.en --vad --kokoro
+python prompt2render.py models --asr base.en --vad --kokoro
 
 # ----------------------------------------------------------------- verify
 say "verifying"
-python fdx.py doctor
+python prompt2render.py doctor
 
 cat <<'EOF'
 
 Setup done.
 
   source .venv/bin/activate
-  python fdx.py new my-first-video
+  python prompt2render.py new my-first-video
   # write projects/my-first-video/script.md, then:
-  python fdx.py build my-first-video
+  python prompt2render.py build my-first-video
 
 `build` runs voice -> align -> scenes -> stills -> plan -> encode -> finish ->
-check. Put your Gemini key in .env first — 'fdx scenes' needs it.
+check. Put your Gemini key in .env first — 'prompt2render scenes' needs it.
 
 Or skip the terminal for the long stages:
 
-  python fdx.py serve
+  python prompt2render.py serve
 EOF

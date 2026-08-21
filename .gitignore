@@ -2,11 +2,6 @@
 .env
 *.key
 *.env
-# Vendored external project (retired path — see docs/RETIRED.md). Its own
-# clone is a broken/incomplete nested .git with no commits; don't fight that
-# state, just keep it out of our history entirely.
-vendor/Code2Video/
-
 # Generated media
 projects/*/sections/
 projects/*/audio/

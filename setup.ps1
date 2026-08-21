@@ -1,4 +1,4 @@
-# fdx setup for native Windows (no WSL).
+# prompt2render setup for native Windows (no WSL).
 # Run in PowerShell:
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 #   .\setup.ps1
@@ -38,38 +38,38 @@ Say "creating virtualenv .venv"
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip wheel --quiet
 
-Say "installing fdx deps + Manim (Manim is only used by the 'fdx manim' hand-authored escape hatch)"
+Say "installing prompt2render deps + Manim (Manim is only used by the 'prompt2render manim' hand-authored escape hatch)"
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
 & .\.venv\Scripts\python.exe -m pip install "manim==0.19.0" --quiet
 
 # ------------------------------------------------------------------- .env
 if (-not (Test-Path .env)) {
   Copy-Item .env.example .env
-  Say "created .env — put your GEMINI_API_KEY in it (used by 'fdx scenes')"
+  Say "created .env — put your GEMINI_API_KEY in it (used by 'prompt2render scenes')"
 }
 
 # ---------------------------------------------------------- local models
 Say "fetching the local ASR/VAD/voice models (one time, a few hundred MB)"
-& .\.venv\Scripts\python.exe fdx.py models --asr base.en --vad --kokoro
+& .\.venv\Scripts\python.exe prompt2render.py models --asr base.en --vad --kokoro
 
 # ----------------------------------------------------------------- verify
 Say "verifying"
-& .\.venv\Scripts\python.exe fdx.py doctor
+& .\.venv\Scripts\python.exe prompt2render.py doctor
 
 Write-Host @"
 
 Setup done. Every new PowerShell session, activate first:
 
   .\.venv\Scripts\Activate.ps1
-  python fdx.py new my-first-video
+  python prompt2render.py new my-first-video
   # write projects/my-first-video/script.md, then:
-  python fdx.py build my-first-video
+  python prompt2render.py build my-first-video
 
 `build` runs voice -> align -> scenes -> stills -> plan -> encode -> finish ->
-check. Put your Gemini key in .env first -- 'fdx scenes' needs it.
+check. Put your Gemini key in .env first -- 'prompt2render scenes' needs it.
 
 Or skip the terminal for the long stages:
 
-  python fdx.py serve
+  python prompt2render.py serve
 
 "@ -ForegroundColor Green

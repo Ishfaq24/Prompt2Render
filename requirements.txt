@@ -1,5 +1,5 @@
-# fdx-studio — what the code actually imports.
-# Verify after installing with:  python fdx.py doctor
+# Prompt2Render — what the code actually imports.
+# Verify after installing with:  python prompt2render.py doctor
 
 # --- core ---
 numpy>=2.0
@@ -13,7 +13,7 @@ onnxruntime>=1.20        # CPU EP is the right choice here — see docs/VOICE.md
 # --- scene generation ---
 openai>=1.90             # Gemini over its OpenAI-compatible endpoint
 
-# --- web dashboard (`fdx serve`) ---
+# --- web dashboard (`prompt2render serve`) ---
 fastapi>=0.115
 uvicorn>=0.32            # deliberately not uvicorn[standard]: uvloop isn't
                          # available on Windows and isn't needed for SSE
@@ -25,4 +25,8 @@ Jinja2>=3.1              # already a transitive dep elsewhere; used directly her
 # manim==0.19.0          # hand-authored hero scenes only; MathTex needs LaTeX
 
 # Forced alignment needs NO Python package: it uses the whisper filter built
-# into ffmpeg. Fetch the model once with:  python fdx.py models --asr base.en
+# into ffmpeg. Fetch the model once with:  python prompt2render.py models --asr base.en
+
+# --- Prompt2Render harness (prompt2render/harness/, tools/harness_run.py, tools/ablation_runner.py) ---
+PyYAML>=6.0               # plugin config
+pytest>=8.0                # tests/harness/
