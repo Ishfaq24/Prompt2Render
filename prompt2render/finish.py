@@ -20,7 +20,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import captions, cfg, timeline, voice
+from . import captions, cfg, encode, timeline, voice
 from .project import Script
 
 
@@ -32,10 +32,13 @@ def _concat(files: list[str], dst: Path, cwd: Path) -> None:
 
 
 def _preflight(proj: Path, rows: list[dict]) -> None:
-    for r in rows:
-        clip = proj / r["clip"]
-        if not clip.exists() or clip.stat().st_size <= 2048:
-            sys.exit(f"[prompt2render] clip not encoded yet: {r['clip']} — run `prompt2render encode --all`")
+    stale = [r["clip"] for r in rows if encode._needs_encode(proj, r)]
+    if stale:
+        sys.exit(
+            "[prompt2render] clip(s) missing or older than the still they were "
+            f"rendered from: {', '.join(stale[:5])}"
+            + (f" (+{len(stale) - 5} more)" if len(stale) > 5 else "")
+            + " — run `prompt2render encode --all`")
 
     # One ffprobe per clip, and a full-length video has dozens of them. They
     # are independent processes waiting on file reads, so they go out together
