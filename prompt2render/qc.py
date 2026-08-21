@@ -234,7 +234,14 @@ def _gate_caption_drift(g: Gates, proj: Path, script: Script,
     """
     model = asrmodel.available()
     if model is None:
-        g.add(SKIP, "caption drift", "no ASR model — cannot verify independently")
+        # WARN, not SKIP: this is "the only honest definition of sync is
+        # correct" per the module docstring above, so a build can't quietly
+        # certify shippable with the one independent check unrun. SKIP is
+        # for gates with genuinely nothing to check (no plan, no scenes
+        # yet) -- this one has something to check and just didn't.
+        g.add(WARN, "caption drift", "no ASR model — cannot verify sync "
+              "independently; run `prompt2render models --asr base.en` to enable "
+              "this gate")
         return
     amap = voice.audio_map(proj)
     n = max(1, jobs or cfg.env_int("P2R_QC_JOBS", 3))
