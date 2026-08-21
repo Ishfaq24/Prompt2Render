@@ -243,10 +243,11 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
     # internal `feedback`, which is still exactly the same reject-and-retry text as before.
     feedback = extra_feedback
 
-    attempt = 1
-    while attempt <= retries + 1:
+    attempt = 1                  # content attempts on the *current* model
+    total_attempt = 1            # across every model, for the final message
+    while True:
         model = models[model_i]
-        cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}"
+        cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}/{retries + 1}"
                 + (f", key {key_i + 1}/{len(keys)}" if len(keys) > 1 else "") + ")")
         try:
             resp = client.chat.completions.create(
@@ -319,15 +320,40 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
             # every attempt already pays for.
             if "steps" not in code:
                 prompt = build_prompt(script, sec, sents, include_reveal=False)
-            attempt += 1
-            continue
+
+            if attempt < retries + 1:
+                attempt += 1
+                total_attempt += 1
+                continue
+            # This model's content-retry budget is spent on its own mistakes
+            # (not a quota wall — RateLimitError is handled separately,
+            # above). A model that keeps failing the same way across every
+            # attempt is a wall a key rotation can't move either; try the
+            # next model in the chain before giving up on the section
+            # entirely, the same escalation a rate limit already gets.
+            if model_i + 1 < len(models):
+                model_i += 1
+                key_i = 0
+                client = llm.client(keys[key_i])
+                attempt = 1
+                total_attempt += 1
+                cfg.warn(f"section {sec.stem}: still failing after "
+                         f"{retries + 1} tries on {model}, switching to "
+                         f"{models[model_i]}")
+                # A clean slate, not the accumulated feedback: that history
+                # describes a different model's own rejected code, which a
+                # fresh model never wrote and has no reason to make sense of.
+                feedback = extra_feedback
+                prompt = build_prompt(script, sec, sents)
+                continue
+            sys.exit(f"[prompt2render] section {sec.stem} still failing after "
+                     f"{total_attempt} tries across every model "
+                     f"({', '.join(models)})")
 
         used = getattr(resp, "usage", None)
         cfg.say(f"section {sec.stem}: accepted — {len(man)} stills"
                 + (f", {used.total_tokens} tokens" if used else ""))
         return dst
-
-    sys.exit(f"[prompt2render] section {sec.stem} still failing after {retries + 1} tries")
 
 
 def default_jobs(n: int) -> int:
