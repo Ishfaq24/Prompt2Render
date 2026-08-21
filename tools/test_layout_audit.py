@@ -99,7 +99,20 @@ def bad_dial_offframe(ax):
     k.dial(ax, 4, 13.6, 4.5, 3.4)
 
 
+def bad_two_compares_overlapping(ax):
+    k.title(ax, "two comparisons drawn on top of each other")
+    k.compare(ax, 1, 2, 8.0, 5.0, op="<", winner="left")
+    k.compare(ax, 3, 4, 8.3, 5.1, op="<", winner="right")
+
+
 # ----------------------------------------------------------------- good ----
+
+def good_compare_with_labels(ax):
+    k.title(ax, "comparing two labelled values")
+    k.compare(ax, 23, 45, 8.0, 5.0, op="<", winner="left",
+             label_a="arr[i]", label_b="pivot")
+    k.caption(ax, "23 is smaller, so it stays on the left side")
+
 
 def good_array_annotated(ax):
     k.title(ax, "an ordinary annotated array")

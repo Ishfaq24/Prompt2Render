@@ -212,6 +212,49 @@ def badge(ax, x, y, text, color=GOOD, size=30):
             fontfamily=SANS, fontweight="bold")
 
 
+def compare(ax, a, b, x, y, op="<", winner=None, size=40,
+           label_a=None, label_b=None):
+    """Two values side by side with a comparator glyph between them --
+    the generic version of what k.array's own lo/hi/mid coloring does,
+    for a comparison that isn't happening inside an array.
+
+    winner : None | "left" | "right" -- outlines that side GOOD and stamps
+             a checkmark on it (color is never the only signal). The other
+             side stays neutral, never BAD: losing a comparison is an
+             outcome, not an error.
+    op     : the comparator glyph shown between the two boxes.
+    Returns (left_x, right_x), the box centres, so callers can hang their
+    own annotations off either side.
+    """
+    def _w(v):
+        return max(1.3, 0.34 * len(str(v)) + 0.75)
+    wa, wb = _w(a), _w(b)
+    glyph_gap = 1.2
+    lx = x - glyph_gap / 2 - wa / 2
+    rx = x + glyph_gap / 2 + wb / 2
+    h = 1.3
+
+    for side, cx, w, v, lbl in (("left", lx, wa, a, label_a),
+                                ("right", rx, wb, b, label_b)):
+        win = winner == side
+        ec = GOOD if win else DIM
+        ax.add_patch(FancyBboxPatch(
+            (cx - w / 2, y - h / 2), w, h,
+            boxstyle="round,pad=0.03,rounding_size=0.12",
+            facecolor=ZERO, edgecolor=ec, linewidth=3.5 if win else 2.0, zorder=2))
+        ax.text(cx, y, str(v), ha="center", va="center", zorder=3,
+                color=GOOD if win else FG, fontsize=size, fontfamily=MONO,
+                fontweight="bold" if win else "normal")
+        if win:
+            badge(ax, cx, y + h / 2 + 0.42, "✓", GOOD, size=int(size * 0.55))
+        if lbl:
+            ax.text(cx, y - h / 2 - 0.30, lbl, ha="center", va="top",
+                    color=DIM, fontsize=17, fontfamily=MONO)
+
+    label(ax, x, y, op, size=int(size * 0.7), color=ACCENT, weight="bold")
+    return lx, rx
+
+
 # ------------------------------------------------- column addition block
 
 
@@ -614,6 +657,7 @@ _ELEMENT_KINDS = {
     "title": "title", "caption": "caption", "label": "label",
     "badge": "badge", "bits": "bits", "bit_brace": "bit_brace",
     "arrow": "arrow", "strike": "strike", "addition": "addition",
+    "compare": "compare",
     "number_line": "number_line", "dial": "dial", "register": "register",
     "array": "array", "predicate_strip": "predicate_strip",
     "code": "code", "table": "table", "curves": "curves",

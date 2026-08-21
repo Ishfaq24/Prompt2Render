@@ -49,6 +49,11 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
   k.arrow(ax, x1, y1, x2, y2, color=k.ACCENT, lw=3.0)
   k.strike(ax, x1, x2, y, color=k.BAD)
   k.badge(ax, x, y, "OK", k.GOOD, 60)
+  k.compare(ax, a, b, x, y, op="<", winner=None, size=40, label_a=None, label_b=None)
+        -> two boxed values side by side with a comparator glyph between them.
+           winner: None | "left" | "right" -- outlines that side and stamps a
+           checkmark on it; the other side stays neutral, never k.BAD (losing
+           a comparison is an outcome, not an error). Returns (left_x, right_x).
   k.addition(ax, top, bottom, result, x, y, carry=None, ok=None, size=40)
         -> a column sum; top/bottom/result are bit strings; occupies y-2.2 .. y+2.9
   k.number_line(ax, lo, hi, y, x0=1.4, x1=14.6, ticks=[...], marks={val:(text,colour)})
