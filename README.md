@@ -192,6 +192,24 @@ of this section still applies to whatever's in `script.md` when you run
 inauthentic-content rule, and disclosure in YouTube Studio is on you if you
 ship AI-drafted narration close to as-is.
 
+Want that pause removed anyway — a topic in, a checked `final.mp4` out, no
+manual read in between? `prompt2render auto` chains `new --ai -> draft ->
+build` into one call:
+
+```bash
+python prompt2render.py auto booths-algorithm --minutes 8
+```
+
+If the project doesn't exist yet it outlines and drafts one from scratch
+(same as `new --ai` + `draft`, unattended); if it already exists, `auto`
+drafts only whatever's still a placeholder and builds from there —
+`--redraft` forces every section, including ones you wrote by hand. It takes
+every flag `build` does (`--motion`, `--jobs`, `--strict`, ...). This is the
+one command that ships without a human ever reading the narration — it
+prints the same disclosure reminder as `draft` before it starts, but nothing
+stops it. Prefer `new`/`draft`/`build` as three separate steps unless you
+specifically want that unattended.
+
 **2. Run the chain.**
 
 ```bash

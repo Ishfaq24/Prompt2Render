@@ -1,6 +1,6 @@
 ---
-title: Quicksort
-topic: Quicksort
+title: Quicksort and In-Place Array Partitioning
+topic: quicksort - divide and conquer, Lomuto and Hoare partitioning, average and worst-case time complexity, call stack depth, randomized pivot selection
 audience: undergraduate computer science
 ---
 
@@ -8,36 +8,47 @@ audience: undergraduate computer science
      Each "## N - Title" block is one section.
      The "> ANIM:" line is the brief `prompt2render scenes` storyboards against scenekit.
      Everything else is what YOU say. Write it in your own voice.
-     Aim ~140 spoken words per minute; 8-12 min total = 1100-1700 words. -->
+     Aim ~140 spoken words per minute; ~13 min total = ~1820 words
+     across 8 section(s). This outline was AI-suggested -- add, remove or rename sections freely,
+     and every section still needs real narration before you build. -->
 
-## 1 - The hook
-> ANIM: title card, then the one image that frames the whole problem
+## 1 - The Memory Overhead of Merge Sort
+> ANIM: An animated comparison shows Merge Sort allocating additional temporary arrays alongside an array attempting to sort elements strictly in place.
 
-Open with the question the viewer actually has. No "hello everyone, welcome
-back to the channel". Thirty seconds to earn the next eight minutes.
+Merge Sort gives us a guaranteed O(n log n) time complexity, but that speed comes at a price. Every time Merge Sort divides an array and recombines the sorted halves, it relies on auxiliary memory to hold temporary sub-arrays. For massive datasets or systems with tight memory constraints, allocating extra space proportional to the input size is an expensive luxury. This raises a fundamental algorithmic challenge: can we retain the efficiency of a divide-and-conquer strategy while sorting elements directly inside the original array?
 
-## 2 - The naive approach and why it breaks
-> ANIM: walk the obvious method, then show it failing on a concrete case
+## 2 - The Core Mechanics of Partitioning
+> ANIM: An unsorted array highlights a single pivot element while smaller elements shift to its left and larger elements shift to its right.
 
-Why does a sorting algorithm as fast as Quicksort need careful engineering just to select a single element? The simplest way to implement Quicksort is to always pick the very first element of the sub-array as your pivot. You sweep through the remaining elements, place everything smaller than the pivot on its left, and place everything larger on its right. When the input array contains random, unsorted numbers, this trivial pivot choice splits the problem roughly in half at each step, yielding an optimal execution tree. But watch what happens when you feed this naive strategy an array that is already sorted. Picking the first element selects the absolute minimum value in the array as the pivot. Every single remaining element is larger than the pivot, so the left partition ends up completely empty, while the right partition contains every remaining element. Instead of dividing the array into two equal halves of size N over two, you divide it into one subproblem of size zero and another of size N minus one. The call stack degenerates from a balanced binary tree of depth log N into a linear chain of depth N. Every level of this chain scans the remaining elements, resulting in N squared operations overall. A simple sorted list causes the naive algorithm to collapse from optimal efficiency into worst-case dynamic performance, quickly triggering stack overflow crashes on standard system memory limits.
+Quicksort solves this by replacing the expensive merge step with an in-place operation called partitioning. We select a single element from the array to act as a pivot. The goal of the partition operation is to rearrange the remaining elements so that every value smaller than or equal to the pivot ends up on its left, and every value greater than the pivot ends up on its right. Once this rearrangement is complete, the pivot element resides in its final, absolute sorted position, dividing the array into two independent sub-problems without allocating a single additional byte of heap memory.
 
-## 3 - The key idea
-> ANIM: the central visual - this is the frame people screenshot
+## 3 - Lomuto Partition Scheme Step-by-Step
+> ANIM: Two pointers scan an array in sync with a code snippet, performing swaps to maintain a boundary between smaller and larger elements.
 
-To fix this, Quicksort replaces extra memory allocation with a single brilliant visual mechanism: in-place partitioning. The central insight is that you do not need to create temporary left and right arrays to organize your data. Instead, you choose a pivot element and establish a boundary within the existing array using two pointers moving in from opposite ends. The left pointer scans rightward looking for an element larger than the pivot, while the right pointer scans leftward looking for an element smaller than the pivot. When both pointers find misallocated elements, those two values are swapped directly in place. The pointers continue inward, repeatedly swapping out-of-order pairs, until they cross paths. At that exact meeting point, the array is partitioned. Swapping the pivot element into the boundary position places it in its ultimate, permanently correct sorted index. Crucially, no matter what happens in subsequent steps, that pivot element will never need to move again. The problem is now divided into two fully independent sub-arrays to the left and right of the pivot, ready to be solved recursively using the exact same mechanical process.
+One classic approach to implementing this rearrangement is the Lomuto partition scheme. Lomuto chooses the last element of the array as the pivot and maintains two scanning pointers. The first pointer tracks the boundary of elements known to be smaller than the pivot, while the second pointer scans forward through the array. Whenever the scanning pointer encounters an element smaller than the pivot, the boundary pointer advances, and the two elements are swapped. Once the scan reaches the end of the array, a final swap places the pivot directly between the two partitions. While simple to implement, Lomuto performs more swaps than alternative methods like the Hoare scheme, especially when dealing with duplicate keys.
 
-## 4 - Worked example
-> ANIM: step through one full concrete example, values visible on screen
+## 4 - Recursive Divide-and-Conquer Tree
+> ANIM: A recursion tree expands downward as Quicksort calls partition recursively on smaller sub-arrays until reaching single-element base cases.
 
-Let us trace this step by step on an unsorted array containing seven elements: five, two, nine, one, seven, six, and three. We will use the last element, three, as our pivot. We set a low index boundary just before the first element and start a scanning index at the beginning of the array. First, we examine five. Five is greater than three, so we do not advance our boundary and move to the next element. Next is two. Two is less than or equal to three, so we advance our boundary pointer to the first index and swap the two with five. Our array now reads two, five, nine, one, seven, six, three. Next, we check nine, which is larger than three, so we move on. Then we inspect one. One is less than three, so we advance our boundary pointer to the second index and swap one with five. The array now reads two, one, nine, five, seven, six, three. Moving forward, seven and six are both larger than three, so no more swaps occur during the scan. Finally, we swap our pivot, three, with the element sitting right after our boundary pointer, which is nine. The array is now ordered as two, one, three, five, seven, six, nine. Notice what just happened. Three is now at index two, its absolute final destination in the sorted output. Everything to its left, two and one, is smaller than three. Everything to its right, five, seven, six, and nine, is larger than three. We now launch two separate recursive calls: one on the left sub-array containing two and one, and one on the right sub-array containing five, seven, six, and nine, repeating the exact same procedure on each side.
+Once the pivot is locked into place, Quicksort applies this exact same partitioning process recursively to the left and right sub-arrays. Because the pivot is already in its final sorted position, it is excluded from future recursive calls. The algorithm recursively splits the input into smaller and smaller fragments until it hits sub-arrays of size zero or one, which are inherently sorted. Unlike Merge Sort, which performs its primary work on the way back up the recursive call tree during the merge phase, Quicksort performs its critical work on the way down, establishing order before making recursive calls.
 
-## 5 - Where this shows up in practice
-> ANIM: real system diagram or benchmark
+## 5 - The Worst-Case Quadratic Degeneracy
+> ANIM: An already-sorted array produces a degenerate, single-branched call tree of depth N when picking the last element as the pivot.
 
-This structural simplicity explains why Quicksort dominates standard system libraries across operating systems and runtime environments. Mergesort guarantees O of N log N runtime in the absolute worst case, but it requires allocating an entire secondary array of size N to combine sorted segments. Quicksort runs directly inside existing memory buffers. This in-place design delivers superior spatial locality of reference. As the algorithm sweeps pointers sequentially through contiguous array memory, CPU hardware prefetchers load full cache lines well in advance, drastically reducing expensive main memory latency hits. Modern language runtimes like C++ and Rust do not use purely naive Quicksort, however. They implement hybrid algorithms such as Introsort. Introsort begins execution using fast Quicksort partitioning. It monitors the recursion depth, and if poor pivot choices cause the stack depth to exceed two times log N, it automatically switches the remaining subproblems to Heapsort. This hybrid strategy combines the blazing real-world cache performance and low constant factors of Quicksort with the strict algorithmically guaranteed O of N log N upper bound of Heapsort.
+However, this divide-and-conquer strategy depends entirely on how evenly the pivot splits the array. Consider what happens if we always choose the last element as our pivot on an array that is already sorted. The pivot will be larger than every other element, producing a left partition containing everything except the pivot, and an empty right partition. Instead of halving the problem size at each step, we only reduce it by a single element. This turns our balanced recursion tree into a linear chain of depth N, forcing the algorithm to make N passes over decreasing sub-arrays and degrading our runtime to quadratic O(n squared) time.
 
-## 6 - Recap and the next question
-> ANIM: recap card with the 3 things to remember
+## 6 - Average-Case Analysis and Randomized Pivots
+> ANIM: A probability distribution graph demonstrates how randomized pivot selection consistently yields balanced splits and O(n log n) runtime.
 
-To recap, remember these three core fundamentals of Quicksort. First, partitioning moves a pivot element to its final sorted index while dividing remaining elements into lower and higher sub-arrays entirely in place. Second, average-case performance runs in O of N log N time with unmatched cache efficiency, though bad pivot selection can degrade naive implementations to N squared time. Third, production software guards against worst-case degradation using median-of-three pivot selection or hybrid routines like Introsort. But what happens to this algorithm when the array contains thousands of identical duplicate values?
+To prevent deterministic worst-case behavior, we can introduce randomness into our pivot selection. By picking a pivot uniformly at random from the sub-array before partitioning, we break any dependency on the initial ordering of the input data. Statistically, even a split as uneven as ninety-to-ten yields an O(n log n) tree depth because the logarithmic reduction dominates the overall complexity. Because truly bad pivots like the absolute minimum or maximum occur with very low probability, randomized pivot selection guarantees an expected running time of O(n log n) for any possible input array.
+
+## 7 - Call Stack Memory and Tail Recursion
+> ANIM: A call stack visualization compares unbounded stack growth against tail-call optimization that bounds auxiliary space to O(log n).
+
+Even though Quicksort sorts elements in-place without auxiliary arrays, it still consumes memory on the call stack to manage recursive function calls. In the worst-case degenerate scenario, stack depth can grow linearly to O(n), risking a stack overflow. We can strictly control this call stack depth by using tail recursion optimization. By explicitly calling the recursive partition on the smaller sub-array first and processing the larger sub-array through a loop, we guarantee that the maximum recursion depth never exceeds logarithmic space. This bounds Quicksort auxiliary memory overhead to O(log n) stack frames.
+
+## 8 - Summary and the Comparison Sort Bound
+> ANIM: A summary graphic recaps Quicksort's trade-offs before transitioning to a prompt asking if sorting can ever beat the O(n log n) lower bound.
+
+Quicksort remains one of the most widely used general-purpose sorting algorithms because it combines minimal memory usage with exceptional practical execution speeds. By partitioning in-place and using randomized pivot selection alongside smart recursion management, it avoids both the O(n) space requirement of Merge Sort and the O(n squared) worst-case time traps of simpler algorithms. However, Quicksort, Merge Sort, and Heap Sort all seem to hit the same fundamental ceiling of O(n log n) expected time. Is it mathematically possible to sort an array faster than O(n log n), or have we reached an unbreakable lower bound for comparison-based sorting algorithms?
 

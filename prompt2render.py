@@ -6,6 +6,10 @@
     # for a first pass to rewrite), then:
     python prompt2render.py build binary-search
 
+    # or, unattended, topic to checked video in one call (see `auto --help`
+    # for the trade-off: no human reads the narration before it ships):
+    python prompt2render.py auto binary-search
+
 `build` runs the whole chain. The stages exist separately because each one is
 worth inspecting, and because the expensive ones are cached:
 
@@ -168,11 +172,14 @@ def cmd_check(a):
     sys.exit(qc.check(d, s, strict=a.strict))
 
 
-def cmd_build(a):
-    """The whole chain. Every stage is cached, so re-running is cheap."""
-    from prompt2render import align, encode, finish, publish, qc, scenes, stills, timeline, voice
-    d, s = _load(a.slug)
+def _run_pipeline(d, s, a) -> int:
+    """voice -> align -> scenes -> stills -> plan -> encode -> finish -> publish -> check.
 
+    Shared by `build` (script.md already written) and `auto` (script.md was
+    just outlined/drafted by AI). Returns the QC exit code rather than
+    calling sys.exit() itself, so callers can decide what to do with it.
+    """
+    from prompt2render import align, encode, finish, publish, qc, scenes, stills, timeline, voice
     voice.build(d, s, voice.settings(a))
     align.align(d, s)
     scenes.generate_all(d, s, jobs=a.scene_jobs)
@@ -185,7 +192,44 @@ def cmd_build(a):
         sys.exit("[prompt2render] encode did not finish")
     finish.finish(d, s, burn=a.burn)
     publish.build_packet(d, s)
-    sys.exit(qc.check(d, s, strict=a.strict))
+    return qc.check(d, s, strict=a.strict)
+
+
+def cmd_build(a):
+    """The whole chain. Every stage is cached, so re-running is cheap."""
+    d, s = _load(a.slug)
+    sys.exit(_run_pipeline(d, s, a))
+
+
+def cmd_auto(a):
+    """script.md -> script.md, if it doesn't exist yet -> final.mp4, unattended.
+
+    `new --ai` + `draft` + `build`, chained: a topic and a slug in, a checked
+    final.mp4 out, with no manual pause to read the narration first. That is
+    a real trade against this project's default stance (see `draft.py`,
+    `outline.py`, README) that narration should get a human read before it is
+    voiced -- opted into here because the caller asked for exactly that.
+    """
+    from prompt2render import draft, outline
+    d = cfg.PROJECTS / a.slug
+    if d.exists():
+        cfg.say(f"project {d} already exists — using its current script.md")
+    else:
+        seed = a.title or a.slug.replace("-", " ").title()
+        out = outline.generate(seed, seed, "undergraduate computer science",
+                               minutes=a.minutes, sections=a.sections,
+                               fixed_title=bool(a.title))
+        title = a.title or out["title"]
+        d = project.new_project_from_sections(a.slug, title, out["sections"],
+                                              minutes=a.minutes, topic=out["topic"])
+        cfg.say(f"scaffolded {d} with an AI-suggested outline")
+    draft.draft(d, force=a.redraft)
+    cfg.warn("narration above was AI-drafted and is about to be voiced and "
+             "shipped with no human read -- that's what `auto` means. If "
+             "this goes out close to as-is, set the synthetic-content "
+             "disclosure in YouTube Studio (see out/upload.md's checklist).")
+    d, s = _load(a.slug)
+    sys.exit(_run_pipeline(d, s, a))
 
 
 # ---------------------------------------------------------- escape hatches --
@@ -363,19 +407,40 @@ def main() -> None:
     ck = add("check", cmd_check, "run the quality gates")
     ck.add_argument("slug"); ck.add_argument("--strict", action="store_true")
 
+    def add_pipeline_args(sp):
+        """--motion/--speed/.../--scene-jobs: the flags `_run_pipeline` reads,
+        shared between `build` (script.md already written) and `auto`."""
+        sp.add_argument("--motion", choices=["none", "dissolve", "dissolve+reveal"])
+        sp.add_argument("--speed", type=float); sp.add_argument("--voice")
+        sp.add_argument("--lufs", type=float)
+        sp.add_argument("--burn", action="store_true")
+        sp.add_argument("--strict", action="store_true")
+        sp.add_argument("--jobs", type=int, default=None,
+                        help="parallel encode workers (default 1, or 3 on "
+                             "NVENC, or $P2R_ENCODE_JOBS)")
+        sp.add_argument("--scene-jobs", type=int, default=None, dest="scene_jobs",
+                        help="parallel storyboard calls (default 3, "
+                             "or $P2R_SCENE_JOBS)")
+
     bd = add("build", cmd_build, "voice -> align -> scenes -> ... -> check")
     bd.add_argument("slug")
-    bd.add_argument("--motion", choices=["none", "dissolve", "dissolve+reveal"])
-    bd.add_argument("--speed", type=float); bd.add_argument("--voice")
-    bd.add_argument("--lufs", type=float)
-    bd.add_argument("--burn", action="store_true")
-    bd.add_argument("--strict", action="store_true")
-    bd.add_argument("--jobs", type=int, default=None,
-                    help="parallel encode workers (default 1, or 3 on NVENC, "
-                         "or $P2R_ENCODE_JOBS)")
-    bd.add_argument("--scene-jobs", type=int, default=None, dest="scene_jobs",
-                    help="parallel storyboard calls (default 3, "
-                         "or $P2R_SCENE_JOBS)")
+    add_pipeline_args(bd)
+
+    au = add("auto", cmd_auto,
+            "new --ai -> draft -> build, unattended: topic in, checked video out")
+    au.add_argument("slug")
+    au.add_argument("--title")
+    au.add_argument("--minutes", type=float,
+                    help="target length for a fresh project (default 10 "
+                         "min = 6 sections); ignored if the project already "
+                         "exists")
+    au.add_argument("--sections", type=int,
+                    help="exact section count for a fresh project instead "
+                         "of deriving it from --minutes")
+    au.add_argument("--redraft", action="store_true",
+                    help="redraft every section's narration even if it's "
+                         "already written, not just the placeholders")
+    add_pipeline_args(au)
 
     # --- escape hatches -----------------------------------------------------
     im = add("import", cmd_import, "import section clips from a folder")
