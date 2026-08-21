@@ -15,6 +15,26 @@ from . import cfg
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
+#: Tried in order, once the primary model is rate-limited on every key.
+#: Gemini's free tier meters quota per (key, model) pair, so a model that's
+#: exhausted for every key is a wall a different key can't move -- the same
+#: reasoning `keys()` applies across keys, applied across models instead.
+MODEL_FALLBACKS = ["gemini-3.7-flash", "gemini-3.5-flash"]
+
+
+def model_chain(model_env: str, default_model: str) -> list[str]:
+    """The primary model (env override or default), then the fallback chain.
+
+    Deduplicated in order, so a primary that already names a fallback model
+    doesn't get tried twice.
+    """
+    primary = os.environ.get(model_env, default_model)
+    chain = [primary]
+    for m in MODEL_FALLBACKS:
+        if m not in chain:
+            chain.append(m)
+    return chain
+
 
 def keys() -> list[str]:
     """GEMINI_API_KEY, plus any GEMINI_API_KEY_BACKUP* for failover.
@@ -44,12 +64,18 @@ def client(key: str):
 
 def complete(prompt: str, *, max_tokens: int, model_env: str = "P2R_SCENE_MODEL",
             default_model: str = "gemini-3.6-flash") -> str:
-    """One-shot completion, rotating keys on a rate limit. Returns raw text."""
+    """One-shot completion, rotating keys then models on a rate limit.
+
+    Every key is tried against the current model before falling through to
+    the next model in MODEL_FALLBACKS and starting over from the first key --
+    a model exhausted on every key is a wall no key can move past.
+    """
     ks = keys()
-    key_i = 0
+    models = model_chain(model_env, default_model)
+    key_i = model_i = 0
     c = client(ks[key_i])
-    model = os.environ.get(model_env, default_model)
     while True:
+        model = models[model_i]
         try:
             resp = c.chat.completions.create(
                 model=model,
@@ -60,12 +86,21 @@ def complete(prompt: str, *, max_tokens: int, model_env: str = "P2R_SCENE_MODEL"
                 extra_body={"reasoning_effort": os.environ.get("P2R_REASONING", "low")},
             )
         except Exception as e:                    # noqa: BLE001
-            if type(e).__name__ != "RateLimitError" or key_i + 1 >= len(ks):
+            if type(e).__name__ != "RateLimitError":
                 raise
-            key_i += 1
-            cfg.warn(f"key {key_i}/{len(ks)} rate-limited, switching to the next key")
-            c = client(ks[key_i])
-            continue
+            if key_i + 1 < len(ks):
+                key_i += 1
+                cfg.warn(f"key {key_i}/{len(ks)} rate-limited on {model}, "
+                         "switching to the next key")
+                c = client(ks[key_i])
+                continue
+            if model_i + 1 < len(models):
+                key_i, model_i = 0, model_i + 1
+                cfg.warn(f"all {len(ks)} key(s) rate-limited on {model}, "
+                         f"switching to {models[model_i]}")
+                c = client(ks[key_i])
+                continue
+            raise
         break
     choice = resp.choices[0] if resp.choices else None
     text = (choice.message.content if choice else "") or ""

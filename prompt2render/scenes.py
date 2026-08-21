@@ -24,10 +24,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from . import align, cfg, stills
+from . import align, cfg, llm, stills
 from .project import Script
-
-ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 #: Sections are storyboarded concurrently (see default_jobs), but the *render*
 #: that judges each answer is matplotlib, and matplotlib shares one FreeType
@@ -136,34 +134,6 @@ only once the step has reached it:
 '''
 
 
-def _keys() -> list[str]:
-    """GEMINI_API_KEY, plus any GEMINI_API_KEY_BACKUP* for failover.
-
-    Gemini's free tier caps requests *per day per model*, and the 429 it
-    returns names a retry-after of tens of seconds — misleading for a quota
-    that will not clear until tomorrow. A second key on a separate quota is
-    the only thing that actually unblocks a run in progress.
-    """
-    keys = [os.environ.get("GEMINI_API_KEY", "")]
-    for name, val in sorted(os.environ.items()):
-        if name.startswith("GEMINI_API_KEY_BACKUP") and val:
-            keys.append(val)
-    keys = [k for k in keys if k]
-    if not keys:
-        sys.exit("[prompt2render] GEMINI_API_KEY not set (it lives in .env)")
-    return keys
-
-
-def _client(key: str):
-    try:
-        from openai import OpenAI
-    except ImportError:
-        sys.exit("[prompt2render] openai not installed — pip install -r requirements.txt")
-    # The SDK rather than curl: the key stops appearing in process listings,
-    # and retries and timeouts come for free.
-    return OpenAI(api_key=key, base_url=ENDPOINT, timeout=300.0, max_retries=2)
-
-
 def build_prompt(script: Script, sec, sents: list[dict]) -> str:
     # Give the model the clock, not just the words. Without timings it cannot
     # tell that two adjacent cues are 30 seconds apart, and it leaves frames
@@ -242,10 +212,10 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
     outdir.mkdir(parents=True, exist_ok=True)
     dst = outdir / f"scene_{sec.stem}.py"
 
-    keys = _keys()
-    key_i = 0
-    client = _client(keys[key_i])
-    model = os.environ.get("P2R_SCENE_MODEL", "gemini-3.6-flash")
+    keys = llm.keys()
+    models = llm.model_chain("P2R_SCENE_MODEL", "gemini-3.6-flash")
+    key_i = model_i = 0
+    client = llm.client(keys[key_i])
     prompt = build_prompt(script, sec, sents)
     # extra_feedback: repair_router's harness-level cycle (prompt2render/harness/plugins/repair_router)
     # seeds diagnostics from *its own* prior repair attempts here — separate from this loop's own
@@ -254,6 +224,7 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
 
     attempt = 1
     while attempt <= retries + 1:
+        model = models[model_i]
         cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}"
                 + (f", key {key_i + 1}/{len(keys)}" if len(keys) > 1 else "") + ")")
         try:
@@ -272,17 +243,27 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
             # not deserve one of the content-retry attempts above, and
             # retrying the same key just burns the SDK's own retry budget on
             # a wall that will not move. Rotate to the next key if there is
-            # one; only count this against `attempt` once every key is spent.
+            # one; once every key is spent on this model, rotate to the next
+            # model instead of giving up — Gemini's free tier meters quota
+            # per (key, model) pair, so a different model resets it. Only
+            # count this against `attempt` once every (key, model) combination
+            # is spent.
             if type(e).__name__ != "RateLimitError":
                 raise
             if key_i + 1 < len(keys):
                 key_i += 1
                 cfg.warn(f"section {sec.stem}: key {key_i}/{len(keys)} "
-                         f"rate-limited, switching to the next key")
-                client = _client(keys[key_i])
+                         f"rate-limited on {model}, switching to the next key")
+                client = llm.client(keys[key_i])
+                continue
+            if model_i + 1 < len(models):
+                key_i, model_i = 0, model_i + 1
+                cfg.warn(f"section {sec.stem}: all {len(keys)} key(s) "
+                         f"rate-limited on {model}, switching to {models[model_i]}")
+                client = llm.client(keys[key_i])
                 continue
             sys.exit(f"[prompt2render] section {sec.stem}: all {len(keys)} Gemini "
-                     f"key(s) are rate-limited — {e}")
+                     f"key(s) rate-limited on every model ({', '.join(models)}) — {e}")
         choice = resp.choices[0] if resp.choices else None
         code = (choice.message.content if choice else "") or ""
         if not code.strip():
