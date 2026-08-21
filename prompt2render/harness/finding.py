@@ -1,7 +1,6 @@
 """Finding / severity — the shared taxonomy the migration brief's Stage 5 calls for, so
-`verifier_spatial`, `verifier_lifecycle`, `verifier_audio`, `verifier_semantic` and
-`evaluator_vlm` all report findings the ablation runner can cross-tabulate directly, without a
-per-verifier translation step.
+`verifier_spatial`, `verifier_lifecycle`, `verifier_audio` and `verifier_semantic` all report
+findings the ablation runner can cross-tabulate directly, without a per-verifier translation step.
 
 Deliberately NOT in the original Stage 2/3 schema — the migration plan calls this out as a Stage 5
 addition, made here because Stage 5 (the ablation runner) is the first thing that needs it.

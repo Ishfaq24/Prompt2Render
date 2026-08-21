@@ -32,7 +32,7 @@ Plugins run in an order resolved from what each one reads/writes (`declare_depen
 ```
 chunker_scene → planner_llm → planner_audio → generator_code → renderer_stills →
 verifier_semantic → verifier_lifecycle → verifier_spatial → verifier_audio →
-evaluator_vlm → feedback_hitl
+feedback_hitl
 ```
 
 | plugin | wraps | default | notes |
@@ -49,7 +49,6 @@ evaluator_vlm → feedback_hitl
 | `verifier_spatial` | `scenekit.audit()` | on (hard) | real — the working layout critic |
 | `verifier_lifecycle` | *(none live)* | on (soft) | always-`[]` shell — no object identity in prompt2render |
 | `verifier_audio` | `qc.py` caption-drift gate | on (hard) | whole-video scoped — needs `out/final.mp4` to exist |
-| `evaluator_vlm` | *(none live)* | on (soft) | stub — no vision-model call exists anywhere in prompt2render |
 | `feedback_hitl` | *(none live)* | on (never gates) | stub — no human-in-the-loop mechanism exists |
 | `repair_router` | *(new)* | on | not a pipeline stage — see below |
 
@@ -95,7 +94,7 @@ finding demoted to `"open_defect"` and the run continues.
 real detection — will rarely actually trigger this in practice, because `scenes.py`'s own Gemini
 call already retries internally against the same audit before a section is ever marked accepted.
 The router is real and tested (`tests/harness/test_repair_router.py`, dummy plugins only) for when
-`verifier_semantic` / `verifier_lifecycle` / `evaluator_vlm` grow real detection logic.
+`verifier_semantic` / `verifier_lifecycle` grow real detection logic.
 
 ## Regression testing — the golden baseline
 
@@ -121,10 +120,8 @@ Runs the 4-condition matrix ({`verifier_spatial`, `verifier_lifecycle`} × {off,
 project, with both verifiers' gates forced off throughout (findings are recorded, not acted on —
 Phase A isolates raw detection rate from repair-induced changes). Writes one row per
 (condition × section) to `build/harness/ablation_results.json`: findings by category, render
-time, repair cycles used (0 throughout Phase A — asserted). The `post_render_findings_by_category`
-column is always empty today; no live `evaluator_vlm` exists to populate it (see the table above).
-Phase B (detection **and** repair) is intentionally not built — Phase A's numbers should justify
-that extra engineering first.
+time, repair cycles used (0 throughout Phase A — asserted). Phase B (detection **and** repair) is
+intentionally not built — Phase A's numbers should justify that extra engineering first.
 
 ## Tests
 

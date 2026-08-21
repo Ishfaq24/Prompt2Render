@@ -15,16 +15,8 @@ skips computing that verifier's findings.
     python tools/ablation_runner.py --slug hash-tables [--out path.json]
 
 Output: one row per (condition x section): pre-render findings by category (from whichever of
-verifier_spatial/verifier_lifecycle was on), post-render findings by category (from
-evaluator_vlm — see the caveat below), render time, repair cycles used (0 throughout Phase A,
-verified as an invariant).
-
-evaluator_vlm caveat: no live vision-model call exists anywhere in prompt2render (docs/MIGRATION_INVENTORY.md
-§3/§8) — its column is wired and always empty, reported honestly as unpopulated rather than
-faked. The derived "would this post-render defect have been caught pre-render" table therefore
-only has ground truth once a real evaluator_vlm exists; until then this runner still produces
-real pre-render detection data (verifier_spatial's actual catch rate), which is Phase A's actual
-deliverable.
+verifier_spatial/verifier_lifecycle was on), render time, repair cycles used (0 throughout
+Phase A, verified as an invariant).
 """
 from __future__ import annotations
 
@@ -113,7 +105,6 @@ def run_condition(slug: str, spatial_on: bool, lifecycle_on: bool, base_config: 
 
     pre_render = (ctx.check_results.get("verifier_spatial", []) +
                  ctx.check_results.get("verifier_lifecycle", []))
-    post_render = ctx.check_results.get("evaluator_vlm", [])
     repair_cycles_used = sum(len(v) for v in ctx.repair_context.values())   # invariant: 0
 
     rows = []
@@ -125,7 +116,6 @@ def run_condition(slug: str, spatial_on: bool, lifecycle_on: bool, base_config: 
             "condition": {"spatial": spatial_on, "lifecycle": lifecycle_on},
             "section": stem,
             "pre_render_findings_by_category": _by_category(stem_pre),
-            "post_render_findings_by_category": _by_category(post_render),  # always {} — see caveat
             "render_time_s": round(render_time, 3),
             "repair_cycles_used": repair_cycles_used,
         })
@@ -155,13 +145,6 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(all_rows, indent=2), encoding="utf-8")
     print(f"[ablation] wrote {len(all_rows)} rows to {out_path}")
-
-    # Derived table: only meaningful once evaluator_vlm has a real vision-model call (§8) — see
-    # module docstring. Printed as an honest zero-row table, not omitted, so its absence is
-    # visible rather than silently missing.
-    would_have_caught = [r for r in all_rows if r["post_render_findings_by_category"]]
-    print(f"[ablation] post-render-vs-pre-render derived rows: {len(would_have_caught)} "
-          f"(0 expected — no live evaluator_vlm; see module docstring)")
 
 
 if __name__ == "__main__":
