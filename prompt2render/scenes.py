@@ -345,8 +345,13 @@ def generate_all(proj: Path, script: Script, index: int | None = None,
     for sec in script.sections:
         if index is not None and sec.index != index:
             continue
-        dst = proj / "build" / "scenes" / f"scene_{sec.stem}.py"
-        if dst.exists():
+        dst = stills.scene_path(proj, sec.stem)
+        # dst.exists() alone isn't "done": generate() writes the .py file
+        # before the audit runs, so a section that exhausted its retries
+        # (raising SystemExit, which used to abort the whole run) leaves a
+        # rejected module on disk. is_current() requires the manifest and
+        # audit.json render() only writes once the audit actually passed.
+        if stills.is_current(dst, stills.stills_dir(proj, sec.stem)):
             cfg.say(f"section {sec.stem}: scene already written, skipping "
                     "(delete it to regenerate)")
             continue
