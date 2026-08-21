@@ -170,6 +170,14 @@ def good_table_and_caption(ax):
     k.caption(ax, "doubling the input costs one more step")
 
 
+def good_table_highlight_cells(ax):
+    k.title(ax, "a DP table with cells highlighted, packed tight")
+    k.table(ax, [("", "0", "1", "2"), ("0", "0", "1", "2"), ("1", "1", "0", "1")],
+            headers=("", "a", "b", "c"), y=4.5, col_w=[1.6, 1.6, 1.6, 1.6],
+            highlight_row=2, highlight_cells=[(2, 3), (1, 3), (2, 2)])
+    k.caption(ax, "cell (2,3) depends on (1,3) and (2,2)")
+
+
 def good_number_line_alone(ax):
     k.title(ax, "a signed number line")
     k.number_line(ax, -8, 7, 4.6, marks={-8: ("min", k.BAD),

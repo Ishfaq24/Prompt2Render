@@ -523,14 +523,20 @@ def code(ax, lines, x=8.0, y=5.0, highlight=None, hcolor=WARN, size=27,
 
 
 def table(ax, rows, headers=None, x=8.0, y=5.0, col_w=None, size=27,
-          highlight_row=None):
-    """A small comparison table. rows is a list of tuples of strings."""
+          highlight_row=None, highlight_cells=None):
+    """A small comparison table. rows is a list of tuples of strings.
+
+    highlight_cells: iterable of (row, col) pairs highlighted individually,
+    for DP-style grids where the cell being filled (and/or the specific
+    cells it depends on) matters, not a whole row.
+    """
     ncol = len(rows[0])
     col_w = col_w or [3.4] * ncol
     total = sum(col_w)
     rh = 0.78
     x0 = x - total / 2
     ytop = y + (len(rows) + (1 if headers else 0)) * rh / 2
+    highlight_cells = set(highlight_cells or ())
 
     if headers:
         for c, htxt in enumerate(headers):
@@ -547,8 +553,14 @@ def table(ax, rows, headers=None, x=8.0, y=5.0, col_w=None, size=27,
                                    facecolor=WARN, alpha=0.14, zorder=1))
         for c, cell in enumerate(row):
             cx = x0 + sum(col_w[:c]) + col_w[c] / 2
+            cell_hl = (r, c) in highlight_cells
+            if cell_hl:
+                ax.add_patch(Rectangle(
+                    (cx - col_w[c] / 2 + 0.08, yy - rh * 0.42),
+                    col_w[c] - 0.16, rh * 0.84,
+                    facecolor=WARN, alpha=0.22, zorder=2))
             ax.text(cx, yy, str(cell), ha="center", va="center", zorder=3,
-                    color=WARN if r == highlight_row else FG,
+                    color=WARN if (r == highlight_row or cell_hl) else FG,
                     fontsize=size, fontfamily=MONO)
 
 

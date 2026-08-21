@@ -67,7 +67,11 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
         -> a monospace block; it shrinks its own font to fit. Keep lines
            under 52 characters. Height is about 0.65 per line.
   k.table(ax, [("1,000","10")], headers=("size","steps"), y=5.0,
-          col_w=[5.0,3.0], highlight_row=1)   -> about 0.78 per row plus header
+          col_w=[5.0,3.0], highlight_row=1, highlight_cells=[(0,1)])
+        -> about 0.78 per row plus header. highlight_cells is a list of
+           (row, col) pairs for highlighting individual cells (e.g. a DP
+           table's current cell and the specific cells it depends on),
+           independent of highlight_row.
   k.curves(ax, y=4.6, w=9.0, h=4.2, show=("linear","log"))
         -> linear vs logarithmic on shared axes. Needs the whole w x h box.
 
