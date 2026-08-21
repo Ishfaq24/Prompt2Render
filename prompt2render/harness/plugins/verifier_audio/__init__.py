@@ -7,15 +7,17 @@ reconciliation #6 and #9). It can only run when out/final.mp4 already exists (th
 precondition qc.check itself has today); otherwise it reports SKIP, exactly like qc.py's own
 missing-prerequisite gates. It structurally cannot participate in repair_router's per-scene
 revert/re-invoke loop without new work to make caption-drift per-scene.
+
+Delegates the actual re-transcription to qc.caption_drift(), which is cached by final.mp4's
+signature — so a `prompt2render check` and a `tools/harness_run.py` run against the same build
+don't each pay for an independent whisper pass over the whole finished video, and this plugin
+gets qc's own thread-pool parallelism across sections for free instead of a duplicated serial loop.
 """
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 from ...context import SceneContext
 from ...plugin import Plugin
-from .... import asrmodel, cfg, qc, voice
+from .... import asrmodel, qc
 from ....project import parse_script
 
 
@@ -50,32 +52,6 @@ class VerifierAudioPlugin(Plugin):
             return context
 
         script = parse_script(context.prompt)
-        amap = voice.audio_map(context.project_dir)
-
-        deltas: list[float] = []
-        with tempfile.TemporaryDirectory(prefix="prompt2render-harness-verifier-audio-") as td:
-            work = Path(td)
-            wav = work / "final.wav"
-            cfg.run(["ffmpeg", "-y", "-v", "error", "-i", str(final),
-                    "-map", "0:a:0", "-ac", "1", "-c:a", "pcm_s16le", str(wav)])
-            for sec in script.sections:
-                deltas.extend(qc._drift_for_section(
-                    sec, context.project_dir, amap["sections"][sec.stem], work, wav, model))
-
-        if not deltas:
-            context.check_results[self.name] = [{
-                "status": "skip", "detail": "alignment produced nothing to compare"}]
-            return context
-
-        deltas.sort()
-        p95 = deltas[int(len(deltas) * 0.95)]
-        mx = deltas[-1]
-        detail = f"p95 {p95*1000:.0f} ms, max {mx*1000:.0f} ms over {len(deltas)} sentences"
-        if p95 <= 0.250 and mx <= 0.500:
-            status = "pass"
-        elif p95 <= 0.400:
-            status = "warn"
-        else:
-            status = "fail"
-        context.check_results[self.name] = [{"status": status, "detail": detail}]
+        result = qc.caption_drift(context.project_dir, script, final, model)
+        context.check_results[self.name] = [result]
         return context

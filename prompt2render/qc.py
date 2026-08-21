@@ -8,6 +8,7 @@ independent, and it is the only honest definition of "sync is correct".
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -221,9 +222,19 @@ def _drift_for_section(sec, proj: Path, o: dict, work: Path, wav: Path,
     return deltas
 
 
-def _gate_caption_drift(g: Gates, proj: Path, script: Script,
-                        final: Path, jobs: int | None = None) -> None:
-    """The decisive gate: re-align the shipped audio, compare to the shipped SRT.
+def _drift_cache_path(proj: Path) -> Path:
+    return proj / "build" / "qc" / "drift_cache.json"
+
+
+def _final_sig(final: Path, model_name: str) -> str:
+    st = final.stat()
+    raw = f"{st.st_size}|{st.st_mtime_ns}|{model_name}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def caption_drift(proj: Path, script: Script, final: Path, model: Path,
+                  jobs: int | None = None) -> dict:
+    """Independently re-align the shipped audio, compare to the shipped captions.
 
     Each section's re-transcription is a fully independent whisper pass over
     its own audio slice, so this is parallelized the same way `prompt2render encode`
@@ -231,18 +242,23 @@ def _gate_caption_drift(g: Gates, proj: Path, script: Script,
     subprocess, releasing the GIL while waiting), with `deltas` aggregated
     only in the main thread as futures complete -- no lock needed, and it's
     what keeps the p95/max maths correct regardless of finishing order.
+
+    Cached by (final.mp4's size+mtime, ASR model name): `prompt2render check` and the
+    harness's `verifier_audio` plugin both call this -- independently re-transcribing
+    the same shipped video is wasted minutes if both ever run against one build.
+    A false cache miss (final.mp4 touched without changing) just costs a
+    recompute; nothing here is safety-critical to invalidate eagerly on.
     """
-    model = asrmodel.available()
-    if model is None:
-        # WARN, not SKIP: this is "the only honest definition of sync is
-        # correct" per the module docstring above, so a build can't quietly
-        # certify shippable with the one independent check unrun. SKIP is
-        # for gates with genuinely nothing to check (no plan, no scenes
-        # yet) -- this one has something to check and just didn't.
-        g.add(WARN, "caption drift", "no ASR model — cannot verify sync "
-              "independently; run `prompt2render models --asr base.en` to enable "
-              "this gate")
-        return
+    sig = _final_sig(final, model.name)
+    cache_path = _drift_cache_path(proj)
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("sig") == sig:
+                return cached["result"]
+        except (OSError, ValueError):
+            pass
+
     amap = voice.audio_map(proj)
     n = max(1, jobs or cfg.env_int("P2R_QC_JOBS", 3))
     n = min(n, len(script.sections) or 1, os.cpu_count() or n)
@@ -259,19 +275,44 @@ def _gate_caption_drift(g: Gates, proj: Path, script: Script,
                       for sec in script.sections]
             for fut in as_completed(futures):
                 deltas.extend(fut.result())
+
     if not deltas:
-        g.add(SKIP, "caption drift", "alignment produced nothing to compare")
-        return
-    deltas.sort()
-    p95 = deltas[int(len(deltas) * 0.95)]
-    mx = deltas[-1]
-    detail = f"p95 {p95*1000:.0f} ms, max {mx*1000:.0f} ms over {len(deltas)} sentences"
-    if p95 <= 0.250 and mx <= 0.500:
-        g.add(PASS, "caption drift", detail)
-    elif p95 <= 0.400:
-        g.add(WARN, "caption drift", detail)
+        result = {"status": SKIP, "detail": "alignment produced nothing to compare"}
     else:
-        g.add(FAIL, "caption drift", detail)
+        deltas.sort()
+        p95 = deltas[int(len(deltas) * 0.95)]
+        mx = deltas[-1]
+        detail = f"p95 {p95*1000:.0f} ms, max {mx*1000:.0f} ms over {len(deltas)} sentences"
+        if p95 <= 0.250 and mx <= 0.500:
+            status = PASS
+        elif p95 <= 0.400:
+            status = WARN
+        else:
+            status = FAIL
+        result = {"status": status, "detail": detail}
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps({"sig": sig, "result": result}, indent=2),
+                          encoding="utf-8")
+    return result
+
+
+def _gate_caption_drift(g: Gates, proj: Path, script: Script,
+                        final: Path, jobs: int | None = None) -> None:
+    """The decisive gate: re-align the shipped audio, compare to the shipped SRT."""
+    model = asrmodel.available()
+    if model is None:
+        # WARN, not SKIP: this is "the only honest definition of sync is
+        # correct" per the module docstring above, so a build can't quietly
+        # certify shippable with the one independent check unrun. SKIP is
+        # for gates with genuinely nothing to check (no plan, no scenes
+        # yet) -- this one has something to check and just didn't.
+        g.add(WARN, "caption drift", "no ASR model — cannot verify sync "
+              "independently; run `prompt2render models --asr base.en` to enable "
+              "this gate")
+        return
+    result = caption_drift(proj, script, final, model, jobs)
+    g.add(result["status"], "caption drift", result["detail"])
 
 
 def _gate_loudness(g: Gates, final: Path, target: float,
