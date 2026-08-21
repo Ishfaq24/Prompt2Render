@@ -134,7 +134,8 @@ only once the step has reached it:
 '''
 
 
-def build_prompt(script: Script, sec, sents: list[dict]) -> str:
+def build_prompt(script: Script, sec, sents: list[dict],
+                 include_reveal: bool = True) -> str:
     # Give the model the clock, not just the words. Without timings it cannot
     # tell that two adjacent cues are 30 seconds apart, and it leaves frames
     # sitting on screen long past the point they stop being interesting.
@@ -158,7 +159,7 @@ def build_prompt(script: Script, sec, sents: list[dict]) -> str:
 {numbered}
 
     {API_DOC}
-    {REVEAL_DOC}
+    {REVEAL_DOC if include_reveal else ""}
 
     Write a module with exactly this shape and nothing else:
 
@@ -291,6 +292,13 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
             feedback = extra_feedback + (
                         "\n\nYour previous answer was rejected. Fix it and "
                         "return the whole corrected module.\n\nPROBLEM:\n" + err)
+            # The rejected code already shows whether this section wants
+            # progressive reveal (the {"steps": N} opts dict) — REVEAL_DOC's
+            # ~280 tokens of explanation are dead weight on every retry that
+            # doesn't use it, resent unchanged on top of the same API_DOC
+            # every attempt already pays for.
+            if "steps" not in code:
+                prompt = build_prompt(script, sec, sents, include_reveal=False)
             attempt += 1
             continue
 
