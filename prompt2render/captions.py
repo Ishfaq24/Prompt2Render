@@ -97,15 +97,28 @@ def cards_for(proj: Path, script: Script) -> list[dict]:
     amap = voice.audio_map(proj)
     out: list[dict] = []
     for sec in script.sections:
-        offset = amap["sections"][sec.stem]["start"]
+        # The `start` field in audio_map.json is floating-point seconds. Over a long video,
+        # adding floats accumulates drift. We must compute the exact offset using the sample count
+        # and sample rate to stay perfectly in sync with the master audio track.
+        sec_info = amap["sections"][sec.stem]
+        
+        # Calculate exact start time by summing samples of all previous sections
+        total_samples_before = 0
+        for s in script.sections:
+            if s.stem == sec.stem:
+                break
+            total_samples_before += amap["sections"][s.stem]["samples"]
+            
+        exact_offset = total_samples_before / amap["sample_rate"]
+        
         data = align.load(proj, sec.stem)
         for sent in data["sentences"]:
             words = sent.get("words") or []
             if not words:
                 # No word detail (a v1 alignment): the sentence is one card.
                 for card in textseg.caption_lines(sent["text"]):
-                    out.append({"start": offset + sent["start"],
-                                "end": offset + sent["end"],
+                    out.append({"start": exact_offset + sent["start"],
+                                "end": exact_offset + sent["end"],
                                 "text": "\n".join(card), "words": []})
                 continue
             for group in _cards(words, cfg.CAPTION_LINE, cfg.CAPTION_LINES):
@@ -113,11 +126,11 @@ def cards_for(proj: Path, script: Script) -> list[dict]:
                 lines = textseg.caption_lines(text, cfg.CAPTION_LINE,
                                               cfg.CAPTION_LINES)
                 out.append({
-                    "start": offset + group[0]["s"],
-                    "end": offset + group[-1]["e"],
+                    "start": exact_offset + group[0]["s"],
+                    "end": exact_offset + group[-1]["e"],
                     "text": "\n".join(lines[0]) if lines else text,
-                    "words": [{"w": w["w"], "s": offset + w["s"],
-                               "e": offset + w["e"]} for w in group],
+                    "words": [{"w": w["w"], "s": exact_offset + w["s"],
+                               "e": exact_offset + w["e"]} for w in group],
                 })
     return _constrain(out)
 

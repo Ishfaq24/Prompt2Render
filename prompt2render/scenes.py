@@ -19,6 +19,8 @@ import json
 import os
 import re
 import sys
+import time
+import random
 import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -233,127 +235,97 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
     outdir.mkdir(parents=True, exist_ok=True)
     dst = outdir / f"scene_{sec.stem}.py"
 
-    keys = llm.keys()
-    models = llm.model_chain("P2R_SCENE_MODEL", "gemini-3.6-flash")
-    key_i = model_i = 0
-    client = llm.client(keys[key_i])
+    keys = llm.configured_keys()
+    models = llm.configured_models("P2R_SCENE_MODEL", "gemini-3.7-flash")
+    
     prompt = build_prompt(script, sec, sents)
-    # extra_feedback: repair_router's harness-level cycle (prompt2render/harness/plugins/repair_router)
-    # seeds diagnostics from *its own* prior repair attempts here — separate from this loop's own
-    # internal `feedback`, which is still exactly the same reject-and-retry text as before.
     feedback = extra_feedback
 
     attempt = 1                  # content attempts on the *current* model
     total_attempt = 1            # across every model, for the final message
-    while True:
-        model = models[model_i]
-        cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}/{retries + 1}"
-                + (f", key {key_i + 1}/{len(keys)}" if len(keys) > 1 else "") + ")")
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt + feedback}],
-                max_tokens=16000,
-                # Gemini 3.x spends completion budget thinking before it emits
-                # code. The drawing API is small and fully specified, so there
-                # is little to reason about; capping this keeps a call inside
-                # a minute and stops thinking eating the whole token budget.
-                extra_body={"reasoning_effort": os.environ.get("P2R_REASONING", "low")},
-            )
-        except Exception as e:                    # noqa: BLE001
-            # A 429 is an account-level quota, not a content problem — it does
-            # not deserve one of the content-retry attempts above, and
-            # retrying the same key just burns the SDK's own retry budget on
-            # a wall that will not move. Rotate to the next key if there is
-            # one; once every key is spent on this model, rotate to the next
-            # model instead of giving up — Gemini's free tier meters quota
-            # per (key, model) pair, so a different model resets it. Only
-            # count this against `attempt` once every (key, model) combination
-            # is spent.
-            if type(e).__name__ != "RateLimitError":
+    
+    last_error = None
+    
+    for m_idx, model, k_idx, key in llm.iter_routes(models, keys):
+        if llm.is_cooled_down(model, k_idx):
+            continue
+            
+        client = llm.client(key)
+        
+        while attempt <= retries + 1:
+            cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}/{retries + 1}"
+                    + (f", key {k_idx + 1}/{len(keys)}" if len(keys) > 1 else "") + ")")
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt + feedback}],
+                    max_tokens=16000,
+                    extra_body={"reasoning_effort": os.environ.get("P2R_REASONING", "low")},
+                )
+            except Exception as e:
+                last_error = e
+                if llm.is_invalid_model_error(e):
+                    cfg.warn(f"section {sec.stem}: model {model} is invalid/not found.")
+                    break # Break out of attempts AND key loop for this model
+                    
+                if llm.is_quota_error(e):
+                    cfg.warn(f"section {sec.stem}: key {k_idx + 1}/{len(keys)} rate-limited on {model}, rotating...")
+                    llm.mark_cooldown(model, k_idx)
+                    break # Break out of attempts loop, move to next route. DOES NOT consume content retry.
+                    
+                if llm.is_retryable_error(e):
+                    delay = min(2 ** attempt + random.random(), 10.0)
+                    cfg.warn(f"section {sec.stem}: temporary error on {model}: {type(e).__name__}. Retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+                    continue
                 raise
-            if key_i + 1 < len(keys):
-                key_i += 1
-                cfg.warn(f"section {sec.stem}: key {key_i}/{len(keys)} "
-                         f"rate-limited on {model}, switching to the next key")
-                client = llm.client(keys[key_i])
-                continue
-            if model_i + 1 < len(models):
-                key_i, model_i = 0, model_i + 1
-                cfg.warn(f"section {sec.stem}: all {len(keys)} key(s) "
-                         f"rate-limited on {model}, switching to {models[model_i]}")
-                client = llm.client(keys[key_i])
-                continue
-            sys.exit(f"[prompt2render] section {sec.stem}: all {len(keys)} Gemini "
-                     f"key(s) rate-limited on every model ({', '.join(models)}) — {e}")
-        choice = resp.choices[0] if resp.choices else None
-        code = (choice.message.content if choice else "") or ""
-        if not code.strip():
-            fin = choice.finish_reason if choice else "?"
-            sys.exit(f"[prompt2render] empty completion (finish_reason={fin}) — "
-                     "lower the state count or raise the token budget")
-        dst.write_text(strip_fences(code), encoding="utf-8")
 
-        try:
-            # Render for real, into a staging directory that is only swapped
-            # in once the audit passes. A rejected attempt is discarded
-            # exactly as before; an accepted one has already produced this
-            # section's PNGs, so `prompt2render stills` finds them current and skips.
-            # The old `check=True` path drew every frame, threw the pixels
-            # away, and left the stills stage to draw all of them again.
-            with _RENDER_LOCK:
-                man = stills.render_into(dst, outdir / sec.stem,
-                                         max_cue=len(sents) - 1)
-        except SystemExit as e:
-            err = str(e)[-1500:]
-            first = err.splitlines()[0][:110] if err.splitlines() else err[:110]
-            cfg.say(f"section {sec.stem}: rejected — {first}")
-            # A stack trace tells it the code crashed. An audit failure tells
-            # it *where two things collided, in pixels*. Both go back verbatim.
-            feedback = extra_feedback + (
-                        "\n\nYour previous answer was rejected. Fix it and "
-                        "return the whole corrected module.\n\nPROBLEM:\n" + err)
-            # The rejected code already shows whether this section wants
-            # progressive reveal (the {"steps": N} opts dict) — REVEAL_DOC's
-            # ~280 tokens of explanation are dead weight on every retry that
-            # doesn't use it, resent unchanged on top of the same API_DOC
-            # every attempt already pays for.
-            if "steps" not in code:
-                prompt = build_prompt(script, sec, sents, include_reveal=False)
+            choice = resp.choices[0] if resp.choices else None
+            code = (choice.message.content if choice else "") or ""
+            if not code.strip():
+                fin = choice.finish_reason if choice else "?"
+                sys.exit(f"[prompt2render] empty completion (finish_reason={fin}) — "
+                         "lower the state count or raise the token budget")
+            dst.write_text(strip_fences(code), encoding="utf-8")
 
-            if attempt < retries + 1:
-                attempt += 1
-                total_attempt += 1
-                continue
-            # This model's content-retry budget is spent on its own mistakes
-            # (not a quota wall — RateLimitError is handled separately,
-            # above). A model that keeps failing the same way across every
-            # attempt is a wall a key rotation can't move either; try the
-            # next model in the chain before giving up on the section
-            # entirely, the same escalation a rate limit already gets.
-            if model_i + 1 < len(models):
-                model_i += 1
-                key_i = 0
-                client = llm.client(keys[key_i])
+            try:
+                with _RENDER_LOCK:
+                    man = stills.render_into(dst, outdir / sec.stem,
+                                             max_cue=len(sents) - 1)
+            except SystemExit as e:
+                err = str(e)[-1500:]
+                first = err.splitlines()[0][:110] if err.splitlines() else err[:110]
+                cfg.say(f"section {sec.stem}: rejected — {first}")
+                
+                feedback = extra_feedback + (
+                            "\n\nYour previous answer was rejected. Fix it and "
+                            "return the whole corrected module.\n\nPROBLEM:\n" + err)
+                
+                if "steps" not in code:
+                    prompt = build_prompt(script, sec, sents, include_reveal=False)
+
+                if attempt < retries + 1:
+                    attempt += 1
+                    total_attempt += 1
+                    continue
+                    
+                # Content budget for THIS model exhausted. 
+                # Move to next model, resetting content attempts.
+                cfg.warn(f"section {sec.stem}: still failing after "
+                         f"{retries + 1} tries on {model}, switching models...")
                 attempt = 1
                 total_attempt += 1
-                cfg.warn(f"section {sec.stem}: still failing after "
-                         f"{retries + 1} tries on {model}, switching to "
-                         f"{models[model_i]}")
-                # A clean slate, not the accumulated feedback: that history
-                # describes a different model's own rejected code, which a
-                # fresh model never wrote and has no reason to make sense of.
-                feedback = extra_feedback
+                feedback = extra_feedback # Clear model-specific feedback
                 prompt = build_prompt(script, sec, sents)
-                continue
-            sys.exit(f"[prompt2render] section {sec.stem} still failing after "
-                     f"{total_attempt} tries across every model "
-                     f"({', '.join(models)})")
+                break # Break attempts loop, move to next route (which will be next model due to route ordering)
 
-        used = getattr(resp, "usage", None)
-        cfg.say(f"section {sec.stem}: accepted — {len(man)} stills"
-                + (f", {used.total_tokens} tokens" if used else ""))
-        return dst
+            used = getattr(resp, "usage", None)
+            cfg.say(f"section {sec.stem}: accepted — {len(man)} stills"
+                    + (f", {used.total_tokens} tokens" if used else ""))
+            return dst
+
+    sys.exit(f"[prompt2render] section {sec.stem} failed. "
+             f"Exhausted {total_attempt} content tries and all API routes. Last API error: {last_error}")
 
 
 def default_jobs(n: int) -> int:

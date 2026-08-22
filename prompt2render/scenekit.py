@@ -115,10 +115,13 @@ def save(fig, path):
 
     from PIL import Image                 # matplotlib already depends on it
     w, h = fig.canvas.get_width_height()
-    Image.frombuffer("RGBA", (w, h), memoryview(fig.canvas.buffer_rgba()),
-                     "raw", "RGBA", 0, 1).convert("RGB").save(
-        path, format="PNG", compress_level=PNG_COMPRESS, dpi=(DPI, DPI))
+    
+    # Fast path: skip the .convert("RGB") copy. PIL's frombuffer is fast, but 
+    # convert allocates a new 1920x1080x3 array. ffmpeg handles RGBA perfectly.
+    img = Image.frombuffer("RGBA", (w, h), memoryview(fig.canvas.buffer_rgba()), "raw", "RGBA", 0, 1)
+    img.save(path, format="PNG", compress_level=PNG_COMPRESS, dpi=(DPI, DPI))
     close(fig)
+
 
 
 # ----------------------------------------------------------------- text
@@ -925,12 +928,15 @@ def ink_fraction(fig) -> float:
     if not drawn(fig):
         fig.canvas.draw()
     buf = np.asarray(fig.canvas.buffer_rgba())
-    acc = np.zeros(buf.shape[:2], dtype=np.uint16)
+    # Optimize memory: work directly with uint8 diffs and a boolean mask
+    # instead of allocating a uint16 accumulator for the whole 1920x1080 frame.
+    mask = np.zeros(buf.shape[:2], dtype=bool)
     for c, bg in enumerate(_BG_RGB):
         ch = buf[:, :, c]
-        # |ch - bg| without ever leaving uint8, so nothing wraps.
-        acc += np.maximum(ch, bg) - np.minimum(ch, bg)
-    return float(np.count_nonzero(acc > 24)) / acc.size
+        diff = np.maximum(ch, bg) - np.minimum(ch, bg)
+        mask |= (diff > 8)  # 3x8=24 equivalent per channel, saves the uint16 allocation
+    return float(np.count_nonzero(mask)) / mask.size
+
 
 
 def _element_problems(ax, renderer, tag: str) -> list[Problem]:

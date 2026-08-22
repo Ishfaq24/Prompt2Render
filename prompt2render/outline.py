@@ -90,17 +90,22 @@ def build_prompt(title: str, topic: str, audience: str,
     video would answer. Every section in between should carry exactly one
     idea -- split a crowded section into two rather than cramming it.
 
-    If this topic is a process, algorithm or procedure that can be
-    demonstrated by actually running it -- sorting, searching, a data
-    structure operation, a state machine, anything with a step-by-step
-    execution -- commit to ONE concrete running example (specific numbers or
-    values, chosen once) and give it enough sections to walk through every
-    step of what actually happens to that example, not just a description of
-    the general rule. Name the concrete example and its values directly in
-    the ANIM line of every section that traces it (e.g. "trace partitioning
-    on [2,6,1,8,4]: pivot 4, i and j scan left to right"), so the same values
-    are reused start to finish and never swapped for a different example
-    partway through.
+    CHOOSE A TEACHING STRUCTURE based on the topic. Do not use a generic template:
+    1. If the topic is a process, algorithm, or data structure operation (e.g. Quick Sort, 
+       Binary Search, Hash Collisions): commit to ONE concrete running example (specific numbers 
+       or values, chosen once) and give it enough sections to walk through every step of what 
+       actually happens to that example. Name the concrete example and its values directly in 
+       the ANIM line of every section that traces it (e.g. "trace partitioning on [2,6,1,8,4]: 
+       pivot 4, i and j scan left to right").
+    2. If the topic is an architecture, system, or abstract concept (e.g. Cache Mapping, 
+       Pipelining, Virtual Memory): build a block/datapath diagram. Show the "naive approach" 
+       failing first, then introduce the actual solution. Trace a specific data payload 
+       through the blocks to show how it flows.
+    3. If the topic is a comparison or trade-off (e.g. TCP vs UDP, Lomuto vs Hoare): use 
+       side-by-side execution or a table. Run the same input through both sides to make 
+       the difference self-explanatory.
+    
+    Whatever structure you choose, make it self-explanatory. Show, don't just tell.
 
     Output ONLY this JSON, no prose, no markdown fences, no trailing commas:
 
