@@ -215,6 +215,13 @@ def _drift_for_section(sec, proj: Path, o: dict, work: Path, wav: Path,
         sents = textseg.sentences(sec.narration)
         fresh, conf = align.reconcile(sents, align._asr_tokens(asr), o["dur"])
         if conf >= align.CONF_FLOOR:
+            # The shipped alignment was clamped to exact synthesis cues. 
+            # If we don't clamp the fresh ASR, we are comparing exact synthesis 
+            # boundaries against raw whisper estimates, which naturally drift.
+            prior = voice.section_cues(proj, sec.stem)
+            if prior:
+                fresh = align.clamp_to_prior(fresh, prior)
+                
             shipped = align.load(proj, sec.stem)["sentences"]
             for a, b in zip(shipped, fresh):
                 deltas.append(abs(a["start"] - b["start"]))
