@@ -271,11 +271,19 @@ def caption_drift(proj: Path, script: Script, final: Path, model: Path,
                  "-map", "0:a:0", "-ac", "1", "-c:a", "pcm_s16le", str(wav)])
         with ThreadPoolExecutor(max_workers=n) as pool:
             futures = []
-            total_samples = 0
             for sec in script.sections:
                 sec_info = amap["sections"][sec.stem]
-                # Fix: compute exact start time from samples to match captions.py
-                exact_start = total_samples / amap["sample_rate"]
+                
+                # We must calculate the exact start time by summing the samples
+                # of all previous sections independently for each section, because
+                # ThreadPoolExecutor execution order is not guaranteed.
+                total_samples_before = 0
+                for s in script.sections:
+                    if s.stem == sec.stem:
+                        break
+                    total_samples_before += amap["sections"][s.stem]["samples"]
+                    
+                exact_start = total_samples_before / amap["sample_rate"]
                 
                 # We must pass the exact start time to the slice, otherwise the 
                 # QC check itself drifts and falsely fails a perfectly synced video
@@ -284,7 +292,6 @@ def caption_drift(proj: Path, script: Script, final: Path, model: Path,
                 
                 futures.append(pool.submit(_drift_for_section, sec, proj,
                                            adjusted_info, work, wav, model))
-                total_samples += sec_info["samples"]
             for fut in as_completed(futures):
                 deltas.extend(fut.result())
 
