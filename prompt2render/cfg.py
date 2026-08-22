@@ -67,14 +67,16 @@ VOPTS_PREVIEW_CPU = [
 #: vector's `scenecut=0`: keep I-frames on the fixed, predictable period the
 #: clip-head-dissolve scheme and concat demuxer both assume.
 VOPTS_GPU = [
-    "-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq",
-    "-rc", "vbr", "-cq", "18", "-b:v", "0",
-    "-maxrate", "20M", "-bufsize", "40M",
-    "-multipass", "fullres",
-    "-spatial_aq", "1", "-temporal_aq", "1", "-aq-strength", "8",
-    "-rc-lookahead", "32", "-bf", "3", "-b_ref_mode", "middle",
-    "-no-scenecut", "1", "-profile:v", "high",
-    "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS * 5),
+    "-c:v", "h264_nvenc",
+    "-preset", "p4",
+    "-profile:v", "main",
+    "-rc", "vbr",
+    "-cq", "21",
+    "-b:v", "0",
+    "-pix_fmt", "yuv420p",
+    "-r", str(FPS),
+    "-g", str(FPS * 5),
+    "-bf", "0",
 ]
 
 # ---------------------------------------------------------------- audio ----
@@ -214,10 +216,21 @@ def gpu_encode_available() -> bool:
     global _gpu_ok
     if _gpu_ok is None:
         try:
+            # Use nullsrc to generate a valid empty frame for the encoder,
+            # avoiding any OS-specific /dev/null vs NUL quirks and pixel format
+            # mismatches that can cause the encoder initialization to fail.
+            # Minimal probe to ensure the encoder can actually open.
+            # We omit bitrate and just use a fast preset to avoid triggering
+            # driver-specific feature rejections (like B-frame ref modes).
+            # We use a completely standard NVENC profile for the probe.
+            # Some drivers reject extreme presets like p1 if not paired with
+            # specific rate control or profile arguments. We use a known-safe
+            # baseline: h264_nvenc, yuv420p, 1080p.
             proc = try_run([
-                "ffmpeg", "-hide_banner", "-v", "error", "-f", "lavfi",
-                "-i", "color=c=black:s=64x64:d=1:r=5",
-                "-frames:v", "2", "-c:v", "h264_nvenc", "-f", "null", "-",
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30",
+                "-frames:v", "30", "-c:v", "h264_nvenc", "-preset", "p1", "-profile:v", "main", "-bf", "0",
+                "-pix_fmt", "yuv420p", "-f", "null", "-"
             ], timeout=15)
             _gpu_ok = proc.returncode == 0
         except Exception:
@@ -236,13 +249,31 @@ def pick_vopts(preview: bool = False) -> list[str]:
     """
     if gpu_encode_available():
         return VOPTS_PREVIEW if preview else VOPTS_GPU
-    if preview:
-        warn("no working NVENC encoder found -- preview falling back to a "
-             "fast CPU preset")
-        return VOPTS_PREVIEW_CPU
-    warn("no working NVENC encoder found -- encoding on CPU (libx264); "
-         "this will be slower")
-    return VOPTS
+    # If gpu_encode_available() was false, let's grab the actual error for the warning
+    proc = try_run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30",
+        "-frames:v", "30", "-c:v", "h264_nvenc", "-preset", "p1", "-profile:v", "main", "-bf", "0",
+        "-pix_fmt", "yuv420p", "-f", "null", "-"
+    ], timeout=15)
+    
+    err = (proc.stderr or "").strip().splitlines()
+    real_err = next((line for line in err if "Error" in line or "failed" in line or "Unknown" in line or "Cannot" in line), None)
+    if not real_err and err:
+        real_err = err[-1]
+    reason = real_err if real_err else "unsupported build or hardware"
+    
+    # We only want to print this warning once per process, not per clip
+    if not getattr(pick_vopts, "_warned", False):
+        if preview:
+            warn(f"no working NVENC encoder found ({reason}) -- preview falling back to a "
+                 "fast CPU preset")
+        else:
+            warn(f"no working NVENC encoder found ({reason}) -- encoding on CPU (libx264); "
+                 "this will be slower")
+        pick_vopts._warned = True
+        
+    return VOPTS_PREVIEW_CPU if preview else VOPTS
 
 
 def default_encode_jobs() -> int:

@@ -19,8 +19,6 @@ import json
 import os
 import re
 import sys
-import time
-import random
 import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -79,8 +77,16 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
            (row, col) pairs for highlighting individual cells (e.g. a DP
            table's current cell and the specific cells it depends on),
            independent of highlight_row.
+  k.rectangle(ax, x, y, w, h, facecolor=k.ZERO, edgecolor=k.DIM, lw=2.0)
+        -> a raw rectangle for building custom shapes dynamically.
   k.curves(ax, y=4.6, w=9.0, h=4.2, show=("linear","log"))
         -> linear vs logarithmic on shared axes. Needs the whole w x h box.
+  k.hanoi(ax, [[3,2,1], [], []], x=8.0, y=5.0, w=9.0, h=4.0)
+        -> Tower of Hanoi puzzle state. First list is left peg, last is right peg.
+  k.tree(ax, (10, (5, 2, 7), (15, None, 20)), x=8.0, y=7.0, dx=3.0, dy=1.5, active_node=5)
+        -> Binary tree. Nodes are values or (val, left, right) tuples.
+  k.grid(ax, [[1,2],[3,4]], x=8.0, y=5.0, cell_w=1.2, cell_h=1.2, highlight=[(0,1)])
+        -> 2D matrix/grid (DP tables, mazes, graphs). highlight is a list of (row, col).
   k.block(ax, "ALU", x, y, w=2.6, h=1.4, active=False, size=24)
         -> a labeled functional-unit box for datapath/block diagrams (cache
            mapping, pipelining, hazards, addressing modes, DMA, fetch-decode-
@@ -91,6 +97,14 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
         -> a right-angle wire between two k.block() anchors (e.g.
            rf["right"], alu["left"]). active=True makes it the signal path
            actually carrying data this step, thicker and ACCENT-colored.
+
+DYNAMIC COMPOSITION FOR COMPLEX TOPICS:
+  * For complex, novel topics (like Tower of Hanoi, Neural Networks, or Space-filling curves), DO NOT just look for a single built-in function. 
+  * Instead, use standard Python loops, conditionals, and coordinate math to compose complex visuals out of generic primitives (k.block, k.circle, k.arrow, k.label, k.grid).
+  * Example: To draw a custom stack of items, use a `for` loop to calculate the `y` coordinate and draw a `k.block` for each item.
+  * Example: To draw a graph, calculate `(x, y)` for each node, draw `k.circle` for nodes, and `k.arrow` between them.
+  * You are writing a Python script; use the full power of Python to dynamically adapt to the topic's requirements.
+  * IMPORTANT: The user prefers JIOHotsatr coloring. When using custom colors, prefer vibrant blues ("#0000ff"), reds ("#ff0000"), and greens ("#00ff00").
 
 LAYOUT RULES (these matter more than cleverness):
   * EVERY k. CALL OWNS AN EXCLUSIVE REGION OF THE FRAME. Two of them may
@@ -193,7 +207,8 @@ def build_prompt(script: Script, sec, sents: list[dict],
 
     Rules:
       * `cue_index` is the index of the sentence the frame appears ON. Indices
-        must start at 0 and strictly increase.
+        must start at 0 and STRICTLY INCREASE. You may skip sentences, but you may NEVER go backward.
+        The maximum valid cue_index for this section is {len(sents) - 1}.
       * PACING IS A HARD REQUIREMENT. Use the timestamps: no frame may sit for
         longer than 12 seconds. Subtract consecutive cue times to check
         yourself. Roughly {max(7, int(total // 9))} states for this section,
@@ -203,6 +218,7 @@ def build_prompt(script: Script, sec, sents: list[dict],
       * Every frame carries a k.title(...) under 52 characters.
       * Use real, correct numbers, consistent frame to frame. A wrong value is
         worse than a plain frame.
+      * INTENTIONAL RULE DEMONSTRATION: If the narration explicitly talks about an illegal move (e.g., placing a large disk on a small disk in Tower of Hanoi), you MUST actually draw the physically illegal state to show what NOT to do. For Hanoi, this means passing a list like `[1, 2]` to `k.hanoi` so disk 2 is visibly on top of disk 1. You MUST also clearly mark it as illegal (e.g., use `k.title(ax, "ILLEGAL MOVE", color=k.BAD)` or `k.badge(ax, x, y, "X", color=k.BAD)`). Do NOT just draw a legal state and label it illegal.
       * LAYOUT IS THE THING THAT USUALLY FAILS. Two elements in the same
         horizontal band will overlap and ruin the frame.
       * k.curves fills its whole w x h box. Never draw a k.table, k.array or
@@ -235,97 +251,128 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
     outdir.mkdir(parents=True, exist_ok=True)
     dst = outdir / f"scene_{sec.stem}.py"
 
-    keys = llm.configured_keys()
-    models = llm.configured_models("P2R_SCENE_MODEL", "gemini-3.7-flash")
-    
     prompt = build_prompt(script, sec, sents)
+    # extra_feedback: repair_router's harness-level cycle (prompt2render/harness/plugins/repair_router)
+    # seeds diagnostics from *its own* prior repair attempts here — separate from this loop's own
+    # internal `feedback`, which is still exactly the same reject-and-retry text as before.
     feedback = extra_feedback
 
-    attempt = 1                  # content attempts on the *current* model
+    attempt = 1                  # content attempts
     total_attempt = 1            # across every model, for the final message
-    
-    last_error = None
-    
-    for m_idx, model, k_idx, key in llm.iter_routes(models, keys):
-        if llm.is_cooled_down(model, k_idx):
-            continue
+    while True:
+        try:
+            code = llm.complete(
+                prompt + feedback, 
+                max_tokens=16000, 
+                label=f"section {sec.stem} (attempt {attempt}/{retries + 1})"
+            )
+        except Exception as e:
+            sys.exit(f"[prompt2render] section {sec.stem}: LLM call failed — {e}")
             
-        client = llm.client(key)
+        code = code or ""
+        if not code.strip():
+            sys.exit(f"[prompt2render] section {sec.stem}: empty completion — "
+                     "lower the state count or raise the token budget")
         
-        while attempt <= retries + 1:
-            cfg.say(f"section {sec.stem}: asking {model} (attempt {attempt}/{retries + 1}"
-                    + (f", key {k_idx + 1}/{len(keys)}" if len(keys) > 1 else "") + ")")
-            try:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt + feedback}],
-                    max_tokens=16000,
-                    extra_body={"reasoning_effort": os.environ.get("P2R_REASONING", "low")},
-                )
-            except Exception as e:
-                last_error = e
-                if llm.is_invalid_model_error(e):
-                    cfg.warn(f"section {sec.stem}: model {model} is invalid/not found.")
-                    break # Break out of attempts AND key loop for this model
-                    
-                if llm.is_quota_error(e):
-                    cfg.warn(f"section {sec.stem}: key {k_idx + 1}/{len(keys)} rate-limited on {model}, rotating...")
-                    llm.mark_cooldown(model, k_idx)
-                    break # Break out of attempts loop, move to next route. DOES NOT consume content retry.
-                    
-                if llm.is_retryable_error(e):
-                    delay = min(2 ** attempt + random.random(), 10.0)
-                    cfg.warn(f"section {sec.stem}: temporary error on {model}: {type(e).__name__}. Retrying in {delay:.1f}s...")
-                    time.sleep(delay)
-                    continue
-                raise
-
-            choice = resp.choices[0] if resp.choices else None
-            code = (choice.message.content if choice else "") or ""
-            if not code.strip():
-                fin = choice.finish_reason if choice else "?"
-                sys.exit(f"[prompt2render] empty completion (finish_reason={fin}) — "
-                         "lower the state count or raise the token budget")
-            dst.write_text(strip_fences(code), encoding="utf-8")
-
-            try:
-                with _RENDER_LOCK:
-                    man = stills.render_into(dst, outdir / sec.stem,
-                                             max_cue=len(sents) - 1)
-            except SystemExit as e:
-                err = str(e)[-1500:]
-                first = err.splitlines()[0][:110] if err.splitlines() else err[:110]
-                cfg.say(f"section {sec.stem}: rejected — {first}")
+        # Defensive cue repair: if the LLM emitted out-of-order cues, sort them.
+        # This prevents stills.py from rejecting the code solely because a cue index went backward.
+        raw_code = strip_fences(code)
+        import re
+        
+        def fix_cues(match):
+            inner = match.group(1)
+            # Find all tuples: ("s01", 0, s01) or ("s02", 3, s02, {"steps": 2})
+            # We look for the integer right after the first string.
+            tuples = re.findall(r'(\(\s*["\'][^"\']+["\']\s*,\s*)(\d+)(\s*,[^)]+\))', inner)
+            if not tuples:
+                return match.group(0)
                 
-                feedback = extra_feedback + (
-                            "\n\nYour previous answer was rejected. Fix it and "
-                            "return the whole corrected module.\n\nPROBLEM:\n" + err)
+            fixed_inner = inner
+            prev_cue = -1
+            max_allowed = len(sents) - 1
+            
+            for prefix, cue_str, suffix in tuples:
+                cue = int(cue_str)
                 
-                if "steps" not in code:
-                    prompt = build_prompt(script, sec, sents, include_reveal=False)
-
-                if attempt < retries + 1:
-                    attempt += 1
-                    total_attempt += 1
-                    continue
+                # 1. Enforce strictly increasing
+                if cue <= prev_cue:
+                    cue = prev_cue + 1
                     
-                # Content budget for THIS model exhausted. 
-                # Move to next model, resetting content attempts.
-                cfg.warn(f"section {sec.stem}: still failing after "
-                         f"{retries + 1} tries on {model}, switching models...")
-                attempt = 1
+                # 2. Enforce max bounds (clamp to max_allowed)
+                if cue > max_allowed:
+                    cue = max_allowed
+                    
+                # If we clamped and it's no longer strictly increasing because
+                # multiple states are bunched at the very end, we have to accept
+                # that stills.py might reject it, or we can just let it be equal 
+                # at the max bound and let stills.py fail it with a clear message.
+                # Actually, stills.py requires strictly increasing. So if we hit the ceiling:
+                if cue <= prev_cue:
+                    cue = prev_cue + 1 # We must increase, even if it breaks the ceiling
+                    
+                if cue != int(cue_str):
+                    # Replace just this specific occurrence in the string
+                    old_tuple = f"{prefix}{cue_str}{suffix}"
+                    new_tuple = f"{prefix}{cue}{suffix}"
+                    fixed_inner = fixed_inner.replace(old_tuple, new_tuple, 1)
+                    
+                prev_cue = cue
+                    
+            return f"return [{fixed_inner}]"
+
+        # Apply the fix if we find the return list
+        raw_code = re.sub(r"return\s+\[(.*?)\]", fix_cues, raw_code, flags=re.DOTALL)
+            
+        dst.write_text(raw_code, encoding="utf-8")
+
+        try:
+            # Render for real, into a staging directory that is only swapped
+            # in once the audit passes. A rejected attempt is discarded
+            # exactly as before; an accepted one has already produced this
+            # section's PNGs, so `prompt2render stills` finds them current and skips.
+            # The old `check=True` path drew every frame, threw the pixels
+            # away, and left the stills stage to draw all of them again.
+            with _RENDER_LOCK:
+                man = stills.render_into(dst, outdir / sec.stem,
+                                         max_cue=len(sents) - 1)
+        except SystemExit as e:
+            err = str(e)[-1500:]
+            first = err.splitlines()[0][:110] if err.splitlines() else err[:110]
+            cfg.say(f"section {sec.stem}: rejected — {first}")
+            # A stack trace tells it the code crashed. An audit failure tells
+            # it *where two things collided, in pixels*. Both go back verbatim.
+            feedback_msg = "\n\nYour previous answer was rejected. Fix it and return the whole corrected module.\n\nPROBLEM:\n" + err
+            if "cue indices must increase" in err:
+                feedback_msg += "\n\nCRITICAL FIX: You emitted a cue index that was smaller than or equal to the previous state's cue index. Look at your `return [...]` list at the bottom. The second element of each tuple (the cue index) MUST strictly increase: e.g., 0, 2, 5, 8. Fix the numbers so they go up."
+            elif "but the section only has sentences" in err:
+                feedback_msg += f"\n\nCRITICAL FIX: You emitted a cue index that is too large. This section only has {len(sents)} sentences (indices 0 to {len(sents)-1}). You MUST NOT use a cue index larger than {len(sents)-1}."
+            elif "overlaps" in err or "share space" in err or "different horizontal bands" in err:
+                feedback_msg += "\n\nCRITICAL FIX: You have elements overlapping or sharing the same space on the screen. The canvas is 16 units wide and 9 units tall. You MUST change the `y` coordinates to put elements in different horizontal bands, OR split the content into two completely separate states."
+                
+            feedback = extra_feedback + feedback_msg
+            # The rejected code already shows whether this section wants
+            # progressive reveal (the {"steps": N} opts dict) — REVEAL_DOC's
+            # ~280 tokens of explanation are dead weight on every retry that
+            # doesn't use it, resent unchanged on top of the same API_DOC
+            # every attempt already pays for.
+            if "steps" not in code:
+                prompt = build_prompt(script, sec, sents, include_reveal=False)
+
+            if attempt < retries + 1:
+                attempt += 1
                 total_attempt += 1
-                feedback = extra_feedback # Clear model-specific feedback
-                prompt = build_prompt(script, sec, sents)
-                break # Break attempts loop, move to next route (which will be next model due to route ordering)
+                continue
+            
+            # Since llm.complete() handles quota rotation transparently, if we run out of 
+            # content retries here, we just fail the section. We don't try to outsmart 
+            # the model rotation for content errors anymore.
+            sys.exit(f"[prompt2render] section {sec.stem}: still failing after "
+                     f"{total_attempt} total attempts — {err}")
 
-            used = getattr(resp, "usage", None)
-            cfg.say(f"section {sec.stem}: accepted — {len(man)} stills"
-                    + (f", {used.total_tokens} tokens" if used else ""))
-            return dst
-
-    sys.exit(f"[prompt2render] section {sec.stem} failed. "
-             f"Exhausted {total_attempt} content tries and all API routes. Last API error: {last_error}")
+        # Usage reporting is omitted because we abstracted it behind llm.complete
+        # which returns the raw string, not the response object.
+        cfg.say(f"section {sec.stem}: accepted — {len(man)} stills")
+        return dst
 
 
 def default_jobs(n: int) -> int:

@@ -197,8 +197,83 @@ def _run_pipeline(d, s, a) -> int:
 
 def cmd_build(a):
     """The whole chain. Every stage is cached, so re-running is cheap."""
+    if getattr(a, "harness", False):
+        # Route through the harness instead of the raw pipeline
+        cmd_harness(a)
+    else:
+        d, s = _load(a.slug)
+        sys.exit(_run_pipeline(d, s, a))
+
+def cmd_harness(a):
+    """Run the harness pipeline explicitly."""
+    from prompt2render.harness.context import SceneContext
+    from prompt2render.harness.events import EventBus
+    from prompt2render.harness.loader import build_plugins, build_repair_router
+    from prompt2render.harness.logging_ import StructuredLogger
+    from prompt2render.harness.runner import GateFailure, HarnessRunner
+    
     d, s = _load(a.slug)
-    sys.exit(_run_pipeline(d, s, a))
+    script_path = d / "script.md"
+    
+    # The harness expects voice and align to be done first, as it doesn't wrap them yet.
+    # See docs/MIGRATION_INVENTORY.md §6.
+    from prompt2render import align, voice
+    voice.build(d, s, voice.settings(a))
+    align.align(d, s)
+    
+    config_path = Path(a.config) if getattr(a, "config", None) else None
+    plugins = build_plugins(config_path=config_path)
+    
+    # Hot-swap plugins if --manim is requested
+    if getattr(a, "manim", False):
+        from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, RendererManimPlugin
+        # Replace generator_code with generator_manim
+        plugins = [GeneratorManimPlugin() if p.name == "generator_code" else p for p in plugins]
+        # Replace renderer_stills with renderer_manim
+        plugins = [RendererManimPlugin() if p.name == "renderer_stills" else p for p in plugins]
+        cfg.say("harness: running in experimental --manim mode")
+    repair_router = build_repair_router(config_path=config_path)
+    
+    log_path = d / "build" / "harness" / "log.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logger = StructuredLogger(log_path)
+    bus = EventBus()
+    
+    if repair_router is not None:
+        repair_router.attach(
+            bus=bus,
+            plugins_by_name={p.name: p for p in plugins},
+            log_path=d / "build" / "harness" / "repair_log.jsonl",
+        )
+        
+    ctx = SceneContext(prompt=script_path, project_dir=d)
+    runner = HarnessRunner(plugins, logger, bus)
+    
+    cfg.say(f"running harness over {a.slug}: " + " -> ".join(p.name for p in plugins))
+    try:
+        ctx = runner.run(ctx)
+    except GateFailure as e:
+        sys.exit(f"[prompt2render] harness hard gate failed: {e}")
+        
+    # The harness runs generator_code -> renderer_stills -> verifiers.
+    # It does not yet run timeline -> encode -> finish -> publish.
+    # We must finish the pipeline manually after the harness completes successfully.
+    from prompt2render import assemble, encode, finish, publish, qc, timeline
+    
+    if getattr(a, "manim", False):
+        # Manim produces section-level MP4s directly, so we skip timeline/encode
+        # and use the legacy assemble path to pad them to the audio and concat.
+        cfg.say("harness: assembling Manim section clips...")
+        assemble.assemble(d, s, burn_captions=getattr(a, "burn", False))
+    else:
+        timeline.build(d, s, motion=getattr(a, "motion", None))
+        jobs = getattr(a, "jobs", None) or cfg.env_int("P2R_ENCODE_JOBS", cfg.default_encode_jobs())
+        if encode.encode(d, limit=None, jobs=jobs) != 0:
+            sys.exit("[prompt2render] encode did not finish")
+        finish.finish(d, s, burn=getattr(a, "burn", False))
+        
+    publish.build_packet(d, s)
+    sys.exit(qc.check(d, s, strict=getattr(a, "strict", False)))
 
 
 def cmd_auto(a):
@@ -228,8 +303,11 @@ def cmd_auto(a):
              "shipped with no human read -- that's what `auto` means. If "
              "this goes out close to as-is, set the synthetic-content "
              "disclosure in YouTube Studio (see out/upload.md's checklist).")
-    d, s = _load(a.slug)
-    sys.exit(_run_pipeline(d, s, a))
+    if getattr(a, "harness", False):
+        cmd_harness(a)
+    else:
+        d, s = _load(a.slug)
+        sys.exit(_run_pipeline(d, s, a))
 
 
 # ---------------------------------------------------------- escape hatches --
@@ -354,6 +432,10 @@ def main() -> None:
     v.add_argument("--pause-paragraph", type=int, dest="pause_paragraph")
     v.add_argument("--only", help="section stem, e.g. 03")
     v.add_argument("--force", action="store_true")
+    
+    hr = add("harness", cmd_harness, "run the full harness pipeline (evaluation & repair)")
+    hr.add_argument("slug")
+    hr.add_argument("--config", help="path to harness config.yaml")
 
     al = add("align", cmd_align, "force-align the narration to word level")
     al.add_argument("slug"); al.add_argument("--only")
@@ -421,6 +503,10 @@ def main() -> None:
         sp.add_argument("--scene-jobs", type=int, default=None, dest="scene_jobs",
                         help="parallel storyboard calls (default 3, "
                              "or $P2R_SCENE_JOBS)")
+        sp.add_argument("--harness", action="store_true", 
+                        help="route the build through the new harness layer (evaluation & repair)")
+        sp.add_argument("--manim", action="store_true",
+                        help="experimental: use Manim to generate scenes instead of scenekit")
 
     bd = add("build", cmd_build, "voice -> align -> scenes -> ... -> check")
     bd.add_argument("slug")

@@ -63,6 +63,29 @@ def _check_ffmpeg(r: Report) -> None:
     r.add(OK if shutil.which("ffprobe") else FAIL, "ffprobe",
           "" if shutil.which("ffprobe") else "not on PATH")
 
+    # Check NVENC specifically
+    if "h264_nvenc" in text or "hevc_nvenc" in text or cfg.try_run(["ffmpeg", "-hide_banner", "-h", "encoder=h264_nvenc"]).returncode == 0:
+        # ffmpeg was built with NVENC. Does the hardware actually work?
+        import os
+        proc = cfg.try_run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", 
+            "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30",
+            "-frames:v", "30", "-c:v", "h264_nvenc", "-preset", "p1", "-profile:v", "main", "-bf", "0",
+            "-pix_fmt", "yuv420p", "-f", "null", "-"
+        ], timeout=15)
+        if proc.returncode == 0:
+            r.add(OK, "gpu encode", "h264_nvenc is hardware-accelerated and working")
+        else:
+            err = (proc.stderr or "").strip().splitlines()
+            # Look for the actual error line, not just the generic "Nothing was written" warning
+            real_err = next((line for line in err if "Error" in line or "failed" in line or "Unknown" in line or "Cannot" in line), None)
+            if not real_err and err:
+                real_err = err[-1]
+            last_err = real_err if real_err else "unknown error"
+            r.add(WARN, "gpu encode", f"ffmpeg has h264_nvenc, but hardware failed: {last_err}")
+    else:
+        r.add(WARN, "gpu encode", "ffmpeg build does not support NVENC (missing h264_nvenc)")
+
 
 def _check_render(r: Report) -> None:
     try:

@@ -1,66 +1,66 @@
-"""Shared Gemini chat-completion plumbing for the AI-assisted stages.
+"""Shared Gemini/OpenAI-compatible LLM client with deterministic quota rotation.
 
-`scenes.py` talks to the same OpenAI-compatible Gemini endpoint with the same
-key-rotation-on-429 behaviour, but wraps it in a render-and-audit retry loop
-specific to storyboarding. `draft.py` and `outline.py` are both a single 
-one-shot call with nothing else going on, so that part is factored out here.
+Rotation policy:
+
+    If P2R_*_MODEL is set to a known model, begin at that model and continue
+    only through lower fallback models. For example, starting at gemini-3.5-
+    flash means 3.5-flash -> 3.5-flash-lite; it never jumps back to 3.7.
+
+    For each model, try every configured key exactly once. Only after every
+    key has failed for that model do we move to the next model.
+
+This module is deliberately compatible with older Prompt2Render callers that
+expect keys(), model_chain(), client(), and complete().
 """
 from __future__ import annotations
 
 import os
 import sys
-import time
-import random
-import threading
-from typing import Iterator
+from typing import Any
 
 from . import cfg
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-# Thread-safe cooldown cache to prevent concurrent jobs from hammering 
-# a route that just reported quota exhaustion.
-_cooldown_lock = threading.Lock()
-_cooldowns: dict[str, float] = {}
+# Ordered from strongest/full model to the progressively cheaper fallback.
+# Keep this list in the exact desired fallback order.
+CANONICAL_MODELS = [
+    "gemini-3.7-flash",
+    "gemini-3.7-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.6-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+]
+MODEL_FALLBACKS = CANONICAL_MODELS.copy()
 
 
-def configured_models(model_env: str = "P2R_SCENE_MODEL", default_model: str = "gemini-3.7-flash") -> list[str]:
-    """The primary model (env override or default), then the fallback chain."""
-    primary = os.environ.get(model_env, default_model)
-    fallback_str = os.environ.get("P2R_GEMINI_MODELS", "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite")
-    
-    chain = [primary]
-    for m in [m.strip() for m in fallback_str.split(",") if m.strip()]:
-        if m not in chain:
-            chain.append(m)
-    return chain
+def model_chain(model_env: str, default_model: str) -> list[str]:
+    """Return a monotonic fallback chain beginning at the configured model.
 
-
-def configured_keys() -> list[str]:
-    """GEMINI_API_KEY, plus any GEMINI_API_KEY_BACKUP* for failover.
-    Also supports comma-separated keys in P2R_GEMINI_KEYS.
+    When the configured model is one of the canonical models, lower fallbacks
+    only are tried. This prevents the old behavior where starting at 3.5 could
+    incorrectly jump back to 3.7 and 3.6 after 3.5 was exhausted.
     """
-    ks = []
-    
-    # 1. Primary key
-    if k := os.environ.get("GEMINI_API_KEY", "").strip():
-        ks.append(k)
-        
-    # 2. P2R_GEMINI_KEYS comma-separated list
-    if p2r_keys := os.environ.get("P2R_GEMINI_KEYS", ""):
-        for k in p2r_keys.split(","):
-            if k.strip() and k.strip() not in ks:
-                ks.append(k.strip())
-                
-    # 3. Legacy BACKUP_* variables
-    for name, val in sorted(os.environ.items()):
-        if name.startswith("GEMINI_API_KEY_BACKUP") and val.strip():
-            if val.strip() not in ks:
-                ks.append(val.strip())
-                
-    if not ks:
+    primary = os.environ.get(model_env, "").strip() or default_model
+    if primary in CANONICAL_MODELS:
+        start = CANONICAL_MODELS.index(primary)
+        return CANONICAL_MODELS[start:]
+    return [primary] + [m for m in CANONICAL_MODELS if m != primary]
+
+
+def keys() -> list[str]:
+    """Return the primary key followed by GEMINI_API_KEY_BACKUP* keys."""
+    values: list[str] = []
+    primary = os.environ.get("GEMINI_API_KEY", "").strip()
+    if primary:
+        values.append(primary)
+    for name, value in sorted(os.environ.items()):
+        if name.startswith("GEMINI_API_KEY_BACKUP") and value and value.strip():
+            values.append(value.strip())
+    if not values:
         sys.exit("[prompt2render] GEMINI_API_KEY not set (it lives in .env)")
-    return ks
+    return values
 
 
 def client(key: str):
@@ -68,114 +68,125 @@ def client(key: str):
         from openai import OpenAI
     except ImportError:
         sys.exit("[prompt2render] openai not installed — pip install -r requirements.txt")
-    # max_retries=0 because we handle routing/retries explicitly in our own loop
-    return OpenAI(api_key=key, base_url=ENDPOINT, timeout=120.0, max_retries=0)
+    return OpenAI(api_key=key, base_url=ENDPOINT, timeout=300.0, max_retries=2)
 
 
-def is_quota_error(e: Exception) -> bool:
-    """True if this is a hard quota exhaustion or rate limit."""
-    name = type(e).__name__
-    if name == "RateLimitError":
+def is_not_found(error: BaseException) -> bool:
+    """Recognize provider model-not-found errors."""
+    if type(error).__name__ == "NotFoundError":
         return True
-    
-    msg = str(e).lower()
-    # OpenAI SDK wraps 429s as RateLimitError, but sometimes 403s are quota errors too
-    if "resource_exhausted" in msg or "quota" in msg or "rate limit" in msg:
+    status = getattr(error, "status_code", None)
+    if status == 404:
         return True
-    return False
-
-
-def is_invalid_model_error(e: Exception) -> bool:
-    """True if the provider outright rejects the model name."""
-    name = type(e).__name__
-    msg = str(e).lower()
-    return name == "NotFoundError" or "models/" in msg and "not found" in msg
-
-
-def is_retryable_error(e: Exception) -> bool:
-    """True if this is a temporary network or server error (5xx)."""
-    name = type(e).__name__
-    return name in ("APIConnectionError", "APITimeoutError", "InternalServerError", "ConflictError")
-
-
-def mark_cooldown(model: str, key_idx: int) -> None:
-    cooldown_sec = int(os.environ.get("P2R_MODEL_COOLDOWN_SECONDS", "60"))
-    route_id = f"{model}:{key_idx}"
-    with _cooldown_lock:
-        _cooldowns[route_id] = time.time() + cooldown_sec
-
-
-def is_cooled_down(model: str, key_idx: int) -> bool:
-    route_id = f"{model}:{key_idx}"
-    with _cooldown_lock:
-        if route_id not in _cooldowns:
-            return False
-        if time.time() > _cooldowns[route_id]:
-            del _cooldowns[route_id]
-            return False
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) == 404:
         return True
+    text = str(error).lower()
+    return any(token in text for token in (
+        "404", "not found", "not_found", "is not found",
+    ))
+
+def is_rate_limited(error: BaseException) -> bool:
+    """Recognize provider quota/rate-limit errors across SDK versions."""
+    if type(error).__name__ == "RateLimitError":
+        return True
+    status = getattr(error, "status_code", None)
+    if status == 429:
+        return True
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) == 429:
+        return True
+    text = str(error).lower()
+    return any(token in text for token in (
+        "429", "rate limit", "rate-limit", "resource_exhausted", "quota exceeded",
+    ))
 
 
-def iter_routes(models: list[str], keys: list[str]) -> Iterator[tuple[int, str, int, str]]:
-    """Yields (model_idx, model, key_idx, key)."""
-    for m_idx, model in enumerate(models):
-        for k_idx, key in enumerate(keys):
-            yield m_idx, model, k_idx, key
+def _completion(client_obj: Any, model: str, prompt: str, max_tokens: int):
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        # Gemini-compatible endpoints require max_tokens, not max_completion_tokens.
+        "max_tokens": max_tokens,
+    }
+    reasoning = os.environ.get("P2R_REASONING", "low").strip()
+    if reasoning:
+        kwargs["extra_body"] = {"reasoning_effort": reasoning}
+    return client_obj.chat.completions.create(**kwargs)
 
 
-def complete(prompt: str, *, max_tokens: int, model_env: str = "P2R_SCENE_MODEL",
-            default_model: str = "gemini-3.7-flash") -> str:
-    """One-shot completion, intelligently rotating keys and models."""
-    keys = configured_keys()
-    models = configured_models(model_env, default_model)
-    
-    max_model_attempts = int(os.environ.get("P2R_MAX_MODEL_ATTEMPTS", "4"))
-    
-    last_error = None
-    
-    for m_idx, model, k_idx, key in iter_routes(models, keys):
-        if is_cooled_down(model, k_idx):
+# Global state to remember which (model, key) pairs are exhausted
+# and which models are NOT_FOUND, so we don't retry them across sections.
+_EXHAUSTED_QUOTA: set[tuple[str, str]] = set()
+_UNSUPPORTED_MODELS: set[str] = set()
+
+def complete(
+    prompt: str,
+    *,
+    max_tokens: int,
+    model_env: str = "P2R_SCENE_MODEL",
+    default_model: str = "gemini-3.7-flash",
+    label: str = "request",
+) -> str:
+    """Perform one completion with strict model/key rotation.
+
+    The attempt order is visible in logs and is finite: each (model, key) pair
+    is tried once. A non-quota exception is raised immediately because it is a
+    real programming or request error, not a reason to burn all backup keys.
+    """
+    configured_keys = keys()
+    models = model_chain(model_env, default_model)
+    last_error: BaseException | None = None
+
+    for model_index, model in enumerate(models):
+        if model in _UNSUPPORTED_MODELS:
             continue
             
-        c = client(key)
-        attempts = 0
-        
-        while attempts < max_model_attempts:
-            attempts += 1
-            try:
-                resp = c.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=max_tokens,
-                    extra_body={"reasoning_effort": os.environ.get("P2R_REASONING", "low")},
-                )
+        for key_index, key in enumerate(configured_keys):
+            if (model, key) in _EXHAUSTED_QUOTA:
+                continue
                 
-                choice = resp.choices[0] if resp.choices else None
+            cfg.say(
+                f"{label}: trying {model} (model {model_index + 1}/{len(models)}, "
+                f"key {key_index + 1}/{len(configured_keys)})"
+            )
+            try:
+                response = _completion(client(key), model, prompt, max_tokens)
+            except Exception as error:  # noqa: BLE001
+                last_error = error
+                if is_not_found(error):
+                    cfg.warn(f"{label}: model {model} is NOT_FOUND or unsupported. Skipping permanently.")
+                    _UNSUPPORTED_MODELS.add(model)
+                    break
+                
+                if not is_rate_limited(error):
+                    raise
+                    
+                _EXHAUSTED_QUOTA.add((model, key))
+                
+                # Check if we have more keys for this model that aren't exhausted
+                remaining_keys = sum(1 for k in configured_keys if (model, k) not in _EXHAUSTED_QUOTA)
+                
+                if remaining_keys > 0:
+                    cfg.warn(
+                        f"{label}: key {key_index + 1}/{len(configured_keys)} "
+                        f"rate-limited on {model}; trying next available key"
+                    )
+                else:
+                    next_model = next((m for m in models[model_index + 1:] if m not in _UNSUPPORTED_MODELS), None)
+                    if next_model:
+                        cfg.warn(
+                            f"{label}: all {len(configured_keys)} key(s) rate-limited on "
+                            f"{model}; switching model to {next_model}"
+                        )
+                    continue
+            else:
+                choice = response.choices[0] if response.choices else None
                 text = (choice.message.content if choice else "") or ""
                 if not text.strip():
-                    fin = choice.finish_reason if choice else "?"
-                    sys.exit(f"[prompt2render] empty completion (finish_reason={fin})")
+                    finish = choice.finish_reason if choice else "?"
+                    sys.exit(f"[prompt2render] empty completion (finish_reason={finish})")
                 return text
-                
-            except Exception as e:
-                last_error = e
-                if is_invalid_model_error(e):
-                    cfg.warn(f"model {model} is invalid/not found, skipping to next model.")
-                    break # Break out of attempts AND key loop for this model
-                    
-                if is_quota_error(e):
-                    cfg.warn(f"key {k_idx + 1}/{len(keys)} rate-limited on {model}, rotating...")
-                    mark_cooldown(model, k_idx)
-                    break # Break out of attempts loop, move to next key/model route
-                    
-                if is_retryable_error(e):
-                    delay = min(2 ** attempts + random.random(), 10.0)
-                    cfg.warn(f"temporary error on {model} (key {k_idx + 1}): {type(e).__name__}. Retrying in {delay:.1f}s...")
-                    time.sleep(delay)
-                    continue
-                    
-                # Unhandled error (e.g. bad request, safety filter)
-                raise
-                
-    sys.exit(f"[prompt2render] All {len(keys)} key(s) and {len(models)} model(s) exhausted. Last error: {type(last_error).__name__}: {last_error}\n"
-             "Note: Backup keys must belong to separate Google Cloud projects with independent quota.")
+
+    assert last_error is not None
+    raise last_error

@@ -21,6 +21,23 @@ class GeneratorCodePlugin(Plugin):
         return ["code_artifacts"]
 
     def run(self, context: SceneContext) -> SceneContext:
+        # Ensure llm.keys() is monkeypatched for compatibility if missing,
+        # because generate_all() will call it.
+        from .... import llm
+        if not hasattr(llm, "keys"):
+            import os
+            def _keys():
+                ks = [os.environ.get("GEMINI_API_KEY", "")]
+                for name, val in sorted(os.environ.items()):
+                    if name.startswith("GEMINI_API_KEY_BACKUP") and val:
+                        ks.append(val)
+                ks = [k for k in ks if k]
+                if not ks:
+                    import sys
+                    sys.exit("[prompt2render] GEMINI_API_KEY not set (it lives in .env)")
+                return ks
+            llm.keys = _keys
+
         # scenes.generate_all needs a full Script (title/meta for the prompt) — re-parsing here
         # is the same cheap, pure call chunker_scene already made, not new logic. Section
         # selection follows scene_plan (what earlier plugins decided is in scope), not the raw
@@ -28,6 +45,14 @@ class GeneratorCodePlugin(Plugin):
         script = parse_script(context.prompt)
         indices = {e.index for e in context.scene_plan}
         script.sections = [s for s in script.sections if s.index in indices]
+        
+        # Inject the modified `anim` from the harness scene_plan back into the 
+        # script sections so that `planner_llm` and `retriever_manim_rag` additions
+        # actually reach the prompt.
+        plan_by_index = {e.index: e for e in context.scene_plan}
+        for sec in script.sections:
+            if sec.index in plan_by_index:
+                sec.anim = plan_by_index[sec.index].anim
 
         retries = int(self.config.get("retries", 3))
         jobs = self.config.get("jobs")
@@ -55,6 +80,22 @@ class GeneratorCodePlugin(Plugin):
         context.render_artifacts.pop(stem, None)
 
     def regenerate_one(self, context: SceneContext, stem: str) -> None:
+        """Re-run generation for exactly one section, feeding repair_router's accumulated"""
+        from .... import llm
+        if not hasattr(llm, "keys"):
+            import os
+            def _keys():
+                ks = [os.environ.get("GEMINI_API_KEY", "")]
+                for name, val in sorted(os.environ.items()):
+                    if name.startswith("GEMINI_API_KEY_BACKUP") and val:
+                        ks.append(val)
+                ks = [k for k in ks if k]
+                if not ks:
+                    import sys
+                    sys.exit("[prompt2render] GEMINI_API_KEY not set (it lives in .env)")
+                return ks
+            llm.keys = _keys
+            
         """Re-run generation for exactly one section, feeding repair_router's accumulated
         diagnostics in as scenes.generate()'s new `extra_feedback` parameter (Stage 4 addition —
         see scenes.py). Note: scenes.generate() already re-renders and re-audits internally
@@ -64,6 +105,12 @@ class GeneratorCodePlugin(Plugin):
         """
         script = parse_script(context.prompt)
         sec = next(s for s in script.sections if s.stem == stem)
+        
+        # Inject the modified `anim` for this specific section during repair
+        plan_entry = next((e for e in context.scene_plan if e.stem == stem), None)
+        if plan_entry:
+            sec.anim = plan_entry.anim
+            
         msgs = context.repair_context.get(stem, [])
         extra_feedback = ("\n\nPRIOR REPAIR FEEDBACK:\n" + "\n".join(msgs)) if msgs else ""
         retries = int(self.config.get("retries", 3))

@@ -24,16 +24,43 @@ class PlannerLlmPlugin(Plugin):
         return ["scene_plan"]
 
     def run(self, context: SceneContext) -> SceneContext:
-        keys = llm.keys()
+        try:
+            if hasattr(llm, "keys"):
+                keys = llm.keys()
+            else:
+                # Fallback for older llm.py that doesn't have keys()
+                key = os.environ.get("GEMINI_API_KEY", "")
+                keys = [key] if key else []
+        except SystemExit:
+            keys = []
+            
         if not keys:
             cfg.warn("No GEMINI_API_KEY found, skipping LLM planning.")
             for entry in context.scene_plan:
                 entry.planned = True
             return context
             
-        models = llm.model_chain("P2R_SCENE_MODEL", "gemini-3.7-flash")
-        client = llm.client(keys[0])
-        model = models[0]
+        # Fallbacks for older llm.py
+        if hasattr(llm, "model_chain"):
+            models = llm.model_chain("P2R_SCENE_MODEL", "gemini-3.7-flash")
+            model = models[0]
+        else:
+            model = os.environ.get("P2R_SCENE_MODEL", "gemini-3.7-flash")
+            
+        if hasattr(llm, "client"):
+            client = llm.client(keys[0])
+        else:
+            try:
+                from openai import OpenAI
+            except ImportError:
+                import sys
+                sys.exit("[prompt2render] openai not installed — pip install -r requirements.txt")
+            client = OpenAI(
+                api_key=keys[0], 
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/", 
+                timeout=300.0, 
+                max_retries=2
+            )
 
         for entry in context.scene_plan:
             if entry.planned:
@@ -51,12 +78,16 @@ class PlannerLlmPlugin(Plugin):
             )
             
             try:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                
-                expanded_anim = resp.choices[0].message.content.strip()
+                if hasattr(llm, "complete"):
+                    # Use the shared completion helper that handles key/model fallback automatically
+                    expanded_anim = llm.complete(prompt, max_tokens=1500).strip()
+                else:
+                    resp = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    expanded_anim = resp.choices[0].message.content.strip() if resp.choices else ""
+                    
                 if expanded_anim:
                     # Append the expanded plan to the original brief so the Coder gets both
                     entry.anim = f"{entry.anim}\n\nExpanded Plan:\n{expanded_anim}"

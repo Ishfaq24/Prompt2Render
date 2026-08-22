@@ -116,15 +116,18 @@ def save(fig, path):
     from PIL import Image                 # matplotlib already depends on it
     w, h = fig.canvas.get_width_height()
     
-    # Fast path: skip the .convert("RGB") copy. PIL's frombuffer is fast, but 
-    # convert allocates a new 1920x1080x3 array. ffmpeg handles RGBA perfectly.
+    # Fast path: skip the .convert("RGB") copy if we don't strictly need it,
+    # or just do it in one pass. PIL's frombuffer is fast, but convert allocates.
     img = Image.frombuffer("RGBA", (w, h), memoryview(fig.canvas.buffer_rgba()), "raw", "RGBA", 0, 1)
+    # ffmpeg handles RGBA perfectly fine; dropping the .convert("RGB") saves a 1920x1080x3 allocation
     img.save(path, format="PNG", compress_level=PNG_COMPRESS, dpi=(DPI, DPI))
     close(fig)
 
 
-
 # ----------------------------------------------------------------- text
+
+# Forward declaration of the decorator we'll define later
+# We can't use it directly yet, so we'll wrap the functions at the end of the file.
 
 
 def title(ax, text, y=8.1, size=46, color=FG):
@@ -199,6 +202,17 @@ def bit_brace(ax, x_from, x_to, y, text, color=DIM, size=22, below=True):
             va="top" if below else "bottom", color=color, fontsize=size,
             fontfamily=SANS)
 
+
+def rectangle(ax, x, y, w, h, facecolor=ZERO, edgecolor=DIM, lw=2.0, zorder=2):
+    """A raw rectangle for dynamic composition."""
+    ax.add_patch(Rectangle((x - w/2, y - h/2), w, h, facecolor=facecolor, edgecolor=edgecolor, linewidth=lw, zorder=zorder))
+
+def circle(ax, text, x, y, r=0.4, active=False, size=24):
+    ec = "#0000ff" if active else DIM  # JIOHotsatr blue
+    ax.add_patch(Circle((x, y), r, facecolor=BG, edgecolor=ec, linewidth=3.2 if active else 2.0, zorder=2))
+    ax.text(x, y, text, ha="center", va="center", zorder=3,
+            color="#0000ff" if active else FG, fontsize=size, fontfamily=SANS,
+            fontweight="bold" if active else "normal")
 
 def arrow(ax, x1, y1, x2, y2, color=ACCENT, lw=3.0, head=0.28):
     ax.add_patch(FancyArrow(
@@ -526,6 +540,108 @@ def predicate_strip(ax, flags, y=5.0, x0=2.0, x1=14.0, boundary=True,
                 va="top", color=DIM, fontsize=24, fontfamily=SANS)
 
 
+# --------------------------------------------------- algorithms & data structures
+
+def hanoi(ax, state, x=8.0, y=5.0, w=9.0, h=4.0):
+    """Tower of Hanoi state visualization.
+    
+    state: a list of 3 lists, e.g., [[3, 2, 1], [], []], where 3 is the largest disk.
+    x, y: center of the base.
+    w, h: bounding box.
+    """
+    base_y = y - h/2 + 0.2
+    peg_y_top = y + h/2 - 0.5
+    
+    # Draw base
+    ax.plot([x - w/2, x + w/2], [base_y, base_y], color=DIM, lw=4, zorder=1)
+    
+    # Draw pegs
+    peg_x = [x - w/3, x, x + w/3]
+    for px in peg_x:
+        ax.plot([px, px], [base_y, peg_y_top], color=DIM, lw=4, zorder=1)
+        
+    # Draw disks
+    # JIOHotsatr preference: vibrant primary colors
+    colors = ["#0000ff", "#ff0000", "#00ff00", "#ff00ff", "#00ffff", "#ffff00"]
+    disk_h = 0.4
+    max_disk_w = (w/3) - 0.4
+    
+    for peg_idx, disks in enumerate(state):
+        px = peg_x[peg_idx]
+        for i, disk_size in enumerate(disks):
+            disk_w = max_disk_w * (disk_size / max(3, max((max(p) if p else 0) for p in state)))
+            dy = base_y + 0.2 + i * (disk_h + 0.05)
+            
+            color = colors[(disk_size - 1) % len(colors)]
+            ax.add_patch(FancyBboxPatch(
+                (px - disk_w/2, dy - disk_h/2), disk_w, disk_h,
+                boxstyle="round,pad=0.02,rounding_size=0.1",
+                facecolor=color, edgecolor=BG, linewidth=1.5, zorder=2))
+            ax.text(px, dy, str(disk_size), ha="center", va="center", 
+                    color=BG, fontsize=18, fontfamily=SANS, fontweight="bold", zorder=3)
+
+def tree(ax, root, x=8.0, y=7.0, dx=3.0, dy=1.5, active_node=None):
+    """A binary tree visualization.
+    
+    root: nested tuple/value structure: (val, left, right) or just val for leaves.
+          e.g., (10, (5, 2, 7), (15, None, 20))
+    x, y: center of the root node.
+    dx, dy: spacing.
+    active_node: value of the node to highlight.
+    """
+    def draw_node(node, nx, ny, cdx):
+        if node is None:
+            return
+            
+        val = node[0] if isinstance(node, tuple) else node
+        left = node[1] if isinstance(node, tuple) and len(node) > 1 else None
+        right = node[2] if isinstance(node, tuple) and len(node) > 2 else None
+        
+        is_active = val == active_node
+        
+        if left is not None:
+            lx, ly = nx - cdx, ny - dy
+            arrow(ax, nx, ny - 0.4, lx, ly + 0.4, color=DIM, lw=2)
+            draw_node(left, lx, ly, cdx / 2)
+            
+        if right is not None:
+            rx, ry = nx + cdx, ny - dy
+            arrow(ax, nx, ny - 0.4, rx, ry + 0.4, color=DIM, lw=2)
+            draw_node(right, rx, ry, cdx / 2)
+            
+        circle(ax, str(val), nx, ny, r=0.4, active=is_active)
+        
+    draw_node(root, x, y, dx)
+
+def grid(ax, data, x=8.0, y=5.0, cell_w=1.2, cell_h=1.2, highlight=None):
+    """A 2D grid/matrix visualization (e.g., for DP, graphs, mazes).
+    
+    data: list of lists of values/strings.
+    highlight: list of (row, col) tuples to highlight.
+    """
+    rows = len(data)
+    cols = len(data[0]) if rows > 0 else 0
+    highlight = set(highlight or [])
+    
+    start_x = x - (cols * cell_w) / 2
+    start_y = y + (rows * cell_h) / 2
+    
+    for r in range(rows):
+        for c in range(cols):
+            cx = start_x + c * cell_w + cell_w / 2
+            cy = start_y - r * cell_h - cell_h / 2
+            
+            is_high = (r, c) in highlight
+            val = str(data[r][c])
+            
+            ax.add_patch(plt.Rectangle(
+                (cx - cell_w/2, cy - cell_h/2), cell_w, cell_h,
+                facecolor="#0000ff" if is_high else ZERO, # JIOHotsatr blue for active cells
+                edgecolor=DIM, linewidth=2.0, zorder=2))
+                
+            ax.text(cx, cy, val, ha="center", va="center",
+                    color=FG, fontsize=24, fontfamily=MONO, zorder=3)
+
 # --------------------------------------------------- datapath / block diagram
 
 
@@ -721,6 +837,8 @@ _ELEMENT_KINDS = {
     "array": "array", "predicate_strip": "predicate_strip",
     "code": "code", "table": "table", "curves": "curves",
     "block": "block", "bus": "bus",
+    "hanoi": "hanoi", "tree": "tree", "grid": "grid",
+    "rectangle": "rectangle", "circle": "circle",
 }
 
 #: Artist containers on an Axes that can hold something visible.
@@ -776,10 +894,35 @@ def _element(kind: str):
         return wrapped
     return deco
 
+# Wrap the primitives defined before the decorator
+title = _element("title")(title)
+caption = _element("caption")(caption)
+label = _element("label")(label)
+bits = _element("bits")(bits)
+bit_brace = _element("bit_brace")(bit_brace)
+rectangle = _element("rectangle")(rectangle)
+circle = _element("circle")(circle)
+arrow = _element("arrow")(arrow)
+strike = _element("strike")(strike)
+badge = _element("badge")(badge)
+compare = _element("compare")(compare)
+addition = _element("addition")(addition)
+number_line = _element("number_line")(number_line)
+dial = _element("dial")(dial)
+register = _element("register")(register)
+array = _element("array")(array)
+predicate_strip = _element("predicate_strip")(predicate_strip)
+code = _element("code")(code)
+table = _element("table")(table)
+curves = _element("curves")(curves)
+block = _element("block")(block)
+bus = _element("bus")(bus)
+hanoi = _element("hanoi")(hanoi)
+tree = _element("tree")(tree)
+grid = _element("grid")(grid)
 
-for _n, _k in _ELEMENT_KINDS.items():
-    globals()[_n] = _element(_k)(globals()[_n])
-del _n, _k
+
+# (The dynamic globals() loop was removed because we wrapped them explicitly above)
 
 
 # ----------------------------------------------------------------- audit
@@ -928,15 +1071,14 @@ def ink_fraction(fig) -> float:
     if not drawn(fig):
         fig.canvas.draw()
     buf = np.asarray(fig.canvas.buffer_rgba())
-    # Optimize memory: work directly with uint8 diffs and a boolean mask
-    # instead of allocating a uint16 accumulator for the whole 1920x1080 frame.
+    # Optimize memory: work directly with uint8 diffs instead of allocating a uint16 accumulator
+    # for the whole 1920x1080 frame.
     mask = np.zeros(buf.shape[:2], dtype=bool)
     for c, bg in enumerate(_BG_RGB):
         ch = buf[:, :, c]
         diff = np.maximum(ch, bg) - np.minimum(ch, bg)
         mask |= (diff > 8)  # 3x8=24 equivalent per channel, saves the uint16 allocation
     return float(np.count_nonzero(mask)) / mask.size
-
 
 
 def _element_problems(ax, renderer, tag: str) -> list[Problem]:
@@ -1005,6 +1147,15 @@ def audit(fig, ax, name: str = "") -> list[Problem]:
     boxes = _boxes(ax, renderer)
     tag = f"state {name}: " if name else ""
     problems: list[Problem] = []
+
+    # Cognitive load check: limit distinct elements
+    els = _elements(ax, renderer)
+    if len(els) > 12:
+        problems.append(Problem(
+            "warn", "crowded",
+            f"{tag}too many distinct visual elements ({len(els)}). "
+            f"Reduce cognitive load by simplifying the diagram or splitting the scene."
+        ))
 
     for s, bb in boxes:
         if (bb.x0 < MARGIN_PX or bb.x1 > PX_W - MARGIN_PX
