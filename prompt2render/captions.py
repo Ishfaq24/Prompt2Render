@@ -1,18 +1,17 @@
-"""Captions, timed from the alignment and nothing else.
+"""Caption generation from alignment timestamps.
 
-Two defects this replaces.
+Captions use the master-audio clock rather than section/video durations.  Word
+timestamps come from the alignment and are therefore the authoritative timing
+source; character-proportional timing is not used when word alignment exists.
 
-The old `assemble.write_srt` shared each section's time out in proportion to
-how many *characters* a chunk had, which drifts the moment the voice pauses or
-speeds up — and it allowed 84 characters on one line, about double the
-broadcast norm.
+The module produces:
+* SRT for normal subtitle delivery;
+* optional ASS with word-level karaoke timing.
 
-The newer `write_measured_srt` used real cue times but advanced its running
-offset by the *video* duration of each section while the audio advanced by
-AAC-encoded durations. Two clocks that diverge by a few milliseconds per
-section, so captions drift steadily toward the end of a long video. Here there
-is one clock: sample offsets in build/master.wav.
+Caption packing is deterministic and constrained by readability and timing
+limits from ``cfg``.
 """
+
 from __future__ import annotations
 
 import statistics
@@ -21,126 +20,536 @@ from pathlib import Path
 from . import align, cfg, textseg, voice
 from .project import Script
 
-MIN_GAP = 2 / cfg.FPS          # never let two cards touch
+
+MIN_GAP = 2 / cfg.FPS
 
 
 def _ts(t: float, sep: str = ",") -> str:
-    t = max(t, 0.0)
-    h, rem = divmod(t, 3600)
-    m, s = divmod(rem, 60)
-    return f"{int(h):02d}:{int(m):02d}:{int(s):02d}{sep}{int(round((s % 1) * 1000)):03d}"
+    """Format seconds as SRT timestamps without millisecond rollover bugs."""
+    total_ms = max(0, int(round(float(t) * 1000.0)))
+
+    hours, rem = divmod(total_ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    seconds, milliseconds = divmod(rem, 1_000)
+
+    return (
+        f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        f"{sep}{milliseconds:03d}"
+    )
 
 
 def _ass_ts(t: float) -> str:
-    t = max(t, 0.0)
-    h, rem = divmod(t, 3600)
-    m, s = divmod(rem, 60)
-    return f"{int(h):d}:{int(m):02d}:{s:05.2f}"
+    """Format seconds as ASS timestamps (H:MM:SS.cc)."""
+    total_cs = max(0, int(round(float(t) * 100.0)))
+
+    hours, rem = divmod(total_cs, 360_000)
+    minutes, rem = divmod(rem, 6_000)
+    seconds, centiseconds = divmod(rem, 100)
+
+    return (
+        f"{hours:d}:{minutes:02d}:"
+        f"{seconds:02d}.{centiseconds:02d}"
+    )
 
 
-def _fits(words: list[dict], max_line: int, max_lines: int) -> bool:
-    text = " ".join(w["w"] for w in words)
-    return len(textseg.caption_lines(text, max_line, max_lines)) <= 1
+def _caption_text(words: list[dict]) -> str:
+    return " ".join(
+        str(word.get("w", "")).strip()
+        for word in words
+        if str(word.get("w", "")).strip()
+    )
 
 
-def _cards(words: list[dict], max_line: int, max_lines: int) -> list[list[dict]]:
-    """Pack a sentence's words into cards, preferring to break on a real pause.
+def _fits(
+    words: list[dict],
+    max_line: int,
+    max_lines: int,
+) -> bool:
+    """Return whether words fit within the configured caption geometry."""
+    text = _caption_text(words)
+    if not text:
+        return True
 
-    Word times give a much better split point than a character count: the
-    place a sentence naturally divides is where the speaker took a breath.
+    lines = textseg.caption_lines(
+        text,
+        max_line,
+        max_lines,
+    )
+    return len(lines) <= max_lines
+
+
+def _cards(
+    words: list[dict],
+    max_line: int,
+    max_lines: int,
+) -> list[list[dict]]:
+    """Pack aligned words into readable caption cards.
+
+    The longest geometrically valid card is preferred.  When several recent
+    break points are possible, a genuine pause can override the longest-card
+    preference because it is a more natural speech boundary.
     """
     if not words:
         return []
-    gaps = [b["s"] - a["e"] for a, b in zip(words, words[1:])] + [0.0]
-    typical = statistics.median([g for g in gaps if g >= 0] or [0.0])
 
-    cards, start = [], 0
+    gaps = [
+        max(
+            0.0,
+            float(b.get("s", 0.0))
+            - float(a.get("e", 0.0)),
+        )
+        for a, b in zip(words, words[1:])
+    ]
+
+    typical = statistics.median(
+        [gap for gap in gaps if gap > 0.0] or [0.0]
+    )
+
+    cards: list[list[dict]] = []
+    start = 0
+
     while start < len(words):
-        # Longest run that still fits on one card.
         end = start + 1
-        while end < len(words) and _fits(words[start:end + 1], max_line, max_lines):
+
+        # Find the largest group that fits.
+        while (
+            end < len(words)
+            and _fits(
+                words[start:end + 1],
+                max_line,
+                max_lines,
+            )
+        ):
             end += 1
+
+        # ``end`` is exclusive here.  Candidate boundaries are therefore
+        # start+1 .. end, with the latter meaning the full feasible run.
         if end < len(words):
-            # Among the last few feasible break points, take the one followed
-            # by the biggest silence.
-            lo = max(start + 1, end - 4)
-            best = max(range(lo, end + 1),
-                       key=lambda j: gaps[j - 1] if j - 1 < len(gaps) else 0)
-            if gaps[best - 1] > typical * 1.5:
+            lo = max(
+                start + 1,
+                end - 4,
+            )
+            candidates = range(
+                lo,
+                end + 1,
+            )
+
+            best = max(
+                candidates,
+                key=lambda boundary: (
+                    gaps[boundary - 1]
+                    if 0 <= boundary - 1 < len(gaps)
+                    else 0.0
+                ),
+            )
+
+            pause = (
+                gaps[best - 1]
+                if 0 <= best - 1 < len(gaps)
+                else 0.0
+            )
+
+            if (
+                pause > 0.0
+                and pause > max(typical * 1.5, 0.12)
+            ):
                 end = best
-        cards.append(words[start:end])
+
+        group = words[start:end]
+
+        # Defensive fallback: if a single word itself exceeds the configured
+        # line width, still emit it rather than getting stuck.
+        if not group:
+            end = start + 1
+            group = words[start:end]
+
+        cards.append(group)
         start = end
+
     return cards
 
 
 def _constrain(cards: list[dict]) -> list[dict]:
-    """Apply the subtitle timing rules that make captions comfortable."""
-    for i, c in enumerate(cards):
-        dur = c["end"] - c["start"]
-        chars = len(c["text"].replace("\n", " "))
-        want = max(cfg.CAPTION_MIN_S, chars / cfg.CAPTION_CPS)
-        if dur < want:
-            ceiling = (cards[i + 1]["start"] - MIN_GAP
-                       if i + 1 < len(cards) else c["end"] + want)
-            c["end"] = min(max(c["end"], c["start"] + want), max(ceiling, c["end"]))
-        if c["end"] - c["start"] > cfg.CAPTION_MAX_S:
-            c["end"] = c["start"] + cfg.CAPTION_MAX_S
+    """Apply readable subtitle timing constraints without crossing cards."""
+    if not cards:
+        return []
 
-    for a, b in zip(cards, cards[1:]):
-        if a["end"] > b["start"] - MIN_GAP:
-            a["end"] = max(b["start"] - MIN_GAP, a["start"] + 0.2)
-    return cards
+    normalized: list[dict] = []
+
+    for card in cards:
+        start = max(
+            0.0,
+            float(card["start"]),
+        )
+        end = max(
+            start,
+            float(card["end"]),
+        )
+
+        text = str(
+            card.get("text", "")
+        ).replace("\n", " ")
+
+        chars = len(text)
+        desired = max(
+            float(cfg.CAPTION_MIN_S),
+            chars / float(cfg.CAPTION_CPS),
+        )
+
+        # Never make an individual caption longer than the configured maximum.
+        desired = min(
+            desired,
+            float(cfg.CAPTION_MAX_S),
+        )
+
+        end = max(
+            end,
+            start + desired,
+        )
+
+        normalized.append(
+            {
+                **card,
+                "start": start,
+                "end": end,
+            }
+        )
+
+    # Resolve overlaps from left to right. Prefer preserving the natural
+    # aligned start of the next card over allowing captions to overlap.
+    for index in range(len(normalized) - 1):
+        current = normalized[index]
+        following = normalized[index + 1]
+
+        latest_end = (
+            following["start"] - MIN_GAP
+        )
+
+        if current["end"] > latest_end:
+            available = latest_end - current["start"]
+
+            if available >= 0.2:
+                current["end"] = min(
+                    current["end"],
+                    latest_end,
+                )
+            else:
+                # The card is too close to the next one to satisfy both the
+                # readability minimum and the gap. Keep the temporal ordering
+                # invariant rather than creating overlapping captions.
+                current["end"] = max(
+                    current["start"] + 0.01,
+                    latest_end,
+                )
+
+    # Final normalization guarantees SRT/ASS never receives inverted times.
+    for card in normalized:
+        card["start"] = max(
+            0.0,
+            float(card["start"]),
+        )
+        card["end"] = max(
+            card["start"] + 0.01,
+            float(card["end"]),
+        )
+
+    return normalized
 
 
-def cards_for(proj: Path, script: Script) -> list[dict]:
-    """Every caption card in the video, on the master-audio clock."""
+def _section_offset(
+    amap: dict,
+    script: Script,
+    stem: str,
+) -> float:
+    """Calculate section start from exact master-audio sample offsets."""
+    sample_rate = int(
+        amap["sample_rate"]
+    )
+
+    if sample_rate <= 0:
+        raise ValueError(
+            f"invalid master sample rate: {sample_rate}"
+        )
+
+    sections = amap["sections"]
+
+    total_samples = 0
+
+    for section in script.sections:
+        if section.stem == stem:
+            break
+
+        info = sections.get(section.stem)
+        if info is None:
+            raise KeyError(
+                f"missing audio-map entry for "
+                f"section {section.stem}"
+            )
+
+        total_samples += int(
+            info["samples"]
+        )
+    else:
+        raise KeyError(
+            f"missing audio-map entry for section {stem}"
+        )
+
+    return total_samples / sample_rate
+
+
+def cards_for(
+    proj: Path,
+    script: Script,
+) -> list[dict]:
+    """Return every caption card on the exact master-audio clock."""
     amap = voice.audio_map(proj)
-    out: list[dict] = []
+
+    sample_rate = int(
+        amap.get("sample_rate", 0)
+    )
+
+    if sample_rate <= 0:
+        raise ValueError(
+            "audio_map contains an invalid sample_rate"
+        )
+
+    sections = amap.get("sections", {})
+    output: list[dict] = []
+
     for sec in script.sections:
-        # The `start` field in audio_map.json is floating-point seconds. Over a long video,
-        # adding floats accumulates drift. We must compute the exact offset using the sample count
-        # and sample rate to stay perfectly in sync with the master audio track.
-        sec_info = amap["sections"][sec.stem]
-        
-        # Calculate exact start time by summing samples of all previous sections
-        total_samples_before = 0
-        for s in script.sections:
-            if s.stem == sec.stem:
-                break
-            total_samples_before += amap["sections"][s.stem]["samples"]
-            
-        exact_offset = total_samples_before / amap["sample_rate"]
-        
-        data = align.load(proj, sec.stem)
-        for sent in data["sentences"]:
-            words = sent.get("words") or []
+        if sec.stem not in sections:
+            raise KeyError(
+                f"audio_map.json has no section "
+                f"{sec.stem}"
+            )
+
+        offset = _section_offset(
+            amap,
+            script,
+            sec.stem,
+        )
+
+        data = align.load(
+            proj,
+            sec.stem,
+        )
+
+        for sentence in data.get(
+            "sentences",
+            [],
+        ):
+            sentence_text = str(
+                sentence.get("text", "")
+            ).strip()
+
+            words = [
+                word
+                for word in (
+                    sentence.get("words")
+                    or []
+                )
+                if (
+                    "w" in word
+                    and "s" in word
+                    and "e" in word
+                )
+            ]
+
             if not words:
-                # No word detail (a v1 alignment): the sentence is one card.
-                for card in textseg.caption_lines(sent["text"]):
-                    out.append({"start": exact_offset + sent["start"],
-                                "end": exact_offset + sent["end"],
-                                "text": "\n".join(card), "words": []})
+                if not sentence_text:
+                    continue
+
+                start = offset + max(
+                    0.0,
+                    float(
+                        sentence.get(
+                            "start",
+                            0.0,
+                        )
+                    ),
+                )
+
+                end = offset + max(
+                    float(
+                        sentence.get(
+                            "start",
+                            0.0,
+                        )
+                    ),
+                    float(
+                        sentence.get(
+                            "end",
+                            sentence.get(
+                                "start",
+                                0.0,
+                            ),
+                        )
+                    ),
+                )
+
+                # The old implementation attempted to call caption_lines()
+                # with its default configuration and then joined each result.
+                # Explicitly use the configured geometry here.
+                line_groups = textseg.caption_lines(
+                    sentence_text,
+                    cfg.CAPTION_LINE,
+                    cfg.CAPTION_LINES,
+                )
+
+                if not line_groups:
+                    continue
+
+                # Without word timestamps there is no principled way to assign
+                # sub-sentence timing. Keep the sentence timing intact and use
+                # multiple visual lines within one card.
+                output.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "text": "\n".join(
+                            line_groups
+                        ),
+                        "words": [],
+                    }
+                )
                 continue
-            for group in _cards(words, cfg.CAPTION_LINE, cfg.CAPTION_LINES):
-                text = " ".join(w["w"] for w in group)
-                lines = textseg.caption_lines(text, cfg.CAPTION_LINE,
-                                              cfg.CAPTION_LINES)
-                out.append({
-                    "start": exact_offset + group[0]["s"],
-                    "end": exact_offset + group[-1]["e"],
-                    "text": "\n".join(lines[0]) if lines else text,
-                    "words": [{"w": w["w"], "s": exact_offset + w["s"],
-                               "e": exact_offset + w["e"]} for w in group],
-                })
-    return _constrain(out)
+
+            # Normalize word timestamps before packing.
+            normalized_words: list[dict] = []
+            previous_end = 0.0
+
+            for word in words:
+                start = max(
+                    previous_end,
+                    float(word["s"]),
+                )
+                end = max(
+                    start,
+                    float(word["e"]),
+                )
+
+                normalized_words.append(
+                    {
+                        "w": str(
+                            word["w"]
+                        ).strip(),
+                        "s": start,
+                        "e": end,
+                    }
+                )
+
+                previous_end = end
+
+            for group in _cards(
+                normalized_words,
+                cfg.CAPTION_LINE,
+                cfg.CAPTION_LINES,
+            ):
+                if not group:
+                    continue
+
+                text = _caption_text(
+                    group
+                )
+
+                if not text:
+                    continue
+
+                lines = textseg.caption_lines(
+                    text,
+                    cfg.CAPTION_LINE,
+                    cfg.CAPTION_LINES,
+                )
+
+                output.append(
+                    {
+                        "start": (
+                            offset
+                            + float(group[0]["s"])
+                        ),
+                        "end": (
+                            offset
+                            + float(group[-1]["e"])
+                        ),
+                        "text": (
+                            "\n".join(lines)
+                            if lines
+                            else text
+                        ),
+                        "words": [
+                            {
+                                "w": word["w"],
+                                "s": (
+                                    offset
+                                    + float(word["s"])
+                                ),
+                                "e": (
+                                    offset
+                                    + float(word["e"])
+                                ),
+                            }
+                            for word in group
+                        ],
+                    }
+                )
+
+    output.sort(
+        key=lambda card: (
+            card["start"],
+            card["end"],
+        )
+    )
+
+    return _constrain(output)
 
 
-def write_srt(proj: Path, script: Script, dst: Path) -> Path:
-    lines = []
-    for n, c in enumerate(cards_for(proj, script), start=1):
-        lines += [str(n), f"{_ts(c['start'])} --> {_ts(c['end'])}", c["text"], ""]
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text("\n".join(lines), encoding="utf-8")
+def write_srt(
+    proj: Path,
+    script: Script,
+    dst: Path,
+) -> Path:
+    """Write alignment-timed SRT captions."""
+    cards = cards_for(
+        proj,
+        script,
+    )
+
+    lines: list[str] = []
+
+    for number, card in enumerate(
+        cards,
+        start=1,
+    ):
+        lines.extend(
+            [
+                str(number),
+                (
+                    f"{_ts(card['start'])} --> "
+                    f"{_ts(card['end'])}"
+                ),
+                card["text"],
+                "",
+            ]
+        )
+
+    dst.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    tmp = dst.with_name(
+        dst.name + ".tmp"
+    )
+
+    tmp.write_text(
+        "\n".join(lines),
+        encoding="utf-8",
+    )
+
+    tmp.replace(
+        dst
+    )
+
     return dst
 
 
@@ -160,31 +569,127 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
 
-def write_ass(proj: Path, script: Script, dst: Path) -> Path:
-    """Karaoke captions: each word lights up as it is spoken.
+def _ass_escape(text: str) -> str:
+    """Escape text for ASS while preserving explicit line breaks."""
+    return (
+        str(text)
+        .replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", r"\N")
+    )
 
-    Only possible because alignment gives real word times. Opt-in, and the
-    SRT stays the shipped artefact — YouTube prefers a separate subtitle file
-    for the main upload.
-    """
-    body = [_ASS_HEAD.format(w=cfg.WIDTH, h=cfg.HEIGHT, font=cfg.CAPTION_FONT)]
-    for c in cards_for(proj, script):
-        if c["words"]:
-            parts = []
-            cursor = c["start"]
-            for w in c["words"]:
-                lead = max(int(round((w["s"] - cursor) * 100)), 0)
+
+def write_ass(
+    proj: Path,
+    script: Script,
+    dst: Path,
+) -> Path:
+    """Write optional word-level ASS karaoke captions."""
+    body = [
+        _ASS_HEAD.format(
+            w=cfg.WIDTH,
+            h=cfg.HEIGHT,
+            font=cfg.CAPTION_FONT,
+        )
+    ]
+
+    for card in cards_for(
+        proj,
+        script,
+    ):
+        if card["words"]:
+            parts: list[str] = []
+            cursor = float(
+                card["start"]
+            )
+
+            for word in card["words"]:
+                word_start = float(
+                    word["s"]
+                )
+                word_end = float(
+                    word["e"]
+                )
+
+                lead = max(
+                    0,
+                    int(
+                        round(
+                            (
+                                word_start
+                                - cursor
+                            )
+                            * 100
+                        )
+                    ),
+                )
+
                 if lead:
-                    parts.append(f"{{\\k{lead}}}")
-                dur = max(int(round((w["e"] - w["s"]) * 100)), 1)
-                parts.append(f"{{\\kf{dur}}}{w['w']} ")
-                cursor = w["e"]
+                    parts.append(
+                        f"{{\\k{lead}}}"
+                    )
+
+                duration = max(
+                    1,
+                    int(
+                        round(
+                            (
+                                word_end
+                                - word_start
+                            )
+                            * 100
+                        )
+                    ),
+                )
+
+                # \\kf produces progressive karaoke highlighting.
+                parts.append(
+                    f"{{\\kf{duration}}}"
+                    f"{_ass_escape(word['w'])} "
+                )
+
+                cursor = word_end
+
             text = "".join(parts).strip()
         else:
-            text = c["text"].replace("\n", r"\N")
-        text = text.replace("\n", r"\N")
-        body.append(f"Dialogue: 0,{_ass_ts(c['start'])},{_ass_ts(c['end'])},"
-                    f"prompt2render,,0,0,0,,{text}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text("\n".join(body) + "\n", encoding="utf-8")
+            text = _ass_escape(
+                card["text"]
+            )
+
+        body.append(
+            "Dialogue: 0,"
+            f"{_ass_ts(card['start'])},"
+            f"{_ass_ts(card['end'])},"
+            f"prompt2render,,0,0,0,,{text}"
+        )
+
+    dst.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    tmp = dst.with_name(
+        dst.name + ".tmp"
+    )
+
+    tmp.write_text(
+        "\n".join(body) + "\n",
+        encoding="utf-8",
+    )
+
+    tmp.replace(
+        dst
+    )
+
     return dst
+
+
+__all__ = [
+    "MIN_GAP",
+    "cards_for",
+    "write_ass",
+    "write_srt",
+]

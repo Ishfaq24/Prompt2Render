@@ -1,25 +1,16 @@
-"""No live visual-planning call exists in prompt2render — scenes.py's one LLM call already produces
-executable drawing code directly, with no separate visual-requirements intermediate. True no-op,
-kept only because the target plugin-folder list requires the role to exist. Disabled by default
-in config.yaml.
+"""Backward-compatible import for the harness visual planner.
+
+The canonical implementation lives in ``planner_script`` alongside the
+script planner. Keeping the implementation in one location ensures that
+script planning and visual-contract planning evolve under the same upstream
+contract.
+
+This module exists solely to preserve legacy import paths and should contain
+no planning logic.
 """
-from __future__ import annotations
 
-from ...context import SceneContext
-from ...plugin import Plugin
+from ..planner_script import PlannerVisualPlugin
 
-
-class PlannerVisualPlugin(Plugin):
-    name = "planner_visual"
-
-    def declare_dependencies(self) -> list[str]:
-        return []
-
-    def declare_effects(self) -> list[str]:
-        return []
-
-    def run(self, context: SceneContext) -> SceneContext:
-        return context
-
-    def _default_gate(self) -> bool:
-        return False
+__all__ = [
+    "PlannerVisualPlugin",
+]

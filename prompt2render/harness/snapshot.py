@@ -1,10 +1,23 @@
-"""Copy-on-write snapshot/restore for SceneContext.
+"""Snapshot/restore seam for Prompt2Render SceneContext.
 
-Implementation lives on context.py (snapshot() needs no knowledge beyond the dataclass itself);
-this module is the named seam the plan calls for and what `runner.py`/tests import.
+The implementation remains in ``context.py`` because snapshot/restore operate
+directly on the canonical ``SceneContext`` dataclass.
+
+This module intentionally re-exports the functions so that the harness
+runner, repair machinery, and tests have a stable import boundary without
+coupling callers to the implementation location.
 """
+
 from __future__ import annotations
 
-from .context import SceneContext, restore, snapshot
+from .context import (
+    SceneContext,
+    restore,
+    snapshot,
+)
 
-__all__ = ["SceneContext", "snapshot", "restore"]
+__all__ = [
+    "SceneContext",
+    "snapshot",
+    "restore",
+]

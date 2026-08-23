@@ -16,7 +16,7 @@ class ChunkerScenePlugin(Plugin):
     name = "chunker_scene"
 
     def declare_dependencies(self) -> list[str]:
-        return ["prompt"]
+        return ["prompt", "script_artifact"]
 
     def declare_effects(self) -> list[str]:
         return ["scene_plan"]

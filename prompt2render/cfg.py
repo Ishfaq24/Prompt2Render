@@ -1,12 +1,10 @@
-"""Shared config, paths and small subprocess helpers.
+"""Shared configuration, paths, subprocess helpers, and encoder selection.
 
-Everything that more than one stage needs to agree on lives here. In
-particular VOPTS: MP4 stores SPS/PPS out of band in `avcC`, and the concat
-demuxer with `-c copy` takes that extradata from the *first* input only. So
-every clip in a project must be encoded with a byte-identical settings vector
-or the result decodes wrong on some players. One definition, no per-stage
-variation.
+All stages that produce clips intended for concat must use the same VOPTS vector.
+GPU encoding is selected only after a real NVENC probe succeeds; otherwise the
+pipeline falls back to libx264.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,53 +17,57 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+
 IS_WINDOWS = platform.system() == "Windows"
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = ROOT / "projects"
 MODELS = ROOT / "models"
 
+
 # ---------------------------------------------------------------- video ----
+
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 CRF = "20"
 
-#: The one encoder settings vector. See the module docstring for why this is
-#: not per-stage. `-tune stillimage` is deliberately absent: it would have to
-#: be dropped for motion clips, and a mixed vector is exactly the failure this
-#: constant exists to prevent. At CRF 20 the loss on a static frame is nil.
+# One encoder vector for all clips that will later be concatenated with
+# -c copy. Do not change this independently in individual stages.
 VOPTS = [
-    "-c:v", "libx264", "-crf", CRF, "-preset", "veryfast",
-    "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS * 5),
+    "-c:v", "libx264",
+    "-crf", CRF,
+    "-preset", "veryfast",
+    "-pix_fmt", "yuv420p",
+    "-r", str(FPS),
+    "-g", str(FPS * 5),
     "-x264-params", "scenecut=0",
 ]
 
-#: Fast preview encoder. Only ever used for `--preview`; never for a clip that
-#: will be concatenated with a libx264 one.
+# Fast preview only. Preview clips must never be mixed with final libx264
+# clips in a concat-copy operation.
 VOPTS_PREVIEW = [
-    "-c:v", "h264_nvenc", "-preset", "p1", "-cq", "28",
-    "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS * 5),
+    "-c:v", "h264_nvenc",
+    "-preset", "p1",
+    "-cq", "28",
+    "-pix_fmt", "yuv420p",
+    "-r", str(FPS),
+    "-g", str(FPS * 5),
+    "-bf", "0",
 ]
 
-#: CPU fallback for --preview on a machine where NVENC doesn't actually work
-#: (see gpu_encode_available). Still optimised for speed over quality.
 VOPTS_PREVIEW_CPU = [
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-    "-pix_fmt", "yuv420p", "-r", str(FPS), "-g", str(FPS * 5),
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "28",
+    "-pix_fmt", "yuv420p",
+    "-r", str(FPS),
+    "-g", str(FPS * 5),
     "-x264-params", "scenecut=0",
 ]
 
-#: GPU final encode via the NVENC ASIC, used in place of VOPTS whenever
-#: gpu_encode_available() confirms the hardware actually works. Unlike
-#: libx264, where a slower preset trades minutes of CPU time for quality,
-#: NVENC's preset only controls search effort on a fixed-function chip --
-#: p7 (best) costs nothing meaningful over p1 here, and its memory footprint
-#: is well under a 2 GB card's budget regardless of resolution. So there is
-#: no speed/quality trade to make: always ask for the best NVENC settings.
-#: `cq` (not CRF) is NVENC's quality-target knob; low-20s is already called
-#: "visually lossless" for Turing-generation NVENC (e.g. the MX350 this was
-#: tuned on), so 18 leaves headroom. `-no-scenecut 1` mirrors the CPU
-#: vector's `scenecut=0`: keep I-frames on the fixed, predictable period the
-#: clip-head-dissolve scheme and concat demuxer both assume.
+# Conservative NVENC final vector. The probe below uses these same encoder
+# settings so "GPU available" means the settings we actually intend to use
+# can open successfully, rather than merely proving that ffmpeg was compiled
+# with NVENC support.
 VOPTS_GPU = [
     "-c:v", "h264_nvenc",
     "-preset", "p4",
@@ -79,34 +81,36 @@ VOPTS_GPU = [
     "-bf", "0",
 ]
 
+
 # ---------------------------------------------------------------- audio ----
-AUDIO_SR = 48000          # delivery sample rate
-TTS_SR = 24000            # what Kokoro emits
+
+AUDIO_SR = 48000
+TTS_SR = 24000
 AAC_BITRATE = "192k"
-LUFS = -14.0              # YouTube's target; matches the published catalogue
+LUFS = -14.0
 TRUE_PEAK = -1.5
 LRA = 9.0
 
+
 # ------------------------------------------------------------- timing -----
+
 PAUSE_SENTENCE_MS = 320
 PAUSE_QUESTION_MS = 380
 PAUSE_CLAUSE_MS = 120
 PAUSE_PARAGRAPH_MS = 650
-VISUAL_LEAD_MS = 120      # cut this far *before* the word; landing after reads sloppy
+VISUAL_LEAD_MS = 120
+
 
 # ------------------------------------------------------------- captions ---
-CAPTION_LINE = 42         # broadcast norm, not the old 84
+
+CAPTION_LINE = 42
 CAPTION_LINES = 2
 CAPTION_MIN_S = 0.833
 CAPTION_MAX_S = 7.0
 CAPTION_CPS = 20.0
 
-# libass has no font discovery guarantee across platforms; pick one that exists.
 CAPTION_FONT = "Arial" if IS_WINDOWS else "DejaVu Sans"
 
-# drawtext needs a real font file when fontconfig isn't wired up — which is the
-# normal state of the Windows ffmpeg builds. Resolve one once, here, so a
-# missing font shows up as a clear message instead of an ffmpeg filter error.
 _FONT_CANDIDATES = (
     r"C:\Windows\Fonts\arial.ttf",
     r"C:\Windows\Fonts\segoeui.ttf",
@@ -119,324 +123,577 @@ _FONT_CANDIDATES = (
 
 
 def font_file() -> str | None:
-    """Absolute path to a usable TTF, or None to let fontconfig try."""
-    for c in _FONT_CANDIDATES:
-        if Path(c).exists():
-            return c
+    """Return an existing TTF/TTF-compatible font path, if available."""
+    for candidate in _FONT_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
     return None
 
 
 def filter_path(p: Path | str) -> str:
-    """A filesystem path, quoted and escaped for use *inside* a filtergraph.
-
-    Inside a filtergraph ':' separates options and '\\' is an escape, so
-    `C:\\prompt2render\\x.bin` has to become `'C\\:/prompt2render/x.bin'` before it
-    can be handed to whisper's `model=`, subtitles' filename, and so on.
-    Windows drive letters in a filtergraph are a guaranteed bug otherwise.
-    """
-    s = str(p).replace("\\", "/").replace(":", r"\:")
-    return f"'{s}'"
+    """Quote and escape a filesystem path for an FFmpeg filtergraph."""
+    value = str(p).replace("\\", "/").replace(":", r"\:")
+    return f"'{value}'"
 
 
 def drawtext_font_arg() -> str:
-    """The `fontfile=...` fragment for a drawtext filter, escaped for ffmpeg."""
-    f = font_file()
-    if not f:
+    """Return the escaped fontfile= fragment for FFmpeg drawtext."""
+    font = font_file()
+    if not font:
         return ""
-    return f"fontfile={filter_path(f)}:"
+    return f"fontfile={filter_path(font)}:"
 
 
-# ------------------------------------------------------------------ env ---
+# ------------------------------------------------------------------ env ----
+
 def load_env(path: Path | None = None) -> None:
-    """Minimal .env loader so we don't need python-dotenv at import time."""
+    """Minimal .env loader without requiring python-dotenv at import time."""
     path = path or (ROOT / ".env")
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+
+    for line in path.read_text(
+        encoding="utf-8"
+    ).splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if (
+            not line
+            or line.startswith("#")
+            or "=" not in line
+        ):
             continue
-        key, val = line.split("=", 1)
-        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+        key, value = line.split("=", 1)
+        os.environ.setdefault(
+            key.strip(),
+            value.strip().strip('"').strip("'"),
+        )
 
 
 def env_float(key: str, default: float) -> float:
     raw = os.environ.get(key)
+
     if raw is None or not raw.strip():
         return default
+
     try:
         return float(raw)
     except ValueError:
-        sys.exit(f"[prompt2render] {key} must be a number, got {raw!r}")
+        sys.exit(
+            f"[prompt2render] {key} must be a number, "
+            f"got {raw!r}"
+        )
 
 
 def env_int(key: str, default: int) -> int:
     return int(env_float(key, default))
 
 
-# ------------------------------------------------------------ processes ---
+# ------------------------------------------------------------ processes ----
+
 def need(*binaries: str) -> None:
-    missing = [b for b in binaries if shutil.which(b) is None]
+    missing = [
+        binary
+        for binary in binaries
+        if shutil.which(binary) is None
+    ]
+
     if missing:
-        sys.exit(f"[prompt2render] missing required tool(s): {', '.join(missing)} — "
-                 "run setup, then: python prompt2render.py doctor")
+        sys.exit(
+            "[prompt2render] missing required tool(s): "
+            f"{', '.join(missing)} — run setup, then: "
+            "python prompt2render.py doctor"
+        )
 
 
-def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    """Run a command, surfacing stderr on failure instead of swallowing it."""
-    # errors="replace": ffmpeg and model logs carry non-cp1252 bytes that would
-    # otherwise crash the decoder mid-run on Windows.
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", **kw)
+def run(
+    cmd: list[str],
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """Run a command and surface useful stderr on failure."""
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **kwargs,
+    )
+
     if proc.returncode != 0:
-        sys.stderr.write((proc.stderr or "")[-4000:] + "\n")
-        raise SystemExit(f"[prompt2render] command failed: {' '.join(cmd[:6])} ...")
+        sys.stderr.write(
+            (proc.stderr or "")[-4000:] + "\n"
+        )
+        raise SystemExit(
+            "[prompt2render] command failed: "
+            f"{' '.join(cmd[:6])} ..."
+        )
+
     return proc
 
 
-def try_run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    """Like run(), but a non-zero exit is the caller's problem, not fatal."""
-    return subprocess.run(cmd, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", **kw)
+def try_run(
+    cmd: list[str],
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """Run a command without turning a non-zero exit into SystemExit."""
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **kwargs,
+    )
 
+
+# -------------------------------------------------------------- GPU --------
 
 _gpu_ok: bool | None = None
+_gpu_error: str | None = None
+_gpu_lock = threading.Lock()
+
+
+def _nvenc_probe() -> tuple[bool, str | None]:
+    """Perform a real NVENC encode using the intended final settings.
+
+    Merely finding ``h264_nvenc`` in ``ffmpeg -encoders`` is insufficient:
+    driver/API incompatibility, unavailable hardware, or a failed NVENC
+    initialization can still make the encoder unusable.
+    """
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-f", "lavfi",
+        "-i", f"color=c=black:s={WIDTH}x{HEIGHT}:r={FPS}",
+        "-frames:v", "30",
+        *VOPTS_GPU,
+        "-f", "null",
+        "-",
+    ]
+
+    try:
+        proc = try_run(
+            command,
+            timeout=20,
+        )
+    except Exception as exc:
+        return False, str(exc)
+
+    if proc.returncode == 0:
+        return True, None
+
+    lines = [
+        line.strip()
+        for line in (proc.stderr or "").splitlines()
+        if line.strip()
+    ]
+
+    # Prefer the actual encoder error instead of returning the whole log.
+    keywords = (
+        "error",
+        "failed",
+        "cannot",
+        "unknown",
+        "nvenc",
+        "cuda",
+    )
+
+    diagnostic = next(
+        (
+            line
+            for line in lines
+            if any(
+                keyword in line.lower()
+                for keyword in keywords
+            )
+        ),
+        lines[-1] if lines else None,
+    )
+
+    return False, diagnostic or "NVENC probe failed"
 
 
 def gpu_encode_available() -> bool:
-    """Whether h264_nvenc actually works right now -- not just whether ffmpeg
-    lists it. ffmpeg advertises h264_nvenc whenever it was *built* with NVENC
-    support, regardless of whether a GPU is present, the driver is new
-    enough, or the GPU is currently in a healthy state -- all of which are
-    the normal ways this fails in practice (an old driver reports an NVENC
-    API version ffmpeg rejects; a GPU wedged after a TDR reports "lost" until
-    the machine reboots). A real, tiny encode is the only trustworthy check.
-    Cached: this runs at most once per process.
+    """Return whether the intended NVENC final encoder currently works.
+
+    The result is cached for the lifetime of this process. This prevents every
+    clip from spawning a separate hardware probe.
     """
-    global _gpu_ok
-    if _gpu_ok is None:
-        try:
-            # Use nullsrc to generate a valid empty frame for the encoder,
-            # avoiding any OS-specific /dev/null vs NUL quirks and pixel format
-            # mismatches that can cause the encoder initialization to fail.
-            # Minimal probe to ensure the encoder can actually open.
-            # We omit bitrate and just use a fast preset to avoid triggering
-            # driver-specific feature rejections (like B-frame ref modes).
-            # We use a completely standard NVENC profile for the probe.
-            # Some drivers reject extreme presets like p1 if not paired with
-            # specific rate control or profile arguments. We use a known-safe
-            # baseline: h264_nvenc, yuv420p, 1080p.
-            proc = try_run([
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30",
-                "-frames:v", "30", "-c:v", "h264_nvenc", "-preset", "p1", "-profile:v", "main", "-bf", "0",
-                "-pix_fmt", "yuv420p", "-f", "null", "-"
-            ], timeout=15)
-            _gpu_ok = proc.returncode == 0
-        except Exception:
-            _gpu_ok = False
+    global _gpu_ok, _gpu_error
+
+    if _gpu_ok is not None:
+        return _gpu_ok
+
+    with _gpu_lock:
+        if _gpu_ok is not None:
+            return _gpu_ok
+
+        _gpu_ok, _gpu_error = _nvenc_probe()
+
     return _gpu_ok
 
 
 def pick_vopts(preview: bool = False) -> list[str]:
-    """The encoder vector for this run: GPU when it truly works, CPU otherwise.
+    """Select one encoder vector for the complete encoding pass.
 
-    Call this once per encode *pass* (encode.py's whole todo list,
-    assemble.py's whole section loop, ...) and reuse the result for every
-    clip in it -- every clip that will later be joined with `-c copy` must
-    share one byte-identical vector (see the cfg module docstring), so this
-    must never be re-decided mid-pass.
+    GPU capability is tested once. A failed NVENC probe falls back to CPU.
+    The returned list is a copy so callers cannot accidentally mutate the
+    shared constants.
     """
     if gpu_encode_available():
-        return VOPTS_PREVIEW if preview else VOPTS_GPU
-    # If gpu_encode_available() was false, let's grab the actual error for the warning
-    proc = try_run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30",
-        "-frames:v", "30", "-c:v", "h264_nvenc", "-preset", "p1", "-profile:v", "main", "-bf", "0",
-        "-pix_fmt", "yuv420p", "-f", "null", "-"
-    ], timeout=15)
-    
-    err = (proc.stderr or "").strip().splitlines()
-    real_err = next((line for line in err if "Error" in line or "failed" in line or "Unknown" in line or "Cannot" in line), None)
-    if not real_err and err:
-        real_err = err[-1]
-    reason = real_err if real_err else "unsupported build or hardware"
-    
-    # We only want to print this warning once per process, not per clip
-    if not getattr(pick_vopts, "_warned", False):
+        return list(
+            VOPTS_PREVIEW if preview else VOPTS_GPU
+        )
+
+    if not getattr(
+        pick_vopts,
+        "_warned",
+        False,
+    ):
+        reason = (
+            _gpu_error
+            or "unsupported build or hardware"
+        )
+
         if preview:
-            warn(f"no working NVENC encoder found ({reason}) -- preview falling back to a "
-                 "fast CPU preset")
+            warn(
+                "no working NVENC encoder found "
+                f"({reason}) -- preview falling back "
+                "to a fast CPU preset"
+            )
         else:
-            warn(f"no working NVENC encoder found ({reason}) -- encoding on CPU (libx264); "
-                 "this will be slower")
+            warn(
+                "no working NVENC encoder found "
+                f"({reason}) -- encoding on CPU "
+                "(libx264); this will be slower"
+            )
+
         pick_vopts._warned = True
-        
-    return VOPTS_PREVIEW_CPU if preview else VOPTS
+
+    return list(
+        VOPTS_PREVIEW_CPU if preview else VOPTS
+    )
 
 
 def default_encode_jobs() -> int:
-    """How many clips to encode at once when --jobs isn't given explicitly.
-
-    libx264 threads are CPU-bound, so more jobs just means more processes
-    contending for the same cores the encoder already uses internally -- 1
-    stays the safe default. NVENC is a separate fixed-function chip: a
-    couple of clips in flight lets the CPU-side decode/filter work for clip
-    N+1 overlap the GPU actually encoding clip N, instead of leaving the GPU
-    idle between submissions.
-
-    Measured, so that raising it is an informed choice rather than a guess:
-    on a 1080p clip the per-frame x264 cost is ~27 ms and the fixed cost of
-    the call -- process spawn, decoding the 6 MB PNG, initialising the xfade
-    filter and the encoder -- is ~0.46 s. On a typical five-second clip that
-    fixed part is only about a tenth of the call. It is the only part that
-    cannot use a second core, so `--jobs 2` can recover at most that tenth,
-    and only on a machine with cores x264 was not already using. That is why
-    the default is 1 and why the advice is to time it rather than assume.
-
-    Whatever you set, it cannot change a single byte of any clip: each ffmpeg
-    process is independent and decides its own threading, so how many run at
-    once is invisible to the bitstream. Verified by hashing the clips at
-    --jobs 1 and --jobs 2.
-    """
+    """Choose a conservative default encode concurrency."""
     return 3 if gpu_encode_available() else 1
 
 
-def stream_run(cmd: list[str], **kw) -> int:
-    """Run a command, printing its output live line by line."""
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, encoding="utf-8", errors="replace", **kw)
+# -------------------------------------------------------------- streaming ---
+
+def stream_run(
+    cmd: list[str],
+    **kwargs,
+) -> int:
+    """Run a command while forwarding combined output live."""
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **kwargs,
+    )
+
     if proc.stdout is not None:
         for line in proc.stdout:
-            print(line, end="", flush=True)
+            print(
+                line,
+                end="",
+                flush=True,
+            )
+
     proc.wait()
     return proc.returncode
 
 
-def parallel(fn, items: list, jobs: int, label: str = "") -> list:
-    """Map `fn` over `items`, preserving order, `jobs` at a time.
-
-    For subprocess fan-out only (ffprobe, ffmpeg): the child process is where
-    the work happens and Python is only waiting on it, so threads give real
-    concurrency here. Order is preserved because several callers compare the
-    results positionally against `items`.
-    """
+def parallel(
+    fn,
+    items: list,
+    jobs: int,
+    label: str = "",
+) -> list:
+    """Apply fn concurrently while preserving input order."""
     if not items:
         return []
-    n = max(1, min(jobs, len(items)))
+
+    n = max(
+        1,
+        min(int(jobs), len(items)),
+    )
+
     if n == 1:
-        return [fn(x) for x in items]
-    with ThreadPoolExecutor(max_workers=n, thread_name_prefix=label or "prompt2render") as p:
-        return list(p.map(fn, items))
+        return [
+            fn(item)
+            for item in items
+        ]
+
+    with ThreadPoolExecutor(
+        max_workers=n,
+        thread_name_prefix=(
+            label or "prompt2render"
+        ),
+    ) as pool:
+        return list(
+            pool.map(fn, items)
+        )
 
 
 def probe_jobs() -> int:
-    """How many ffprobe calls to have in flight at once.
+    """Return ffprobe concurrency from P2R_PROBE_JOBS or a safe default."""
+    wanted = env_int(
+        "P2R_PROBE_JOBS",
+        0,
+    )
 
-    Each one is a short-lived process that spends its life on file I/O, so
-    this can sit comfortably above the core count -- the preflight in
-    `prompt2render finish` is sixty of them back to back otherwise.
-    """
-    want = env_int("P2R_PROBE_JOBS", 0)
-    return want if want > 0 else max(2, min(8, (os.cpu_count() or 2) * 2))
+    return (
+        wanted
+        if wanted > 0
+        else max(
+            2,
+            min(
+                8,
+                (os.cpu_count() or 2) * 2,
+            ),
+        )
+    )
 
 
-# -------------------------------------------------------------- ffprobe ---
-#: (path, size, mtime_ns) -> parsed ffprobe output. A stage like `prompt2render check`
-#: probes the same clip from three different gates; the file cannot change
-#: underneath us mid-run, and an ffprobe is a whole process spawn.
+# -------------------------------------------------------------- ffprobe ----
+
 _probe_cache: dict = {}
 _probe_lock = threading.Lock()
 
 
-def _stamp(path: Path, kind: str):
+def _stamp(
+    path: Path,
+    kind: str,
+):
     try:
-        st = path.stat()
+        stat = path.stat()
     except OSError:
         return None
-    return (kind, str(path), st.st_size, st.st_mtime_ns)
+
+    return (
+        kind,
+        str(path),
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
 
 
-def _cached(key, produce):
+def _cached(
+    key,
+    produce,
+):
     if key is None:
         return produce()
+
     with _probe_lock:
-        hit = _probe_cache.get(key)
-    if hit is not None:
-        return hit
-    val = produce()
+        cached = _probe_cache.get(key)
+
+    if cached is not None:
+        return cached
+
+    value = produce()
+
     with _probe_lock:
-        _probe_cache[key] = val
-    return val
+        _probe_cache[key] = value
+
+    return value
 
 
 def duration(path: Path) -> float:
-    """Duration in seconds via ffprobe. Never guess this."""
-    out = run([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    """Return media duration from ffprobe; never infer it from filenames."""
+    output = run([
+        "ffprobe",
+        "-v", "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
     ]).stdout.strip()
+
     try:
-        return float(out)
+        return float(output)
     except ValueError:
-        # Some containers carry no format-level duration. Fall back to the
-        # stream, and fail with a path rather than a bare ValueError.
-        out = run([
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        output = run([
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries",
+            "stream=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
         ]).stdout.strip()
+
         try:
-            return float(out)
+            return float(output)
         except ValueError:
-            sys.exit(f"[prompt2render] ffprobe reported no usable duration for {path}")
+            sys.exit(
+                "[prompt2render] ffprobe reported no "
+                f"usable duration for {path}"
+            )
 
 
 def frame_count(path: Path) -> int:
-    """Exact video frame count. Counts packets — no rounding from duration."""
-    def go() -> int:
-        out = run([
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-count_packets", "-show_entries", "stream=nb_read_packets",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    """Return exact video packet/frame count."""
+    def probe_frames() -> int:
+        output = run([
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
         ]).stdout.strip()
-        return int(out)
-    return _cached(_stamp(path, "frames"), go)
+
+        return int(output)
+
+    return _cached(
+        _stamp(path, "frames"),
+        probe_frames,
+    )
 
 
 def probe(path: Path) -> dict:
-    def go() -> dict:
-        return json.loads(run([
-            "ffprobe", "-v", "error", "-print_format", "json",
-            "-show_format", "-show_streams", str(path),
-        ]).stdout)
-    return _cached(_stamp(path, "probe"), go)
+    """Return cached ffprobe JSON for a media file."""
+    def do_probe() -> dict:
+        return json.loads(
+            run([
+                "ffprobe",
+                "-v", "error",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                str(path),
+            ]).stdout
+        )
+
+    return _cached(
+        _stamp(path, "probe"),
+        do_probe,
+    )
 
 
 def video_params(path: Path) -> dict:
-    """The codec fields that must match across clips for a safe concat."""
+    """Return video codec fields relevant to safe concat-copy."""
     info = probe(path)
-    v = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
-    if v is None:
-        sys.exit(f"[prompt2render] no video stream in {path}")
-    return {k: v.get(k) for k in (
-        "codec_name", "profile", "level", "pix_fmt", "width", "height",
-        "time_base", "sample_aspect_ratio", "field_order", "color_range",
-    )}
+
+    video = next(
+        (
+            stream
+            for stream in info.get("streams", [])
+            if stream.get("codec_type") == "video"
+        ),
+        None,
+    )
+
+    if video is None:
+        sys.exit(
+            f"[prompt2render] no video stream in {path}"
+        )
+
+    return {
+        key: video.get(key)
+        for key in (
+            "codec_name",
+            "profile",
+            "level",
+            "pix_fmt",
+            "width",
+            "height",
+            "time_base",
+            "sample_aspect_ratio",
+            "field_order",
+            "color_range",
+        )
+    }
 
 
-# --------------------------------------------------------------- paths ----
+# --------------------------------------------------------------- paths -----
+
 def project_dir(slug: str) -> Path:
-    d = PROJECTS / slug
-    if not d.exists():
-        sys.exit(f"[prompt2render] no project '{slug}' — run:  python prompt2render.py new {slug}")
-    return d
+    directory = PROJECTS / slug
+
+    if not directory.exists():
+        sys.exit(
+            f"[prompt2render] no project '{slug}' — "
+            "run: python prompt2render.py new "
+            f"{slug}"
+        )
+
+    return directory
 
 
-def say(msg: str) -> None:
-    print(f"[prompt2render] {msg}", flush=True)
+def say(message: str) -> None:
+    print(
+        f"[prompt2render] {message}",
+        flush=True,
+    )
 
 
-def warn(msg: str) -> None:
-    print(f"[prompt2render] ! {msg}", flush=True)
+def warn(message: str) -> None:
+    print(
+        f"[prompt2render] ! {message}",
+        flush=True,
+    )
+
+
+__all__ = [
+    "AUDIO_SR",
+    "AAC_BITRATE",
+    "CAPTION_CPS",
+    "CAPTION_FONT",
+    "CAPTION_LINE",
+    "CAPTION_LINES",
+    "CAPTION_MAX_S",
+    "CAPTION_MIN_S",
+    "CRF",
+    "FPS",
+    "HEIGHT",
+    "IS_WINDOWS",
+    "LRA",
+    "LUFS",
+    "MODELS",
+    "PROJECTS",
+    "ROOT",
+    "TTS_SR",
+    "TRUE_PEAK",
+    "VOPTS",
+    "VOPTS_GPU",
+    "VOPTS_PREVIEW",
+    "VOPTS_PREVIEW_CPU",
+    "WIDTH",
+    "default_encode_jobs",
+    "drawtext_font_arg",
+    "duration",
+    "env_float",
+    "env_int",
+    "filter_path",
+    "font_file",
+    "frame_count",
+    "gpu_encode_available",
+    "load_env",
+    "need",
+    "parallel",
+    "pick_vopts",
+    "probe",
+    "probe_jobs",
+    "project_dir",
+    "run",
+    "say",
+    "stream_run",
+    "try_run",
+    "video_params",
+    "warn",
+]

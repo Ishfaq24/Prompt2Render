@@ -1,14 +1,17 @@
 """Draft narration for a fresh script.md.
 
-`prompt2render new` scaffolds section headers and an ANIM brief per section,
-then leaves the narration itself as a "Narration." placeholder -- on purpose,
-per the project's inauthentic-content stance (see README: "The script is
-written by you"). This stage exists for people who want a starting draft to
-rewrite rather than a blank page, not a way to skip that rewrite: it asks
-Gemini for narration text and writes it into script.md, but `build` still
-runs on whatever is in that file when you call it -- reading and fixing the
-draft before then is on you.
+``prompt2render new`` intentionally leaves narration unwritten. This module
+provides an optional AI-generated starting draft while preserving the rule that
+the resulting script remains human-reviewable before a build.
+
+The implementation is deliberately conservative:
+* authored narration is never overwritten unless ``force=True``;
+* only placeholder sections are drafted by default;
+* model output is parsed strictly by section index;
+* existing ANIM directives and section structure are preserved;
+* the file is written atomically so a failed write cannot corrupt script.md.
 """
+
 from __future__ import annotations
 
 import re
@@ -19,134 +22,496 @@ from pathlib import Path
 from . import cfg, llm
 from .project import _HOOK, _RECAP, Script, parse_script
 
-_HEAD_LINE = re.compile(r"^##\s+(\d+)\s*[-–—.:]?\s*(.*)$")
-_REPLY_HEAD = re.compile(r"^##\s*(\d+)\s*$", re.M)
+
+_HEAD_LINE = re.compile(
+    r"^##\s+(\d+)\s*[-–—.:]?\s*(.*)$"
+)
+
+_REPLY_HEAD = re.compile(
+    r"^\s*##\s*(\d+)\s*$",
+    re.M,
+)
 
 
 def _norm(text: str) -> str:
-    return " ".join(text.split()).strip().lower()
+    """Normalize text only for placeholder comparison."""
+    return " ".join(
+        str(text).split()
+    ).strip().lower()
 
 
-#: The exact strings project.render_template() leaves in a fresh script.md.
-#: The hook's is generic writing advice, not "Narration." like the rest --
-#: it still counts as unwritten, or `draft` would silently skip section 1
-#: forever and leave every video opening on the same boilerplate. Match
-#: verbatim, so real narration that happens to start with the word
-#: "narration" is never mistaken for an unwritten section.
+def _template_text(value) -> str:
+    """Safely extract a template string when the project constant is tuple-like."""
+    if isinstance(value, str):
+        return value
+
+    try:
+        return str(value[2])
+    except (IndexError, KeyError, TypeError):
+        return ""
+
+
+# Exact placeholder strings emitted by project.render_template().
+#
+# The hook/recap constants are indexed defensively because they are internal
+# project template structures rather than part of draft.py's public API.
 _PLACEHOLDER_TEXTS = {
     "narration.",
-    _norm(_RECAP[2]),
-    _norm(_HOOK[2]),
+    _norm(_template_text(_RECAP)),
+    _norm(_template_text(_HOOK)),
 }
+
+# Empty strings are intentionally handled separately by _is_placeholder().
+_PLACEHOLDER_TEXTS.discard("")
 
 
 def _is_placeholder(narration: str) -> bool:
-    return _norm(narration) in _PLACEHOLDER_TEXTS or not _norm(narration)
+    """Return True only for genuinely unwritten narration."""
+    normalized = _norm(narration)
+    return (
+        not normalized
+        or normalized in _PLACEHOLDER_TEXTS
+    )
 
 
-def build_prompt(script: Script, todo: list) -> str:
+def _word_target(script: Script, todo: list) -> tuple[int, int]:
+    """Calculate a bounded total word target from section count.
+
+    The previous implementation hard-coded 700–1400 words even for a single
+    section or a very long multi-section script. A bounded per-section target
+    gives the model a useful scale without pretending to know exact narration
+    timing before synthesis.
+    """
+    minimum = max(
+        80,
+        120 * len(todo),
+    )
+    maximum = max(
+        minimum,
+        220 * len(todo),
+    )
+
+    # Keep the original project's overall ceiling for large batches.
+    return (
+        min(minimum, 1400),
+        min(maximum, 1800),
+    )
+
+
+def build_prompt(
+    script: Script,
+    todo: list,
+) -> str:
+    """Build the single video-level narration drafting prompt."""
+    if not todo:
+        raise ValueError(
+            "build_prompt requires at least one section"
+        )
+
     outline = "\n".join(
-        f"  {sec.index}. {sec.title}\n     ANIM: {sec.anim}" for sec in todo)
-    return textwrap.dedent(f"""
-    You are drafting the narration script for an educational explainer video
-    titled "{script.title}" (topic: {script.meta.get('topic', script.title)})
-    for an audience of {script.meta.get('audience', 'undergraduates')}.
+        (
+            f"  {section.index}. {section.title}\n"
+            f"     ANIM: {section.anim}"
+        )
+        for section in todo
+    )
 
-    Write spoken narration -- plain prose meant to be read aloud, not slide
-    text -- for these sections, in order. Each section's ANIM line describes
-    what the viewer is looking at while this narration plays; write to that
-    visual, but never describe it directly (no "as you can see here").
+    minimum, maximum = _word_target(
+        script,
+        todo,
+    )
 
-{outline}
+    first_index = todo[0].index
 
-    Rules:
-      * ~140 spoken words per minute. Aim for a total of 700-1400 words
-        across all {len(todo)} section(s), weighted by how much each
-        section's ANIM brief has to cover.
-      * Open on the question the viewer actually has. No "hello everyone,
-        welcome back to the channel".
-      * One idea per section, plain declarative sentences. This gets
-        force-aligned word for word to synthesised audio, so avoid
-        parentheticals or anything a text-to-speech voice would stumble
-        reading aloud.
-      * The last section should end on the question the next video answers.
-      * Write ONLY the narration prose. No stage directions, no headers
-        restating the ANIM brief, no markdown formatting, no bullet points.
-      * When an ANIM line names a concrete running example (specific
-        numbers or values), actually narrate what happens to those exact
-        values at each step -- state the comparison, the swap, the move,
-        whatever the step is -- not just the general rule it demonstrates.
-        Reuse the same values in every section that continues the same
-        trace; never switch to a different example partway through.
+    return textwrap.dedent(
+        f"""
+        You are drafting the narration script for an educational explainer
+        video titled "{script.title}" (topic:
+        {script.meta.get("topic", script.title)})
+        for an audience of
+        {script.meta.get("audience", "undergraduates")}.
 
-    Output format -- exactly this, one block per section, nothing else
-    (bare "## <number>", no title, no dash):
+        Write spoken narration — plain prose meant to be read aloud, not slide
+        text — for these sections, in order. Each section's ANIM line describes
+        the visual state while the narration plays; write to that visual, but
+        never describe the visual directly (avoid phrases such as "as you can
+        see here").
 
-    ## {todo[0].index}
-    <narration for that section>
-    """).strip()
+        SECTIONS:
+        {outline}
+
+        Rules:
+          * Target approximately 140 spoken words per minute.
+          * Aim for approximately {minimum}-{maximum} words across these
+            section(s), weighted by the amount of material each section must
+            explain.
+          * Open on the question the viewer actually has. Do not use
+            "hello everyone", "welcome back", or channel-introduction filler.
+          * One main idea per section. Use plain declarative sentences.
+          * This narration will be force-aligned word-for-word to synthesized
+            audio, so avoid parentheticals, unusual punctuation, abbreviations,
+            and constructions that a text-to-speech voice may read awkwardly.
+          * Preserve technical terminology exactly when it is necessary for
+            correctness.
+          * Do not invent numerical results, algorithm steps, examples, or
+            claims that are absent from the section's brief or established
+            context.
+          * When an ANIM line names a concrete running example (specific
+            numbers or values), narrate those exact values and their changes
+            at each relevant step. Reuse the same values whenever the trace
+            continues across sections; never silently switch examples.
+          * If a section contains an explicit illegal-rule demonstration,
+            explain the rule and the demonstrated violation accurately rather
+            than pretending the illegal state is valid.
+          * The final section should close naturally toward the question that
+            the next video or concept answers. Do not append a generic
+            "thanks for watching".
+          * Write ONLY narration prose inside each numbered block.
+          * Do not include stage directions, ANIM text, markdown bullets, code,
+            citations, or extra commentary.
+
+        OUTPUT FORMAT:
+        Return exactly one block for every requested section.
+        Use a bare "## <number>" heading and nothing else on that heading line.
+
+        ## {first_index}
+        <narration for that section>
+        """
+    ).strip()
 
 
-def _parse_reply(text: str, expect: list[int]) -> dict[int, str]:
-    heads = list(_REPLY_HEAD.finditer(text))
-    out: dict[int, str] = {}
-    for i, h in enumerate(heads):
-        idx = int(h.group(1))
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-        out[idx] = text[h.end():end].strip()
-    missing = [i for i in expect if i not in out]
-    if missing:
-        sys.exit(f"[prompt2render] draft: model reply missing section(s) {missing}")
-    return out
+def _strip_code_fence(text: str) -> str:
+    """Remove an accidental outer markdown fence from an LLM response."""
+    value = text.strip()
+
+    if not value.startswith("```"):
+        return value
+
+    lines = value.splitlines()
+
+    if lines:
+        lines = lines[1:]
+
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+
+    return "\n".join(lines).strip()
 
 
-def _replace_section_body(raw: str, index: int, narration: str) -> str:
-    lines = raw.splitlines(keepends=True)
-    start = end = None
-    for i, line in enumerate(lines):
-        m = _HEAD_LINE.match(line.rstrip("\n"))
-        if not m:
+def _parse_reply(
+    text: str,
+    expect: list[int],
+) -> dict[int, str]:
+    """Parse and validate section-numbered model output."""
+    cleaned = _strip_code_fence(text)
+
+    heads = list(
+        _REPLY_HEAD.finditer(cleaned)
+    )
+
+    if not heads:
+        sys.exit(
+            "[prompt2render] draft: model returned no "
+            "numbered sections; refusing to modify script.md"
+        )
+
+    expected = set(expect)
+    output: dict[int, str] = {}
+    duplicates: set[int] = set()
+    unexpected: set[int] = set()
+
+    for position, heading in enumerate(heads):
+        index = int(
+            heading.group(1)
+        )
+
+        end = (
+            heads[position + 1].start()
+            if position + 1 < len(heads)
+            else len(cleaned)
+        )
+
+        body = cleaned[
+            heading.end():end
+        ].strip()
+
+        if index in output:
+            duplicates.add(index)
             continue
-        if int(m.group(1)) == index:
-            start = i
-        elif start is not None:
-            end = i
+
+        if index not in expected:
+            unexpected.add(index)
+            continue
+
+        if not body:
+            sys.exit(
+                f"[prompt2render] draft: section "
+                f"{index} has empty narration"
+            )
+
+        output[index] = body
+
+    missing = [
+        index
+        for index in expect
+        if index not in output
+    ]
+
+    problems = []
+
+    if missing:
+        problems.append(
+            f"missing section(s) {missing}"
+        )
+
+    if duplicates:
+        problems.append(
+            f"duplicate section(s) "
+            f"{sorted(duplicates)}"
+        )
+
+    if unexpected:
+        problems.append(
+            f"unexpected section(s) "
+            f"{sorted(unexpected)}"
+        )
+
+    if problems:
+        sys.exit(
+            "[prompt2render] draft: model reply invalid — "
+            + "; ".join(problems)
+        )
+
+    return output
+
+
+def _replace_section_body(
+    raw: str,
+    index: int,
+    narration: str,
+) -> str:
+    """Replace only the prose body of one section.
+
+    Existing blockquote directives such as ``> ANIM:`` are retained. Other
+    markdown content inside the section is intentionally replaced because the
+    narration draft owns the prose region between this section heading and the
+    next section heading.
+    """
+    if not narration.strip():
+        raise ValueError(
+            f"empty narration for section {index}"
+        )
+
+    lines = raw.splitlines(
+        keepends=True
+    )
+
+    start: int | None = None
+    end: int | None = None
+
+    for position, line in enumerate(lines):
+        match = _HEAD_LINE.match(
+            line.rstrip("\r\n")
+        )
+
+        if not match:
+            continue
+
+        current_index = int(
+            match.group(1)
+        )
+
+        if current_index == index:
+            start = position
+            continue
+
+        if (
+            start is not None
+            and current_index != index
+        ):
+            end = position
             break
+
     if start is None:
-        sys.exit(f"[prompt2render] draft: section {index} not found in script.md")
+        raise SystemExit(
+            f"[prompt2render] draft: section "
+            f"{index} not found in script.md"
+        )
+
     if end is None:
         end = len(lines)
 
-    anim_lines = [l for l in lines[start + 1:end] if l.strip().startswith(">")]
-    new_body = anim_lines + ["\n", narration.strip() + "\n", "\n"]
-    return "".join(lines[:start + 1] + new_body + lines[end:])
+    # Preserve all directive lines. This is deliberately broader than just
+    # "> ANIM:" because future script templates may contain other directives.
+    directives = [
+        line.rstrip("\r\n")
+        for line in lines[start + 1:end]
+        if line.lstrip().startswith(">")
+    ]
+
+    new_body: list[str] = []
+
+    for directive in directives:
+        new_body.append(
+            directive + "\n"
+        )
+
+    if directives:
+        new_body.append("\n")
+
+    new_body.append(
+        narration.strip() + "\n"
+    )
+
+    # Keep one blank line before the next section for stable formatting.
+    new_body.append("\n")
+
+    return "".join(
+        lines[:start + 1]
+        + new_body
+        + lines[end:]
+    )
 
 
-def draft(proj: Path, force: bool = False) -> Path:
+def _atomic_write(
+    path: Path,
+    content: str,
+) -> None:
+    """Write script.md atomically."""
+    temporary = path.with_name(
+        path.name + ".draft.tmp"
+    )
+
+    try:
+        temporary.write_text(
+            content,
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(
+            missing_ok=True
+        )
+
+
+def draft(
+    proj: Path,
+    force: bool = False,
+) -> Path:
+    """Draft narration for placeholder sections in ``proj/script.md``."""
     path = proj / "script.md"
+
+    if not path.exists():
+        sys.exit(
+            f"[prompt2render] draft: missing "
+            f"{path}"
+        )
+
     script = parse_script(path)
 
-    todo = [s for s in script.sections if force or _is_placeholder(s.narration)]
+    todo = [
+        section
+        for section in script.sections
+        if (
+            force
+            or _is_placeholder(
+                section.narration
+            )
+        )
+    ]
+
     if not todo:
-        cfg.say("every section already has narration -- nothing to draft "
-                "(use --force to overwrite)")
+        cfg.say(
+            "every section already has narration — "
+            "nothing to draft "
+            "(use --force to overwrite)"
+        )
         return path
 
-    cfg.say(f"drafting narration for section(s) "
-            f"{', '.join(str(s.index) for s in todo)}")
-    prompt = build_prompt(script, todo)
-    text = llm.complete(prompt, max_tokens=8000)
-    by_index = _parse_reply(text, [s.index for s in todo])
+    indices = [
+        section.index
+        for section in todo
+    ]
 
-    raw = path.read_text(encoding="utf-8")
-    for sec in todo:
-        raw = _replace_section_body(raw, sec.index, by_index[sec.index])
-    path.write_text(raw, encoding="utf-8")
+    cfg.say(
+        "drafting narration for section(s) "
+        + ", ".join(
+            str(index)
+            for index in indices
+        )
+    )
 
-    cfg.say(f"wrote narration for section(s) "
-            f"{', '.join(str(s.index) for s in todo)} into {path}")
-    cfg.warn("AI-drafted narration is a starting point, not a finished script -- "
-             "read it in your own voice and fix anything wrong before you "
-             "`build`. If you ship it close to as-is, set the synthetic-content "
-             "disclosure in YouTube Studio (see out/upload.md's checklist).")
+    prompt = build_prompt(
+        script,
+        todo,
+    )
+
+    try:
+        text = llm.complete(
+            prompt,
+            max_tokens=8000,
+            label="narration-draft",
+        )
+    except TypeError:
+        # Compatibility with older llm.complete() signatures.
+        text = llm.complete(
+            prompt,
+            max_tokens=8000,
+        )
+
+    if not isinstance(text, str) or not text.strip():
+        sys.exit(
+            "[prompt2render] draft: LLM returned "
+            "an empty response; script.md was not changed"
+        )
+
+    by_index = _parse_reply(
+        text,
+        indices,
+    )
+
+    raw = path.read_text(
+        encoding="utf-8"
+    )
+
+    # Construct the entire replacement before touching disk. If any section
+    # cannot be found, the original script remains untouched.
+    updated = raw
+
+    for section in todo:
+        updated = _replace_section_body(
+            updated,
+            section.index,
+            by_index[section.index],
+        )
+
+    _atomic_write(
+        path,
+        updated,
+    )
+
+    cfg.say(
+        "wrote narration for section(s) "
+        + ", ".join(
+            str(index)
+            for index in indices
+        )
+        + f" into {path}"
+    )
+
+    cfg.warn(
+        "AI-drafted narration is a starting point, "
+        "not a finished script — read it in your own "
+        "voice and verify every technical claim before "
+        "you `build`. If you ship it close to as-is, "
+        "set the synthetic-content disclosure in "
+        "YouTube Studio (see out/upload.md's checklist)."
+    )
+
     return path
+
+
+__all__ = [
+    "build_prompt",
+    "draft",
+]

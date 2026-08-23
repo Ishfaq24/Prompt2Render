@@ -1,8 +1,13 @@
 """Create a project folder and parse its script.md.
 
-script.md is the single source of truth: your narration, your section
-titles, and the animation brief handed to `prompt2render scenes` for storyboarding.
+script.md is the single source of truth: narration, section titles, and the
+animation brief handed to ``prompt2render scenes`` for storyboarding.
+
 Everything downstream (audio, sync, captions, chapters) is derived from it.
+
+The module deliberately keeps the script contract strict. AI-generated outlines,
+human-edited scripts, and pedagogy revisions all pass through the same parser
+and section structure.
 """
 from __future__ import annotations
 
@@ -12,95 +17,149 @@ from pathlib import Path
 
 from . import cfg
 
-#: The fixed hook and recap beats -- every video opens on the question and
-#: closes on the next one, regardless of length.
+
+# ---------------------------------------------------------------------------
+# Default deterministic outline
+# ---------------------------------------------------------------------------
+
+#: Fixed hook and recap beats. Every video opens on a question and closes
+#: toward the next question, regardless of length.
 _HOOK = (
     "The hook",
     "title card, then the one image that frames the whole problem",
     'Open with the question the viewer actually has. No "hello everyone, welcome\n'
     'back to the channel". Thirty seconds to earn the next eight minutes.',
 )
+
 _RECAP = (
     "Recap and the next question",
     "recap card with the 3 things to remember",
     "Narration. End on the question your next video answers.",
 )
 
-#: Body beats in priority order. `_body_sections(n)` takes the first n for a
-#: short video and falls back to generic slots once this list runs out --
-#: this is a generic explainer arc, not a topic-aware outline, so it is only
-#: ever a starting point to rename.
+
+#: Body beats in priority order. These are only deterministic starting points.
+#: ``new --ai`` uses outline.py instead and therefore does not depend on these
+#: generic archetypes.
 _BODY_ARCHETYPES = [
-    ("The naive approach and why it breaks",
-     "walk the obvious method, then show it failing on a concrete case"),
-    ("The key idea",
-     "the central visual - this is the frame people screenshot"),
-    ("Worked example",
-     "step through one full concrete example, values visible on screen"),
-    ("Where this shows up in practice",
-     "real system diagram or benchmark"),
-    ("Trade-offs and where it breaks down",
-     "the case where this approach fails, side by side with one where it works"),
-    ("How it compares to the alternative",
-     "put this approach next to the other common one, same input"),
-    ("Complexity and cost",
-     "the growth curve, plotted, not just claimed"),
+    (
+        "The naive approach and why it breaks",
+        "walk the obvious method, then show it failing on a concrete case",
+    ),
+    (
+        "The key idea",
+        "the central visual - this is the frame people screenshot",
+    ),
+    (
+        "Worked example",
+        "step through one full concrete example, values visible on screen",
+    ),
+    (
+        "Where this shows up in practice",
+        "real system diagram or benchmark",
+    ),
+    (
+        "Trade-offs and where it breaks down",
+        "the case where this approach fails, side by side with one where it works",
+    ),
+    (
+        "How it compares to the alternative",
+        "put this approach next to the other common one, same input",
+    ),
+    (
+        "Complexity and cost",
+        "the growth curve, plotted, not just claimed",
+    ),
 ]
 
-_MIN_SECTIONS = 2       # hook + recap, no body -- a teaser-length floor
-_MAX_SECTIONS = 40      # a sanity ceiling, not a real editorial limit
+_MIN_SECTIONS = 2
+_MAX_SECTIONS = 40
 
 
 def _body_sections(n: int) -> list[tuple[str, str]]:
+    """Return ``n`` deterministic body beats."""
+    if n <= 0:
+        return []
+
     if n <= len(_BODY_ARCHETYPES):
         return _BODY_ARCHETYPES[:n]
-    extra = [(f"Body beat {i}", "one visual for this idea")
-             for i in range(len(_BODY_ARCHETYPES) + 1, n + 1)]
+
+    extra = [
+        (f"Body beat {i}", "one visual for this idea")
+        for i in range(len(_BODY_ARCHETYPES) + 1, n + 1)
+    ]
+
     return _BODY_ARCHETYPES + extra
 
 
-def _resolve_outline(minutes: float | None, sections: int | None) -> tuple[int, float]:
-    """(section count, nominal minutes for the word-count guidance comment).
+def _resolve_outline(
+    minutes: float | None,
+    sections: int | None,
+) -> tuple[int, float]:
+    """Return ``(section_count, nominal_minutes)``.
 
-    `--sections` picks the count directly; `--minutes` derives it from a
-    rough 2-minutes-per-body-beat pace (the ratio the original fixed
-    6-section/8-12-min template implied: 4 body beats over ~10 minutes).
-    Neither given reproduces the old fixed template exactly (10 min, 6
-    sections).
+    ``--sections`` takes precedence over the section count derived from
+    ``--minutes``.
     """
     if sections is not None:
-        n = max(_MIN_SECTIONS, min(_MAX_SECTIONS, int(sections)))
+        try:
+            requested = int(sections)
+        except (TypeError, ValueError):
+            raise SystemExit(
+                "[prompt2render] sections must be an integer"
+            ) from None
+
+        n = max(_MIN_SECTIONS, min(_MAX_SECTIONS, requested))
+
         if minutes is None:
-            minutes = max(3, 2 * (n - 2) + 1)
-        return n, minutes
-    minutes = 10.0 if minutes is None else max(1.0, float(minutes))
+            minutes = max(3.0, 2 * (n - 2) + 1)
+
+        return n, float(minutes)
+
+    minutes = 10.0 if minutes is None else float(minutes)
+
+    if minutes <= 0:
+        raise SystemExit(
+            "[prompt2render] minutes must be greater than zero"
+        )
+
     body = max(0, round(minutes / 2) - 1)
-    n = max(_MIN_SECTIONS, min(_MAX_SECTIONS, body + 2))
+    n = max(
+        _MIN_SECTIONS,
+        min(_MAX_SECTIONS, body + 2),
+    )
+
     return n, minutes
 
 
-def render_template(title: str, minutes: float | None = None,
-                    sections: int | None = None) -> str:
-    n, minutes = _resolve_outline(minutes, sections)
-    parts = [_front_matter(title, minutes, n)]
+# ---------------------------------------------------------------------------
+# Script rendering
+# ---------------------------------------------------------------------------
 
-    def block(i, title_, anim, narration):
-        parts.append(f"\n## {i} - {title_}\n> ANIM: {anim}\n\n{narration}\n")
+def _front_matter(
+    title: str,
+    minutes: float,
+    n: int,
+    *,
+    ai: bool = False,
+    topic: str | None = None,
+) -> str:
+    """Render the canonical script front matter."""
+    title = str(title).strip()
+    topic = str(topic or title).strip()
 
-    block(1, *_HOOK)
-    for i, (t, anim) in enumerate(_body_sections(n - 2), start=2):
-        block(i, t, anim, "Narration.")
-    block(n, *_RECAP)
-    return "".join(parts)
-
-
-def _front_matter(title: str, minutes: float, n: int, ai: bool = False,
-                  topic: str | None = None) -> str:
     words = round(minutes * 140)
-    note = ("This outline was AI-suggested" if ai else "This is a starting outline")
+
+    note = (
+        "This outline was AI-suggested"
+        if ai
+        else
+        "This is a starting outline"
+    )
+
     return f"""---
 title: {title}
-topic: {topic or title}
+topic: {topic}
 audience: undergraduate computer science
 ---
 
@@ -108,30 +167,196 @@ audience: undergraduate computer science
      Each "## N - Title" block is one section.
      The "> ANIM:" line is the brief `prompt2render scenes` storyboards against scenekit.
      Everything else is what YOU say. Write it in your own voice.
+
      Aim ~140 spoken words per minute; ~{minutes:g} min total = ~{words} words
      across {n} section(s). {note} -- add, remove or rename sections freely,
-     and every section still needs real narration before you build. -->
+     and every section still needs real narration before you build.
+-->
 """
 
 
-def render_from_sections(title: str, sections: list[dict],
-                         minutes: float | None = None,
-                         topic: str | None = None) -> str:
-    """Render script.md from an explicit [{"title", "anim"}, ...] list.
+def render_template(
+    title: str,
+    minutes: float | None = None,
+    sections: int | None = None,
+) -> str:
+    """Render the deterministic starter script."""
+    n, minutes = _resolve_outline(minutes, sections)
 
-    Used by `new --ai`: the section structure (count, titles, briefs), and
-    optionally a distinct topic summary, come from outline.generate()
-    rather than the fixed archetypes above -- but narration is still left
-    as a placeholder either way -- see draft.py.
-    """
-    n = len(sections)
-    if minutes is None:
-        minutes = max(3, 2 * (n - 2) + 1) if n > 2 else 3.0
-    parts = [_front_matter(title, minutes, n, ai=True, topic=topic)]
-    for i, s in enumerate(sections, start=1):
-        parts.append(f"\n## {i} - {s['title']}\n> ANIM: {s['anim']}\n\nNarration.\n")
+    title = str(title).strip()
+
+    if not title:
+        raise SystemExit("[prompt2render] project title cannot be empty")
+
+    parts = [
+        _front_matter(
+            title,
+            minutes,
+            n,
+            ai=False,
+            topic=title,
+        )
+    ]
+
+    def block(
+        index: int,
+        section_title: str,
+        anim: str,
+        narration: str,
+    ) -> None:
+        parts.append(
+            f"\n## {index} - {section_title}\n"
+            f"> ANIM: {anim}\n\n"
+            f"{narration}\n"
+        )
+
+    block(1, *_HOOK)
+
+    for index, (section_title, anim) in enumerate(
+        _body_sections(n - 2),
+        start=2,
+    ):
+        block(
+            index,
+            section_title,
+            anim,
+            "Narration.",
+        )
+
+    block(n, *_RECAP)
+
     return "".join(parts)
 
+
+def _validate_outline_sections(
+    sections: list[dict],
+) -> list[dict]:
+    """Validate and normalize an AI-generated section list.
+
+    The outline is rejected before it reaches disk if it contains malformed,
+    duplicate, empty, or structurally unsafe entries.
+    """
+    if not isinstance(sections, list):
+        raise SystemExit(
+            "[prompt2render] outline: sections must be a list"
+        )
+
+    if not sections:
+        raise SystemExit(
+            "[prompt2render] outline: sections list is empty"
+        )
+
+    if len(sections) < _MIN_SECTIONS:
+        raise SystemExit(
+            f"[prompt2render] outline: at least {_MIN_SECTIONS} "
+            "sections are required"
+        )
+
+    if len(sections) > _MAX_SECTIONS:
+        raise SystemExit(
+            f"[prompt2render] outline: maximum {_MAX_SECTIONS} "
+            "sections allowed"
+        )
+
+    normalized: list[dict] = []
+
+    for position, section in enumerate(sections, start=1):
+        if not isinstance(section, dict):
+            raise SystemExit(
+                f"[prompt2render] outline: section {position} "
+                "is not an object"
+            )
+
+        title = str(section.get("title", "")).strip()
+        anim = str(section.get("anim", "")).strip()
+
+        if not title:
+            raise SystemExit(
+                f"[prompt2render] outline: section {position} "
+                "has no title"
+            )
+
+        if not anim:
+            raise SystemExit(
+                f"[prompt2render] outline: section {position} "
+                "has no ANIM brief"
+            )
+
+        if len(title) > 120:
+            raise SystemExit(
+                f"[prompt2render] outline: section {position} "
+                "title is excessively long"
+            )
+
+        normalized.append(
+            {
+                "title": title,
+                "anim": anim,
+            }
+        )
+
+    return normalized
+
+
+def render_from_sections(
+    title: str,
+    sections: list[dict],
+    minutes: float | None = None,
+    topic: str | None = None,
+) -> str:
+    """Render script.md from an explicit ``[{"title", "anim"}, ...]`` list.
+
+    Used by ``new --ai``. The AI decides the section structure and optionally
+    the topic summary; narration remains a placeholder and is filled by
+    ``prompt2render draft`` or manually.
+    """
+    title = str(title).strip()
+
+    if not title:
+        raise SystemExit(
+            "[prompt2render] project title cannot be empty"
+        )
+
+    sections = _validate_outline_sections(sections)
+
+    n = len(sections)
+
+    if minutes is None:
+        minutes = (
+            max(3.0, 2 * (n - 2) + 1)
+            if n > 2
+            else 3.0
+        )
+    else:
+        minutes = float(minutes)
+        if minutes <= 0:
+            raise SystemExit(
+                "[prompt2render] minutes must be greater than zero"
+            )
+
+    parts = [
+        _front_matter(
+            title,
+            minutes,
+            n,
+            ai=True,
+            topic=topic or title,
+        )
+    ]
+
+    for index, section in enumerate(sections, start=1):
+        parts.append(
+            f"\n## {index} - {section['title']}\n"
+            f"> ANIM: {section['anim']}\n\n"
+            "Narration.\n"
+        )
+
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Parsed script model
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Section:
@@ -139,8 +364,10 @@ class Section:
     title: str
     anim: str = ""
     narration: str = ""
+
     audio: Path | None = None
     video: Path | None = None
+
     start: float = 0.0
     dur: float = 0.0
 
@@ -160,78 +387,314 @@ class Script:
 
     @property
     def word_count(self) -> int:
-        return sum(len(s.narration.split()) for s in self.sections)
+        return sum(
+            len(section.narration.split())
+            for section in self.sections
+        )
 
 
-_FRONT = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
-_HEAD = re.compile(r"^##\s+(\d+)\s*[-\u2013\u2014.:]?\s*(.*)$", re.M)
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+_FRONT = re.compile(
+    r"^---\s*\n(.*?)\n---\s*\n",
+    re.S,
+)
+
+_HEAD = re.compile(
+    r"^##\s+(\d+)\s*[-–—.:]?\s*(.*?)\s*$",
+    re.M,
+)
+
+
+def _parse_front_matter(raw: str) -> tuple[dict, str]:
+    """Parse the intentionally small YAML-like front matter.
+
+    This is not intended to be a general YAML parser. The script contract uses
+    simple scalar ``key: value`` fields.
+    """
+    meta: dict[str, str] = {}
+
+    match = _FRONT.match(raw)
+
+    if not match:
+        return meta, raw
+
+    for line in match.group(1).splitlines():
+        line = line.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+
+        key = key.strip()
+        value = value.strip()
+
+        if not key:
+            continue
+
+        # Remove matching surrounding quotes while preserving internal content.
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {'"', "'"}
+        ):
+            value = value[1:-1]
+
+        meta[key] = value
+
+    return meta, raw[match.end():]
+
+
+def _clean_narration(lines: list[str]) -> str:
+    """Normalize narration whitespace without altering its wording."""
+    text = "\n".join(lines)
+
+    text = re.sub(
+        r"\n{2,}",
+        "\n\n",
+        text,
+    )
+
+    return text.strip()
+
+
+def _validate_sections(sections: list[Section]) -> None:
+    """Validate the canonical parsed script structure."""
+    if not sections:
+        raise SystemExit(
+            "[prompt2render] script.md has no sections"
+        )
+
+    seen: set[int] = set()
+
+    for section in sections:
+        if section.index in seen:
+            raise SystemExit(
+                f"[prompt2render] script.md has duplicate section "
+                f"number {section.index}"
+            )
+
+        seen.add(section.index)
+
+        if section.index <= 0:
+            raise SystemExit(
+                f"[prompt2render] script.md has invalid section "
+                f"number {section.index}"
+            )
+
+        if not section.title.strip():
+            raise SystemExit(
+                f"[prompt2render] section {section.index} has no title"
+            )
+
+        if not section.anim.strip():
+            raise SystemExit(
+                f"[prompt2render] section {section.index} has no ANIM brief"
+            )
+
+    expected = set(range(1, len(sections) + 1))
+
+    if seen != expected:
+        missing = sorted(expected - seen)
+        extra = sorted(seen - expected)
+
+        detail = []
+
+        if missing:
+            detail.append(
+                "missing " + ", ".join(map(str, missing))
+            )
+
+        if extra:
+            detail.append(
+                "unexpected " + ", ".join(map(str, extra))
+            )
+
+        raise SystemExit(
+            "[prompt2render] script.md section numbering must be "
+            f"contiguous starting at 1 ({'; '.join(detail)})"
+        )
 
 
 def parse_script(path: Path) -> Script:
-    raw = path.read_text(encoding="utf-8")
+    """Parse ``script.md`` into the canonical Script representation."""
+    if not path.exists():
+        raise SystemExit(
+            f"[prompt2render] missing script: {path}"
+        )
 
-    meta: dict = {}
-    m = _FRONT.match(raw)
-    if m:
-        for line in m.group(1).splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                meta[k.strip()] = v.strip()
-        raw = raw[m.end():]
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(
+            f"[prompt2render] cannot read {path}: {exc}"
+        ) from exc
 
-    raw = re.sub(r"<!--.*?-->", "", raw, flags=re.S)
+    meta, raw = _parse_front_matter(raw)
+
+    # Remove instructional comments before parsing sections.
+    raw = re.sub(
+        r"<!--.*?-->",
+        "",
+        raw,
+        flags=re.S,
+    )
 
     heads = list(_HEAD.finditer(raw))
+
     if not heads:
-        raise SystemExit("[prompt2render] script.md has no '## 1 - Title' section headers")
+        raise SystemExit(
+            "[prompt2render] script.md has no "
+            "'## 1 - Title' section headers"
+        )
 
     sections: list[Section] = []
-    for i, h in enumerate(heads):
-        body = raw[h.end(): heads[i + 1].start() if i + 1 < len(heads) else len(raw)]
-        anim_lines, narration_lines = [], []
+
+    for i, head in enumerate(heads):
+        end = (
+            heads[i + 1].start()
+            if i + 1 < len(heads)
+            else len(raw)
+        )
+
+        body = raw[head.end():end]
+
+        anim_lines: list[str] = []
+        narration_lines: list[str] = []
+
         for line in body.splitlines():
-            s = line.strip()
-            if s.upper().startswith("> ANIM:"):
-                anim_lines.append(s.split(":", 1)[1].strip())
-            elif s.startswith(">"):
+            stripped = line.strip()
+
+            if stripped.upper().startswith("> ANIM:"):
+                value = stripped.split(":", 1)[1].strip()
+
+                if value:
+                    anim_lines.append(value)
+
+            elif stripped.startswith(">"):
+                # Other blockquote lines are treated as editorial metadata,
+                # not spoken narration.
                 continue
+
             else:
                 narration_lines.append(line)
-        narration = re.sub(r"\n{2,}", "\n\n", "\n".join(narration_lines)).strip()
-        sections.append(Section(
-            index=int(h.group(1)),
-            title=h.group(2).strip() or f"Section {h.group(1)}",
-            anim=" ".join(anim_lines),
-            narration=narration,
-        ))
-    return Script(meta=meta, sections=sections)
 
+        section = Section(
+            index=int(head.group(1)),
+            title=head.group(2).strip()
+            or f"Section {head.group(1)}",
+            anim=" ".join(anim_lines).strip(),
+            narration=_clean_narration(narration_lines),
+        )
+
+        sections.append(section)
+
+    # The parser deliberately does not reorder the user's script. Ordering is
+    # part of the source document and therefore must be correct in the file.
+    _validate_sections(sections)
+
+    return Script(
+        meta=meta,
+        sections=sections,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Project creation
+# ---------------------------------------------------------------------------
 
 def _scaffold_dirs(slug: str) -> Path:
+    """Create the standard project directory structure."""
+    slug = str(slug).strip()
+
+    if not slug:
+        raise SystemExit(
+            "[prompt2render] project slug cannot be empty"
+        )
+
     d = cfg.PROJECTS / slug
+
     if d.exists():
-        raise SystemExit(f"[prompt2render] project '{slug}' already exists at {d}")
-    for sub in ("sections", "audio", "build", "out"):
-        (d / sub).mkdir(parents=True)
+        raise SystemExit(
+            f"[prompt2render] project '{slug}' already exists at {d}"
+        )
+
+    for sub in (
+        "sections",
+        "audio",
+        "build",
+        "out",
+    ):
+        (d / sub).mkdir(
+            parents=True,
+            exist_ok=False,
+        )
+
     return d
 
 
-def new_project(slug: str, title: str | None = None, minutes: float | None = None,
-                sections: int | None = None) -> Path:
+def new_project(
+    slug: str,
+    title: str | None = None,
+    minutes: float | None = None,
+    sections: int | None = None,
+) -> Path:
+    """Create a deterministic Prompt2Render project."""
     d = _scaffold_dirs(slug)
-    title = title or slug.replace("-", " ").title()
-    (d / "script.md").write_text(
-        render_template(title, minutes=minutes, sections=sections), encoding="utf-8")
+
+    title = (
+        title.strip()
+        if title and title.strip()
+        else slug.replace("-", " ").title()
+    )
+
+    script = render_template(
+        title,
+        minutes=minutes,
+        sections=sections,
+    )
+
+    script_path = d / "script.md"
+
+    script_path.write_text(
+        script,
+        encoding="utf-8",
+    )
+
     return d
 
 
-def new_project_from_sections(slug: str, title: str, sections: list[dict],
-                              minutes: float | None = None,
-                              topic: str | None = None) -> Path:
-    """Like new_project(), but the section structure is already decided --
-    used by `new --ai` with outline.generate()'s output."""
+def new_project_from_sections(
+    slug: str,
+    title: str,
+    sections: list[dict],
+    minutes: float | None = None,
+    topic: str | None = None,
+) -> Path:
+    """Create a project whose section structure is already decided.
+
+    Used by ``new --ai`` with ``outline.generate()``.
+    """
     d = _scaffold_dirs(slug)
-    (d / "script.md").write_text(
-        render_from_sections(title, sections, minutes=minutes, topic=topic),
-        encoding="utf-8")
+
+    script = render_from_sections(
+        title,
+        sections,
+        minutes=minutes,
+        topic=topic,
+    )
+
+    script_path = d / "script.md"
+
+    script_path.write_text(
+        script,
+        encoding="utf-8",
+    )
+
     return d

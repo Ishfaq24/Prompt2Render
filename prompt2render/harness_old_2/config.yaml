@@ -1,0 +1,118 @@
+# Default harness plugin configuration.
+#
+# Any plugin can be disabled here with no code change (the loader's whole point). `gate_override`
+# is null by default, meaning "use the plugin's own is_gate() default" — set true/false here to
+# override it per run without touching code, e.g. for the ablation runner's ON/OFF matrix
+# (docs/MIGRATION_INVENTORY.md Stage 5).
+
+generator_voice:
+  enabled: true
+  gate_override: null
+  kokoro_voice: am_eric
+  kokoro_speed: 1.0
+
+generator_align:
+  enabled: true
+  gate_override: null
+
+planner_script:
+  enabled: true
+  gate_override: true
+  force: false
+
+chunker_scene:
+  enabled: true
+  gate_override: true
+
+planner_pedagogy:
+  enabled: true
+  gate_override: true
+
+reviser_script:
+  enabled: true
+  gate_override: true
+  max_revisions: 2
+
+verifier_pedagogy:
+  enabled: true
+  gate_override: true
+
+planner_llm:
+  enabled: false          # optional extra LLM storyboard stage; off to avoid quota churn
+  gate_override: null
+
+planner_visual:
+  enabled: true           # deterministic topic-agnostic animation contract
+  gate_override: true
+
+planner_audio:
+  enabled: true           # real: ingests already-produced voice/align timing
+  gate_override: null
+
+retriever_manim_rag:
+  enabled: false           # real: injects helpful scenekit snippets into the prompt
+  gate_override: null
+
+generator_code:
+  enabled: true            # real: wraps scenes.generate_all
+  gate_override: null
+
+verifier_semantic:
+  enabled: true              # real: LLM pedagogical critic for domain logic (e.g. Hanoi rules)
+  gate_override: true
+
+verifier_execution:
+  enabled: true              # real: deterministic AST-based execution verifier
+  gate_override: true
+
+verifier_spatial:
+  enabled: true              # real: wraps scenekit.audit()'s recorded verdict
+  gate_override: null
+
+verifier_lifecycle:
+  enabled: true               # always-[] shell, per the migration brief
+  gate_override: false
+
+verifier_audio:
+  enabled: true                # real: wraps qc.py's caption-drift gate (whole-video scoped)
+  gate_override: null
+
+renderer_stills:
+  enabled: true                 # real: wraps stills.render_many — the actual live renderer
+  gate_override: null
+
+renderer_manim:
+  enabled: false                 # opt-in escape hatch, disabled by default (Stage 0 §5)
+  gate_override: null
+
+feedback_hitl:
+  enabled: true                   # manual/async — never blocks an automated run
+  gate_override: false
+
+generator_timeline:
+  enabled: true
+  gate_override: null
+
+renderer_encode:
+  enabled: true
+  gate_override: null
+  jobs: null
+
+renderer_finish:
+  enabled: true
+  gate_override: null
+  burn: false
+
+verifier_final_qc:
+  enabled: true
+  gate_override: true
+  strict: false
+
+generator_publish:
+  enabled: true
+  gate_override: true
+
+repair_router:
+  enabled: true                    # event subscriber, not a pipeline stage — see its own docstring
+  gate_override: false
+  max_repair_cycles: 3

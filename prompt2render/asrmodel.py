@@ -1,14 +1,19 @@
-"""Bootstrap the GGML models the ffmpeg whisper filter needs.
+"""Bootstrap the optional GGML models used by prompt2render alignment.
 
-Alignment needs no Python package — ffmpeg 8.x is built `--enable-whisper` and
-carries whisper.cpp inside it. What it does need is a model file, and that is
-the only thing standing between a clean checkout and word-level sync.
+Alignment itself must never download models.  ``prompt2render models`` is the
+explicit provisioning command; builds only call :func:`available` and degrade
+gracefully when a model is absent.
 
-The rule that shapes this module: **never download inside a build**. A ten
-minute pipeline must not stop to fetch 148 MB, and a missing optional model
-must degrade rather than abort. `prompt2render models` is the explicit, interruptible
-place where that cost is paid.
+The downloader is deliberately defensive:
+
+* downloads are written to ``.part`` and atomically renamed;
+* HTTP failures and interrupted transfers are reported cleanly;
+* downloaded files are sanity-checked before installation;
+* existing models are validated before being trusted;
+* hashing is streamed rather than loading a large model into RAM;
+* optional VAD provisioning can never make ASR alignment fatal.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -20,151 +25,473 @@ from pathlib import Path
 
 from . import cfg
 
+
 WHISPER_DIR = cfg.MODELS / "whisper"
 
 _BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
-#: name -> (filename, url, approximate MB). The sizes are sanity bounds, not
-#: checksums: a truncated download is the failure mode worth catching, and it
-#: is always dramatically short rather than subtly wrong.
-ASR_MODELS = {
-    "tiny.en":  ("ggml-tiny.en.bin",  f"{_BASE}/ggml-tiny.en.bin",   77),
-    "base.en":  ("ggml-base.en.bin",  f"{_BASE}/ggml-base.en.bin",  148),
-    "small.en": ("ggml-small.en.bin", f"{_BASE}/ggml-small.en.bin", 488),
+# name -> (filename, URL, approximate size in MB)
+ASR_MODELS: dict[str, tuple[str, str, int]] = {
+    "tiny.en": (
+        "ggml-tiny.en.bin",
+        f"{_BASE}/ggml-tiny.en.bin",
+        77,
+    ),
+    "base.en": (
+        "ggml-base.en.bin",
+        f"{_BASE}/ggml-base.en.bin",
+        148,
+    ),
+    "small.en": (
+        "ggml-small.en.bin",
+        f"{_BASE}/ggml-small.en.bin",
+        488,
+    ),
 }
 
 VAD_MODEL = (
     "ggml-silero-v5.1.2.bin",
-    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin",
-    1,          # genuinely this small — silero is a tiny model
+    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/"
+    "ggml-silero-v5.1.2.bin",
+    1,
 )
 
-#: whisper.cpp writes `struct.pack("i", 0x67676d6c)`, which lands on disk as
-#: b"lmgg" on a little-endian machine. Accept both orientations rather than
-#: assume the writer's endianness.
+# whisper.cpp GGML files normally begin with "lmgg" on little-endian
+# systems. Accept the opposite byte ordering as well.
 _GGML_MAGIC = (b"lmgg", b"ggml")
+
+# Never accept a model that is suspiciously small, even if it happens to have
+# a matching four-byte header.
+_MIN_ASR_BYTES = 1_000_000
+_MIN_VAD_BYTES = 200_000
+
+_USER_AGENT = "prompt2render/1.0"
+_DOWNLOAD_TIMEOUT = 60
 
 
 def _looks_like_ggml(path: Path) -> bool:
+    """Return True when ``path`` has a recognized GGML header."""
+
     try:
+        if not path.is_file() or path.stat().st_size < 8:
+            return False
+
         with path.open("rb") as fh:
             return fh.read(4) in _GGML_MAGIC
     except OSError:
         return False
 
 
-def asr_path(name_or_path: str | None = None) -> Path:
-    """Resolve P2R_WHISPER_MODEL to a concrete path (which may not exist).
+def _looks_like_vad(path: Path) -> bool:
+    """Conservative sanity check for the optional VAD model."""
 
-    Accepts either a model name ("base.en") or an explicit path, so a shared
-    model directory outside the repo works without copying files around.
+    try:
+        return (
+            path.is_file()
+            and path.stat().st_size >= _MIN_VAD_BYTES
+        )
+    except OSError:
+        return False
+
+
+def asr_path(name_or_path: str | None = None) -> Path:
+    """Resolve a configured ASR model name or explicit filesystem path.
+
+    ``base.en`` and the other registered names resolve into the project's
+    model directory. Explicit absolute paths are supported for shared models.
+    Relative explicit paths are resolved from ``cfg.ROOT``.
     """
-    raw = name_or_path or os.environ.get("P2R_WHISPER_MODEL", "base.en")
+
+    raw = (
+        name_or_path
+        or os.environ.get(
+            "P2R_WHISPER_MODEL",
+            "base.en",
+        )
+    ).strip()
+
     if raw in ASR_MODELS:
         return WHISPER_DIR / ASR_MODELS[raw][0]
-    p = Path(raw).expanduser()
-    return p if p.is_absolute() else (cfg.ROOT / p)
+
+    path = Path(raw).expanduser()
+    return (
+        path
+        if path.is_absolute()
+        else cfg.ROOT / path
+    )
 
 
 def vad_path() -> Path:
+    """Return the installed optional VAD model path."""
+
     return WHISPER_DIR / VAD_MODEL[0]
 
 
 def available(name_or_path: str | None = None) -> Path | None:
-    """The ASR model path if it is present and plausibly intact, else None."""
-    p = asr_path(name_or_path)
-    if p.exists() and p.stat().st_size > 1_000_000 and _looks_like_ggml(p):
-        return p
-    return None
+    """Return a usable ASR model, otherwise ``None``.
+
+    This function is intentionally side-effect free: it never downloads,
+    creates directories, or modifies the model.
+    """
+
+    path = asr_path(name_or_path)
+
+    try:
+        valid = (
+            path.is_file()
+            and path.stat().st_size >= _MIN_ASR_BYTES
+            and _looks_like_ggml(path)
+        )
+    except OSError:
+        valid = False
+
+    return path if valid else None
 
 
 def vad_available() -> Path | None:
-    p = vad_path()
-    return p if p.exists() and p.stat().st_size > 200_000 else None
+    """Return the optional VAD model when a plausible file is installed."""
+
+    path = vad_path()
+    return path if _looks_like_vad(path) else None
 
 
 def missing_note(name_or_path: str | None = None) -> str:
-    name = name_or_path or os.environ.get("P2R_WHISPER_MODEL", "base.en")
-    mb = ASR_MODELS.get(name, (None, None, 148))[2]
-    return (f"no ASR model at {asr_path(name)} — "
-            f"run: python prompt2render.py models --asr {name}  ({mb} MB, one time)")
+    """Human-readable provisioning instruction for a missing ASR model."""
+
+    name = (
+        name_or_path
+        or os.environ.get(
+            "P2R_WHISPER_MODEL",
+            "base.en",
+        )
+    )
+
+    if name in ASR_MODELS:
+        mb = ASR_MODELS[name][2]
+    else:
+        mb = 148
+
+    return (
+        f"no ASR model at {asr_path(name)} — "
+        f"run: python prompt2render.py models --asr {name} "
+        f"({mb} MB, one time)"
+    )
 
 
-def _download(url: str, dst: Path, approx_mb: int) -> None:
-    """Fetch to a .part sidecar, validate, then rename into place.
+def _sha256(path: Path) -> str:
+    """Hash a file without loading it entirely into memory."""
 
-    A half-written model that the presence check trusts is worse than no model
-    at all: it would fail deep inside a filtergraph with an opaque error.
+    digest = hashlib.sha256()
+
+    with path.open("rb") as fh:
+        for block in iter(
+            lambda: fh.read(1 << 20),
+            b"",
+        ):
+            digest.update(block)
+
+    return digest.hexdigest()
+
+
+def _download(
+    url: str,
+    dst: Path,
+    approx_mb: int,
+) -> None:
+    """Download, validate, and atomically install a model.
+
+    ``dst`` is untouched until the complete temporary download passes all
+    validation checks. This prevents an interrupted download from destroying
+    an already-installed working model.
     """
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    part = dst.with_suffix(dst.suffix + ".part")
-    cfg.say(f"fetching {dst.name} (~{approx_mb} MB) from {url.split('/')[2]}")
+
+    dst.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    part = dst.with_name(
+        dst.name + ".part"
+    )
+
+    # Remove a stale partial file from an earlier interrupted invocation.
+    part.unlink(
+        missing_ok=True
+    )
+
+    host = url.split("/", 3)[2] if "://" in url else url
+
+    cfg.say(
+        f"fetching {dst.name} (~{approx_mb} MB) "
+        f"from {host}"
+    )
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "prompt2render"})
-        with urllib.request.urlopen(req) as resp, part.open("wb") as out:
-            total = int(resp.headers.get("Content-Length") or 0)
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": _USER_AGENT,
+                "Accept": "application/octet-stream",
+            },
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=_DOWNLOAD_TIMEOUT,
+        ) as response:
+            total_header = response.headers.get(
+                "Content-Length"
+            )
+
+            try:
+                total = int(total_header or 0)
+            except ValueError:
+                total = 0
+
             got = 0
-            while chunk := resp.read(1 << 20):
-                out.write(chunk)
-                got += len(chunk)
-                if total:
-                    pct = 100 * got / total
-                    print(f"\r      {got/1e6:6.1f} / {total/1e6:.1f} MB  {pct:5.1f}%",
-                          end="", flush=True)
-                else:
-                    print(f"\r      {got/1e6:6.1f} MB", end="", flush=True)
-        print()
-    except urllib.error.URLError as e:
-        part.unlink(missing_ok=True)
-        sys.exit(f"[prompt2render] download failed: {e}\n"
-                 f"      you can also fetch it by hand into {dst.parent}\n"
-                 f"      {url}")
 
-    size_mb = part.stat().st_size / 1e6
-    if size_mb < approx_mb * 0.5:
-        part.unlink(missing_ok=True)
-        sys.exit(f"[prompt2render] {dst.name} came back at {size_mb:.1f} MB, expected "
-                 f"~{approx_mb} MB — the download was truncated, try again")
-    if dst.name.startswith("ggml-") and "silero" not in dst.name \
-            and not _looks_like_ggml(part):
-        part.unlink(missing_ok=True)
-        sys.exit(f"[prompt2render] {dst.name} is not a GGML model — the URL probably "
-                 "returned an error page rather than the file")
+            with part.open("wb") as out:
+                while True:
+                    chunk = response.read(
+                        1 << 20
+                    )
+                    if not chunk:
+                        break
 
-    part.replace(dst)
-    digest = hashlib.sha256(dst.read_bytes()).hexdigest()
-    cfg.say(f"  {dst.name}  {size_mb:.1f} MB  sha256:{digest[:16]}...")
+                    out.write(chunk)
+                    got += len(chunk)
+
+                    if total > 0:
+                        pct = (
+                            100.0
+                            * got
+                            / total
+                        )
+                        print(
+                            f"\r      "
+                            f"{got / 1e6:6.1f} / "
+                            f"{total / 1e6:.1f} MB "
+                            f"{pct:5.1f}%",
+                            end="",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"\r      "
+                            f"{got / 1e6:6.1f} MB",
+                            end="",
+                            flush=True,
+                        )
+
+            print()
+
+            # When the server supplied a length, detect a truncated response
+            # before any model validation.
+            if total > 0 and got != total:
+                raise OSError(
+                    f"incomplete download: received "
+                    f"{got} of {total} bytes"
+                )
+
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+    ) as exc:
+        part.unlink(
+            missing_ok=True
+        )
+
+        sys.exit(
+            f"[prompt2render] download failed: {exc}\n"
+            f"      you can also fetch it by hand into "
+            f"{dst.parent}\n"
+            f"      {url}"
+        )
+
+    try:
+        size = part.stat().st_size
+    except OSError as exc:
+        part.unlink(
+            missing_ok=True
+        )
+        sys.exit(
+            f"[prompt2render] downloaded file cannot be "
+            f"inspected: {exc}"
+        )
+
+    size_mb = size / 1e6
+
+    # Approximate sizes are intentionally treated as lower bounds only.
+    # This catches truncated downloads without rejecting a legitimate model
+    # whose upstream size changes slightly.
+    minimum_bytes = max(
+        _MIN_ASR_BYTES,
+        int(
+            approx_mb
+            * 1e6
+            * 0.50
+        ),
+    )
+
+    if size < minimum_bytes:
+        part.unlink(
+            missing_ok=True
+        )
+        sys.exit(
+            f"[prompt2render] {dst.name} came back at "
+            f"{size_mb:.1f} MB, expected ~{approx_mb} MB — "
+            "the download was truncated; try again"
+        )
+
+    if dst.name.startswith(
+        "ggml-"
+    ) and "silero" not in dst.name:
+        if not _looks_like_ggml(part):
+            part.unlink(
+                missing_ok=True
+            )
+            sys.exit(
+                f"[prompt2render] {dst.name} is not a "
+                "recognized GGML model — the URL probably "
+                "returned an error page rather than the file"
+            )
+
+    if "silero" in dst.name and not _looks_like_vad(part):
+        part.unlink(
+            missing_ok=True
+        )
+        sys.exit(
+            f"[prompt2render] {dst.name} is unexpectedly "
+            "small or invalid"
+        )
+
+    digest = _sha256(part)
+
+    try:
+        # os.replace() is atomic when source and destination are on the same
+        # filesystem, which they are because both live in WHISPER_DIR.
+        os.replace(
+            part,
+            dst,
+        )
+    except OSError as exc:
+        part.unlink(
+            missing_ok=True
+        )
+        sys.exit(
+            f"[prompt2render] could not install "
+            f"{dst.name}: {exc}"
+        )
+
+    cfg.say(
+        f"  {dst.name}  "
+        f"{size_mb:.1f} MB  "
+        f"sha256:{digest[:16]}..."
+    )
 
 
-def fetch_asr(name: str = "base.en", force: bool = False) -> Path:
+def fetch_asr(
+    name: str = "base.en",
+    force: bool = False,
+) -> Path:
+    """Provision one registered ASR model."""
+
     if name not in ASR_MODELS:
-        sys.exit(f"[prompt2render] unknown ASR model '{name}' — "
-                 f"choose from: {', '.join(ASR_MODELS)}")
-    fname, url, mb = ASR_MODELS[name]
-    dst = WHISPER_DIR / fname
-    if dst.exists() and not force and _looks_like_ggml(dst):
-        cfg.say(f"{fname} already present ({dst.stat().st_size/1e6:.1f} MB)")
+        sys.exit(
+            f"[prompt2render] unknown ASR model '{name}' — "
+            f"choose from: {', '.join(ASR_MODELS)}"
+        )
+
+    filename, url, approx_mb = ASR_MODELS[name]
+    dst = WHISPER_DIR / filename
+
+    if (
+        dst.exists()
+        and not force
+        and available(name) is not None
+    ):
+        cfg.say(
+            f"{filename} already present "
+            f"({dst.stat().st_size / 1e6:.1f} MB)"
+        )
         return dst
-    _download(url, dst, mb)
+
+    _download(
+        url,
+        dst,
+        approx_mb,
+    )
+
+    # Validate the final installed path as an additional postcondition.
+    if available(name) is None:
+        dst.unlink(
+            missing_ok=True
+        )
+        sys.exit(
+            f"[prompt2render] installed ASR model "
+            f"{dst} failed final validation"
+        )
+
     return dst
 
 
-def fetch_vad(force: bool = False) -> Path | None:
-    """VAD is genuinely optional — never let its absence stop anything.
+def fetch_vad(
+    force: bool = False,
+) -> Path | None:
+    """Provision the optional VAD model.
 
-    It matters because the inter-sentence silences the voice engine inserts
-    are exactly where whisper likes to hallucinate text. Worth having, not
-    worth failing over.
+    VAD is deliberately non-fatal. Alignment must continue without it.
     """
-    fname, url, mb = VAD_MODEL
-    dst = WHISPER_DIR / fname
-    if dst.exists() and not force:
-        cfg.say(f"{fname} already present")
+
+    filename, url, approx_mb = VAD_MODEL
+    dst = WHISPER_DIR / filename
+
+    if (
+        dst.exists()
+        and not force
+        and vad_available() is not None
+    ):
+        cfg.say(
+            f"{filename} already present"
+        )
         return dst
+
     try:
-        _download(url, dst, mb)
+        _download(
+            url,
+            dst,
+            approx_mb,
+        )
+
+        if vad_available() is None:
+            dst.unlink(
+                missing_ok=True
+            )
+            raise OSError(
+                "installed VAD model failed validation"
+            )
+
         return dst
-    except SystemExit as e:
-        cfg.warn(f"VAD model unavailable ({e}) — alignment will run without it")
+
+    except SystemExit as exc:
+        cfg.warn(
+            f"VAD model unavailable ({exc}) — "
+            "alignment will run without it"
+        )
         return None
+
+
+__all__ = [
+    "ASR_MODELS",
+    "VAD_MODEL",
+    "WHISPER_DIR",
+    "asr_path",
+    "available",
+    "fetch_asr",
+    "fetch_vad",
+    "missing_note",
+    "vad_available",
+    "vad_path",
+]

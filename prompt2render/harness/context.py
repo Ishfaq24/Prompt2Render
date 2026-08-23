@@ -1,107 +1,383 @@
-"""SceneContext — the explicit, in-memory replacement for prompt2render's file-based reach-around
-(docs/MIGRATION_INVENTORY.md §2). Every field below corresponds to a named handoff that stage
-code today reads/writes as a bare file path; the harness reads/writes the same underlying files
-through a typed field instead.
+"""Typed in-memory state for the Prompt2Render harness.
 
-Schema is the canonical one from the migration brief:
-    prompt, scene_plan, object_table, narration, code_artifacts, render_artifacts,
-    check_results, hitl_annotations, history
+``SceneContext`` is the canonical handoff object between plugins. It replaces
+the historical file-based reach-around while continuing to point at the same
+on-disk artifacts produced by the live pipeline.
 
-`repair_context` (Stage 4) and the `Finding`/severity enum (Stage 5) are deliberately not here —
-the brief calls those out as additions to make when those stages need them, not before.
+The context intentionally separates:
+    authored/planned state
+    generated artifacts
+    verification results
+    repair state
+    provenance/history
+
+Plugins should mutate their declared effects only. They should not use
+``SceneContext`` as an unstructured dumping ground.
+
+The schema is backward-compatible with the existing Stage 2/3 fields while
+including the Stage 4/5 state that is now actively consumed by the repair
+router and verifiers.
 """
+
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+
+# ---------------------------------------------------------------------------
+# Planning
+# ---------------------------------------------------------------------------
 
 @dataclass
 class ScenePlanEntry:
-    """One section, as `chunker_scene` extracts it from script.md — not model output."""
+    """One section extracted from ``script.md``.
+
+    This object represents authored/source planning state. LLM-generated
+    storyboard detail belongs in ``storyboard_plan`` rather than silently
+    replacing the original ``anim`` brief.
+    """
+
     index: int
     stem: str
     title: str
-    anim: str = ""              # the human-authored "> ANIM:" brief
-    narration_text: str = ""    # the section's spoken narration, as written
-    planned: bool = False       # set by planner_llm (passthrough — see its docstring)
+    anim: str = ""
+    narration_text: str = ""
+    planned: bool = False
 
+
+# ---------------------------------------------------------------------------
+# Narration
+# ---------------------------------------------------------------------------
 
 @dataclass
 class NarrationEntry:
-    """Per-section timed narration, ingested from voice/align output (not planned)."""
+    """Per-section timed narration produced by voice/alignment stages."""
+
     stem: str
-    sentences: list[dict] = field(default_factory=list)   # mirrors align.load()["sentences"]
+    sentences: list[dict[str, Any]] = field(
+        default_factory=list
+    )
     source: str = "align"
 
 
+# ---------------------------------------------------------------------------
+# Generated code
+# ---------------------------------------------------------------------------
+
 @dataclass
 class CodeArtifact:
+    """Generated scene source.
+
+    ``accepted`` is intentionally separate from ``generated``. Generation
+    success does not imply semantic/spatial/temporal acceptance.
+    """
+
     stem: str
     path: Path | None = None
+    generated: bool = False
     accepted: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Rendered artifacts
+# ---------------------------------------------------------------------------
+
 @dataclass
 class RenderArtifact:
+    """Rendered scene artifacts and the renderer's recorded audit.
+
+    ``clip`` is optional because different renderers expose different output
+    representations. The temporal verifier may use it when available and
+    otherwise falls back to its backend-specific path resolution.
+    """
+
     stem: str
     outdir: Path | None = None
-    manifest: list[dict] = field(default_factory=list)
-    audit: dict | None = None
+    clip: Path | None = None
+    manifest: list[dict[str, Any]] = field(
+        default_factory=list
+    )
+    audit: dict[str, Any] | None = None
 
+
+# ---------------------------------------------------------------------------
+# Audio/video artifacts
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AudioArtifact:
+    """Artifacts from TTS/mastering."""
+
+    stem: str
+    raw_wav: Path | None = None
+    sentences_json: Path | None = None
+    meta_json: Path | None = None
+
+
+@dataclass
+class VideoArtifact:
+    """Artifacts produced by downstream encode/finalization stages."""
+
+    stem: str
+    clip_mp4: Path | None = None
+    final_mp4: Path | None = None
+    captions_srt: Path | None = None
+
+
+# ---------------------------------------------------------------------------
+# Cross-scene object model
+# ---------------------------------------------------------------------------
 
 @dataclass
 class ObjectRow:
-    """One object_table row. Designed now, per the brief; populated by nothing yet — no live
-    prompt2render code assigns cross-scene object identity (docs/MIGRATION_INVENTORY.md §7)."""
+    """Cross-scene object identity record.
+
+    The table is intentionally present even though current plugins do not yet
+    populate authoritative object identity.
+    """
+
     id: str
     kind: str = ""
     created_at_scene: str | None = None
     removed_at_scene: str | None = None
-    referenced_at: list[str] = field(default_factory=list)
+    referenced_at: list[str] = field(
+        default_factory=list
+    )
 
+
+# ---------------------------------------------------------------------------
+# Provenance/history
+# ---------------------------------------------------------------------------
 
 @dataclass
 class HistoryEntry:
-    plugin: str
-    at: str            # ISO 8601 timestamp
-    effects: list[str]
-    ok: bool
+    """One successful/failed plugin execution record."""
 
+    plugin: str
+    at: str
+    effects: list[str] = field(
+        default_factory=list
+    )
+    ok: bool = True
+
+
+# ---------------------------------------------------------------------------
+# SceneContext
+# ---------------------------------------------------------------------------
 
 @dataclass
 class SceneContext:
-    prompt: Path | None = None                                   # path to script.md
-    scene_plan: list[ScenePlanEntry] = field(default_factory=list)
-    object_table: list[ObjectRow] = field(default_factory=list)
-    narration: dict[str, NarrationEntry] = field(default_factory=dict)      # keyed by stem
-    code_artifacts: dict[str, CodeArtifact] = field(default_factory=dict)   # keyed by stem
-    render_artifacts: dict[str, RenderArtifact] = field(default_factory=dict)  # keyed by stem
-    # keyed by verifier plugin name -> list of finding-shaped dicts. Stage 5 formalizes the
-    # dict shape into Finding; kept loose here so Stage 3 verifiers don't need to know about it.
-    check_results: dict[str, list[dict]] = field(default_factory=dict)
-    hitl_annotations: list[dict] = field(default_factory=list)
-    history: list[HistoryEntry] = field(default_factory=list)
-    # Stage 4 addition (not in the original Stage 2/3 schema — added here because Stage 4 is
-    # where it's first read): keyed by stem -> diagnostic strings repair_router appends so
-    # generator_code can receive repair feedback on the next attempt.
-    repair_context: dict[str, list[str]] = field(default_factory=dict)
+    """Complete mutable state for one Prompt2Render harness execution."""
 
-    # --- non-schema convenience, not part of the brief's field list ---
-    project_dir: Path | None = None   # the prompt2render project root this context operates on
+    # ------------------------------------------------------------------
+    # Source / project
+    # ------------------------------------------------------------------
+
+    prompt: Path | None = None
+    project_dir: Path | None = None
+
+    # ------------------------------------------------------------------
+    # Planning
+    # ------------------------------------------------------------------
+
+    scene_plan: list[ScenePlanEntry] = field(
+        default_factory=list
+    )
+
+    object_table: list[ObjectRow] = field(
+        default_factory=list
+    )
+
+    # ------------------------------------------------------------------
+    # Narration / generation
+    # ------------------------------------------------------------------
+
+    narration: dict[
+        str,
+        NarrationEntry,
+    ] = field(
+        default_factory=dict
+    )
+
+    code_artifacts: dict[
+        str,
+        CodeArtifact,
+    ] = field(
+        default_factory=dict
+    )
+
+    # ------------------------------------------------------------------
+    # Rendering / downstream artifacts
+    # ------------------------------------------------------------------
+
+    render_artifacts: dict[
+        str,
+        RenderArtifact,
+    ] = field(
+        default_factory=dict
+    )
+
+    audio_artifacts: dict[
+        str,
+        AudioArtifact,
+    ] = field(
+        default_factory=dict
+    )
+
+    video_artifacts: dict[
+        str,
+        VideoArtifact,
+    ] = field(
+        default_factory=dict
+    )
+
+    # ------------------------------------------------------------------
+    # Verification
+    # ------------------------------------------------------------------
+
+    # keyed by verifier plugin name -> list of finding-shaped dictionaries.
+    check_results: dict[
+        str,
+        list[dict[str, Any]],
+    ] = field(
+        default_factory=dict
+    )
+
+    # Aggregate/static verification marker. This is informational and does
+    # not replace individual verifier findings.
+    static_code_verified: bool = False
+
+    # ------------------------------------------------------------------
+    # Educational planning/review
+    # ------------------------------------------------------------------
+
+    pedagogy_review: dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    storyboard_plan: dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    # Deterministic local retrieval context. Kept separate from authored
+    # ScenePlanEntry.anim so retrieved snippets cannot silently rewrite the
+    # visual brief.
+    retrieval_context: dict[
+        str,
+        list[dict[str, Any]],
+    ] = field(
+        default_factory=dict
+    )
+
+    # Compatibility alias used by older retriever implementations.
+    retriever_manim_rag: dict[
+        str,
+        list[dict[str, Any]],
+    ] = field(
+        default_factory=dict
+    )
+
+    # ------------------------------------------------------------------
+    # Human feedback
+    # ------------------------------------------------------------------
+
+    hitl_annotations: list[
+        dict[str, Any]
+    ] = field(
+        default_factory=list
+    )
+
+    # ------------------------------------------------------------------
+    # Self-correction / repair
+    # ------------------------------------------------------------------
+
+    # keyed by scene stem -> accumulated diagnostic messages.
+    repair_context: dict[
+        str,
+        list[str],
+    ] = field(
+        default_factory=dict
+    )
+
+    # Machine-readable repair-cycle records used to build
+    # self_correction_report.json.
+    repair_records: list[
+        dict[str, Any]
+    ] = field(
+        default_factory=list
+    )
+
+    # ------------------------------------------------------------------
+    # Execution provenance
+    # ------------------------------------------------------------------
+
+    history: list[HistoryEntry] = field(
+        default_factory=list
+    )
 
 
-def snapshot(ctx: SceneContext) -> SceneContext:
-    """Copy-on-write snapshot, per the brief: deep-copy now, don't build diff tracking yet.
+# ---------------------------------------------------------------------------
+# Snapshot / restore
+# ---------------------------------------------------------------------------
 
-    Cost may matter for long-form videos — profile once Stage 4's repair loops actually call
-    revert() repeatedly, not before.
+def snapshot(
+    ctx: SceneContext,
+) -> SceneContext:
+    """Create a complete copy-on-write snapshot.
+
+    Deep copying is intentional for the current repair architecture. Diff
+    tracking can be introduced later if profiling shows snapshot cost is
+    material for long-form videos.
     """
-    return copy.deepcopy(ctx)
+
+    return copy.deepcopy(
+        ctx
+    )
 
 
-def restore(ctx: SceneContext, snap: SceneContext) -> SceneContext:
-    """Restore `ctx` in place from `snap`, so callers holding a reference see the reverted state."""
-    ctx.__dict__.update(copy.deepcopy(snap).__dict__)
+def restore(
+    ctx: SceneContext,
+    snap: SceneContext,
+) -> SceneContext:
+    """Restore ``ctx`` in place from a previous snapshot.
+
+    The object identity of ``ctx`` is preserved, so references held by the
+    pipeline continue to point to the restored context.
+    """
+
+    if not isinstance(
+        snap,
+        SceneContext,
+    ):
+        raise TypeError(
+            "snap must be a SceneContext"
+        )
+
+    restored = copy.deepcopy(
+        snap
+    )
+
+    ctx.__dict__.clear()
+    ctx.__dict__.update(
+        restored.__dict__
+    )
+
     return ctx
+
+
+__all__ = [
+    "ScenePlanEntry",
+    "NarrationEntry",
+    "CodeArtifact",
+    "RenderArtifact",
+    "AudioArtifact",
+    "VideoArtifact",
+    "ObjectRow",
+    "HistoryEntry",
+    "SceneContext",
+    "snapshot",
+    "restore",
+]

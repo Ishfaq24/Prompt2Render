@@ -1,67 +1,380 @@
-"""Real wrap of scenekit.audit()'s recorded verdict — deliberately NOT a `[]`-always shell.
+"""Deterministic spatial verifier for rendered Prompt2Render scenes.
 
-scenekit.py::audit() is ~250 lines of working geometry checks (overlap, off-frame, collision,
-tiny-text, ink-fraction) that scenes.py's own retry loop already depends on today. The audit runs
-inline inside stills.render()/render_into(), invoked as a side effect of generator_code's call
-into scenes.generate() — by the time this plugin runs, `build/scenes/<stem>/audit.json` already
-exists for every accepted section. This plugin surfaces that already-computed verdict rather than
-re-running matplotlib rendering a second time (see the migration plan's deviation #4).
+This plugin surfaces the geometry verdict already recorded by SceneKit's
+``audit()`` during rendering. It deliberately does not render scenes again.
 
-`object_table[*].bbox` — the plugin-role table also lists this plugin writing per-object bounding
-boxes into object_table. Deliberately not done here: object_table has no populated rows yet (no
-cross-scene object identity exists anywhere in prompt2render — docs/MIGRATION_INVENTORY.md §7), and
-attaching a bbox to a row that doesn't exist would mean inventing object identity ourselves. That
-lands once Stage 4/5's AST pass (repair-router era) actually creates rows to attach it to.
+The renderer/audit pipeline is:
+
+    generated scene
+        ↓
+    stills.render_many()
+        ↓
+    SceneKit audit()
+        ↓
+    RenderArtifact.audit
+        ↓
+    VerifierSpatialPlugin
+        ↓
+    structured spatial findings
+
+The audit is therefore treated as an observed renderer result, not something
+this verifier recomputes.
+
+The verifier also deliberately does not populate object-level bounding boxes:
+there is currently no authoritative cross-scene object identity table from
+which such rows could be created safely.
 """
+
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from ...context import SceneContext
-from ...finding import Category, Finding, Severity, next_finding_id
+from ...finding import (
+    Category,
+    Finding,
+    Severity,
+    next_finding_id,
+)
 from ...plugin import Plugin
 
-#: audit.json's warnings are pre-stringified via scenekit.Problem.__str__:
-#: f"{level.upper()} [{kind}] {message}" — recovering severity from that format exposes
-#: already-existing structured data rather than inventing new parsing logic.
-_RECORDED = re.compile(r"^(WARN|FAIL) \[(?P<kind>[^\]]+)\] (?P<message>.*)$")
+
+# SceneKit's Problem.__str__() is recorded approximately as:
+#
+#     WARN [kind] message
+#     FAIL [kind] message
+#
+# Keep the parser deliberately narrow so malformed/unknown audit records are
+# not accidentally interpreted as successful findings.
+_RECORDED = re.compile(
+    r"^(?P<level>WARN|FAIL)\s+\[(?P<kind>[^\]]+)\]\s+(?P<message>.*)$"
+)
+
+
+def _normalize_status(
+    value: Any,
+) -> str:
+    """Normalize an audit status without inventing semantics."""
+
+    status = str(
+        value or ""
+    ).strip().lower()
+
+    if status in {
+        "pass",
+        "warn",
+        "fail",
+        "skip",
+    }:
+        return status
+
+    return ""
+
+
+def _finding_for(
+    stem: str,
+    recorded: Any,
+    *,
+    gate: bool,
+) -> Finding:
+    """Convert one recorded SceneKit warning into a harness Finding."""
+
+    text = str(
+        recorded
+    ).strip()
+
+    match = _RECORDED.match(
+        text
+    )
+
+    if match:
+        level = match.group(
+            "level"
+        )
+
+        kind = match.group(
+            "kind"
+        ).strip()
+
+        message = match.group(
+            "message"
+        ).strip()
+
+    else:
+        # The audit record is authoritative but its textual representation
+        # may evolve. Preserve the complete record instead of dropping it.
+        level = "WARN"
+        kind = "unknown"
+        message = text or (
+            "SceneKit spatial audit reported "
+            "an unspecified issue."
+        )
+
+    severity = (
+        Severity.BLOCKING
+        if level == "FAIL" and gate
+        else Severity.WARNING
+    )
+
+    finding = Finding(
+        finding_id=next_finding_id(
+            "spatial"
+        ),
+        scene_id=stem,
+        category=Category.SPATIAL,
+        severity=severity,
+        message=message,
+    )
+
+    result = finding.as_check_result()
+
+    # Keep the normalized routing information explicit.
+    result["finding_type"] = (
+        "spatial_conflict"
+    )
+    result["mismatch_subtype"] = (
+        kind
+    )
+    result["audit_level"] = (
+        level
+    )
+    result["recorded_problem"] = (
+        text
+    )
+
+    return finding
+
+
+def _audit_warnings(
+    record: dict[str, Any],
+) -> list[Any]:
+    """Extract recorded warnings defensively."""
+
+    warnings = record.get(
+        "warnings",
+        [],
+    )
+
+    if warnings is None:
+        return []
+
+    if isinstance(
+        warnings,
+        (list, tuple),
+    ):
+        return list(
+            warnings
+        )
+
+    # Preserve a malformed single warning instead of iterating its characters.
+    return [warnings]
 
 
 class VerifierSpatialPlugin(Plugin):
+    """Surface SceneKit's already-computed spatial audit verdict."""
+
     name = "verifier_spatial"
 
     def declare_dependencies(self) -> list[str]:
-        # Depending on render_artifacts (not code_artifacts) guarantees renderer_stills has run
-        # first, so the audit it recorded is guaranteed current rather than relying on
-        # generator_code's internal side effect alone.
-        return ["render_artifacts"]
+        # render_artifacts guarantees that RendererStillsPlugin has populated
+        # RenderArtifact.audit before this verifier runs.
+        return [
+            "render_artifacts",
+        ]
 
     def declare_effects(self) -> list[str]:
-        return ["check_results"]
+        return [
+            "check_results",
+        ]
 
-    def run(self, context: SceneContext) -> SceneContext:
-        findings = []
-        for stem, art in context.render_artifacts.items():
-            record = art.audit
+    def run(
+        self,
+        context: SceneContext,
+    ) -> SceneContext:
+
+        findings: list[
+            dict[str, Any]
+        ] = []
+
+        gate = self.is_gate()
+
+        for stem, artifact in (
+            context.render_artifacts.items()
+        ):
+
+            record = getattr(
+                artifact,
+                "audit",
+                None,
+            )
+
+            # ----------------------------------------------------------
+            # Missing audit record
+            # ----------------------------------------------------------
+
             if record is None:
-                findings.append({"status": "skip", "stem": stem,
-                                 "detail": "no audit.json recorded"})
+                findings.append(
+                    {
+                        "status": "skip",
+                        "stem": stem,
+                        "finding_type": (
+                            "spatial_audit_unavailable"
+                        ),
+                        "category": (
+                            Category.SPATIAL.value
+                        ),
+                        "detail": (
+                            "No SceneKit audit record was "
+                            "recorded for this rendered scene."
+                        ),
+                    }
+                )
                 continue
-            warnings = record.get("warnings", [])
+
+            if not isinstance(
+                record,
+                dict,
+            ):
+                findings.append(
+                    {
+                        "status": "fail",
+                        "stem": stem,
+                        "finding_type": (
+                            "spatial_audit_invalid"
+                        ),
+                        "category": (
+                            Category.SPATIAL.value
+                        ),
+                        "detail": (
+                            "RenderArtifact.audit is not a "
+                            "dictionary."
+                        ),
+                    }
+                )
+                continue
+
+            # ----------------------------------------------------------
+            # Explicit audit status
+            # ----------------------------------------------------------
+
+            audit_status = _normalize_status(
+                record.get(
+                    "status"
+                )
+            )
+
+            warnings = _audit_warnings(
+                record
+            )
+
+            # Some versions of SceneKit expose only warnings/stills and not
+            # an explicit status. In that case the presence/absence of
+            # warnings remains authoritative.
+            if audit_status == "fail" and not warnings:
+                warnings = [
+                    record.get(
+                        "detail",
+                        "SceneKit audit reported FAIL.",
+                    )
+                ]
+
             if warnings:
-                for w in warnings:
-                    findings.append(_finding_for(stem, w).as_check_result())
-            else:
-                findings.append({"status": "pass", "stem": stem,
-                                 "detail": f"{record.get('stills', 0)} stills clean",
-                                 "category": Category.SPATIAL.value})
-        context.check_results[self.name] = findings
+
+                for warning in warnings:
+                    finding = _finding_for(
+                        stem,
+                        warning,
+                        gate=gate,
+                    )
+
+                    findings.append(
+                        finding.as_check_result()
+                    )
+
+                continue
+
+            # ----------------------------------------------------------
+            # Explicit audit warning without warning list
+            # ----------------------------------------------------------
+
+            if audit_status == "warn":
+                findings.append(
+                    {
+                        "status": "warn",
+                        "stem": stem,
+                        "finding_type": (
+                            "spatial_audit_warning"
+                        ),
+                        "category": (
+                            Category.SPATIAL.value
+                        ),
+                        "detail": (
+                            "SceneKit audit returned WARN "
+                            "without a structured warning list."
+                        ),
+                    }
+                )
+                continue
+
+            # ----------------------------------------------------------
+            # Explicit audit failure
+            # ----------------------------------------------------------
+
+            if audit_status == "fail":
+                findings.append(
+                    {
+                        "status": "fail",
+                        "stem": stem,
+                        "finding_type": (
+                            "spatial_conflict"
+                        ),
+                        "category": (
+                            Category.SPATIAL.value
+                        ),
+                        "detail": (
+                            "SceneKit audit reported FAIL."
+                        ),
+                    }
+                )
+                continue
+
+            # ----------------------------------------------------------
+            # Clean result
+            # ----------------------------------------------------------
+
+            still_count = record.get(
+                "stills",
+                0,
+            )
+
+            findings.append(
+                {
+                    "status": "pass",
+                    "stem": stem,
+                    "finding_type": (
+                        "spatial_audit"
+                    ),
+                    "category": (
+                        Category.SPATIAL.value
+                    ),
+                    "detail": (
+                        f"{still_count} stills clean"
+                    ),
+                }
+            )
+
+        context.check_results[
+            self.name
+        ] = findings
+
         return context
 
+    def _default_gate(self) -> bool:
+        """Spatial audit is advisory by default.
 
-def _finding_for(stem: str, recorded: str) -> Finding:
-    m = _RECORDED.match(recorded)
-    severity = Severity.BLOCKING if m and m.group(1) == "FAIL" else Severity.WARNING
-    message = m.group("message") if m else recorded
-    return Finding(finding_id=next_finding_id("spatial"), scene_id=stem,
-                  category=Category.SPATIAL, severity=severity, message=message)
+        Set ``gate=true`` in the plugin configuration when spatial audit
+        failures should hard-block the pipeline.
+        """
+
+        return False

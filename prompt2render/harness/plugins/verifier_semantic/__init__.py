@@ -18,7 +18,7 @@ class VerifierSemanticPlugin(Plugin):
     name = "verifier_semantic"
 
     def declare_dependencies(self) -> list[str]:
-        return ["code_artifacts", "scene_plan"]
+        return ["code_artifacts", "scene_plan", "render_artifacts"]
 
     def declare_effects(self) -> list[str]:
         return ["check_results"]
@@ -68,6 +68,28 @@ class VerifierSemanticPlugin(Plugin):
             if not artifact or not artifact.path or not artifact.path.exists():
                 continue
 
+            # If we are in a repair loop, the code was regenerated but not re-rendered yet.
+            # We must re-render to get the fresh preview image for the visual audit.
+            preview_img = context.project_dir / "build" / "manim" / "previews" / f"Scene{entry.stem}.png"
+            if entry.stem in context.repair_context and hasattr(artifact, "path") and artifact.path:
+                from ....visuals import manim_scene
+                try:
+                    # Remove stale preview so we don't accidentally audit the old one if render fails
+                    if preview_img.exists():
+                        preview_img.unlink()
+                    manim_scene(context.project_dir, context.project_dir / "build" / "manim" / f"scene_{entry.stem}.py", f"Scene{entry.stem}", entry.index)
+                except Exception as e:
+                    # If the repair code crashes Manim, record it as a semantic failure so the loop continues
+                    from ...finding import Finding, Category, Severity, next_finding_id
+                    findings.append(Finding(
+                        finding_id=next_finding_id("sem"),
+                        scene_id=entry.stem,
+                        category=Category.RENDER,
+                        severity=Severity.BLOCKING if self.is_gate() else Severity.WARNING,
+                        message=f"Repaired Manim code failed to render: {e}"
+                    ).as_check_result())
+                    continue
+
             code = artifact.path.read_text(encoding="utf-8")
             
             prompt = (
@@ -76,33 +98,65 @@ class VerifierSemanticPlugin(Plugin):
                 f"INTENT (Brief): {entry.anim}\n"
                 f"NARRATION (What the speaker says): {entry.narration_text}\n\n"
                 f"CODE (What is actually drawn):\n```python\n{code}\n```\n\n"
-                f"You MUST check for the following fatal domain logic errors:\n"
-                f"1. **Tower of Hanoi invariant**: A larger disk (higher number) is NEVER allowed to sit on top of a smaller disk (lower number) on the same peg in ANY state. Look closely at the `k.hanoi(ax, [[...], [...], [...]])` calls. If `[3, 1]` or `[2, 1]` is in a list where the larger number comes first (meaning it's below the smaller one, which is legal), that's fine. But if a list is `[1, 3]`, that means disk 3 is on top of disk 1. This is generally ILLEGAL and must be rejected, UNLESS the narration is explicitly explaining that this is an illegal move. If it IS explaining an illegal move, the code MUST actually draw the physically illegal state (e.g. `[1, 2]`) AND clearly mark it as illegal (e.g., using `k.strike` or drawing a big red 'ILLEGAL' label). If it just draws a legal state and slaps an 'ILLEGAL' label on it, reject it.\n"
-                f"2. **Sorting invariant**: If the narration claims an array is sorted, the values passed to `k.array` MUST actually be in sorted order in that state.\n"
-                f"3. **Data consistency**: If the brief specifies an array like `[2,6,1,8,4]`, does the code use those exact numbers? If it invents new numbers, reject it.\n"
-                f"4. **Pedagogical mismatch**: Does the visual state contradict the spoken explanation? (e.g. Narration says 'move to peg C' but code moves it to peg B).\n\n"
+                f"You MUST evaluate the code and the provided final preview frame for fatal domain logic errors and obvious layout failures. Use your general knowledge of computer science and mathematics.\n"
+                f"1. **Data Consistency**: Does the code use the exact numbers/data mentioned in the brief? If it invents new numbers or drops elements, reject it.\n"
+                f"2. **Domain Invariants**: Are the visual states mathematically/logically sound for the topic? (e.g., in Tower of Hanoi, a larger disk cannot sit on a smaller disk; in a sorting algorithm, an array claimed to be sorted must actually be sorted).\n"
+                f"3. **Intentional Rule Demonstration**: If the narration explicitly explains an ILLEGAL move or anti-pattern, the code MUST physically draw that illegal state AND clearly mark it as illegal (e.g., with a red 'X'). If it just draws a legal state and slaps an 'ILLEGAL' label on it, reject it.\n"
+                f"4. **Pedagogical Mismatch**: Does the visual state contradict the spoken explanation?\n"
+                f"5. **Layout Safety**: Look at the preview frame. Are there any overlapping text elements or graphics? Is any text cut off by the edge of the screen? Is the text too small to read? If so, reject it and explain which coordinates to adjust.\n\n"
                 f"Output ONLY a JSON object: {{\"status\": \"pass\" | \"fail\", \"reason\": \"Detailed explanation if failed. Include the exact code snippet that is wrong and explain how to fix it.\"}}"
             )
             
+            # The preview_img path is defined earlier.
+            messages = [{"role": "user", "content": prompt}]
+            
+            if preview_img.exists():
+                import base64
+                img_data = base64.b64encode(preview_img.read_bytes()).decode("utf-8")
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_data}"}}
+                    ]
+                }]
+            
             try:
-                if hasattr(llm, "complete"):
+                if hasattr(llm, "complete") and not preview_img.exists():
                     content = llm.complete(prompt, max_tokens=1000)
                 else:
                     resp = client.chat.completions.create(
                         model=model,
-                        messages=[{"role": "user", "content": prompt}],
+                        messages=messages,
                         response_format={"type": "json_object"}
                     )
                     content = resp.choices[0].message.content if resp.choices else "{}"
                     
                 import json
                 # Handle cases where llm.complete() returns markdown json blocks
+                import re
                 if content.startswith("```json"):
                     content = content[7:]
                 if content.endswith("```"):
                     content = content[:-3]
-                    
-                result = json.loads(content.strip())
+                
+                content = content.strip()
+                try:
+                    result = json.loads(content, strict=False)
+                except json.JSONDecodeError:
+                    # Fallback for invalid escapes or malformed JSON
+                    # Replace invalid backslashes before quotes
+                    content = content.replace('\\"', '"').replace('\\', '\\\\')
+                    try:
+                        result = json.loads(content, strict=False)
+                    except json.JSONDecodeError:
+                        # Final fallback: regex extraction
+                        status_match = re.search(r'"status"\s*:\s*"([^"]+)"', content)
+                        reason_match = re.search(r'"reason"\s*:\s*"([^"]+)"', content)
+                        result = {
+                            "status": status_match.group(1) if status_match else "pass",
+                            "reason": reason_match.group(1) if reason_match else ""
+                        }
                 
                 if result.get("status", "").lower() == "fail":
                     f = Finding(

@@ -1,81 +1,518 @@
-"""Reads config.yaml, resolves plugin execution order from declared dependencies/effects, and
-instantiates enabled plugins. Any plugin is disableable via config alone — no code change.
+"""Prompt2Render harness plugin loader and dependency resolver.
+
+This module is responsible for:
+
+    config.yaml
+        ↓
+    enabled plugin instances
+        ↓
+    dependency/effect DAG resolution
+        ↓
+    ordered pipeline
+
+Plugin dependencies/effects are the authoritative ordering mechanism.
+Registry order is used only as a deterministic tie-break when multiple
+plugins are simultaneously schedulable.
+
+``repair_router`` is intentionally constructed separately because it is an
+event subscriber rather than an ordinary pipeline stage.
 """
+
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 from .plugin import Plugin
 
-DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
-#: Fields that exist from the moment a SceneContext is constructed — no plugin "produces" them,
-#: so the dependency resolver must not wait for a producer that will never come.
-PRESEEDED_FIELDS = {"prompt", "object_table", "hitl_annotations", "history"}
+DEFAULT_CONFIG_PATH = (
+    Path(__file__).parent / "config.yaml"
+)
+
+
+# Fields that already exist on a freshly constructed SceneContext and
+# therefore do not need a producing plugin.
+#
+# Keep this set semantic: a field is pre-seeded only when a plugin may safely
+# consume its initial value without another stage producing it first.
+PRESEEDED_FIELDS = frozenset(
+    {
+        "prompt",
+        "object_table",
+        "hitl_annotations",
+        "history",
+        "project_dir",
+        "repair_context",
+        "repair_records",
+        "pedagogy_review",
+        "storyboard_plan",
+        "retrieval_context",
+        "retriever_manim_rag",
+        "check_results",
+    }
+)
 
 
 class DependencyError(RuntimeError):
-    pass
+    """Raised when the plugin dependency graph cannot be resolved."""
 
 
-def resolve_order(plugins: list[Plugin]) -> list[Plugin]:
-    """Topologically sort `plugins` by declare_dependencies()/declare_effects().
+class ConfigError(ValueError):
+    """Raised when harness configuration has an invalid structure."""
 
-    A plugin is schedulable once every field it reads has been written by an
-    already-scheduled plugin (or is pre-seeded). Ties broken by input order, so config order is a
-    stable secondary sort key.
+
+def _names(
+    plugins: list[Plugin],
+) -> list[str]:
+    return [
+        str(p.name)
+        for p in plugins
+    ]
+
+
+def _validate_plugins(
+    plugins: list[Plugin],
+) -> None:
+    """Validate plugin declarations before attempting topological sorting."""
+
+    seen: dict[str, int] = {}
+
+    for plugin in plugins:
+        name = str(
+            plugin.name
+        ).strip()
+
+        if not name:
+            raise DependencyError(
+                "plugin has an empty name"
+            )
+
+        seen[name] = (
+            seen.get(name, 0) + 1
+        )
+
+        dependencies = list(
+            plugin.declare_dependencies()
+            or []
+        )
+
+        effects = list(
+            plugin.declare_effects()
+            or []
+        )
+
+        if any(
+            not isinstance(
+                value,
+                str,
+            )
+            or not value.strip()
+            for value in dependencies
+        ):
+            raise DependencyError(
+                f"plugin {name!r} declares "
+                "an invalid dependency"
+            )
+
+        if any(
+            not isinstance(
+                value,
+                str,
+            )
+            or not value.strip()
+            for value in effects
+        ):
+            raise DependencyError(
+                f"plugin {name!r} declares "
+                "an invalid effect"
+            )
+
+        overlap = (
+            set(dependencies)
+            & set(effects)
+        )
+
+        if overlap:
+            raise DependencyError(
+                f"plugin {name!r} both reads and "
+                f"produces {sorted(overlap)}; "
+                "declare a separate effect only when "
+                "the plugin actually owns that field."
+            )
+
+    duplicates = {
+        name: count
+        for name, count in seen.items()
+        if count > 1
+    }
+
+    if duplicates:
+        raise DependencyError(
+            "duplicate enabled plugin names: "
+            f"{duplicates}"
+        )
+
+
+def resolve_order(
+    plugins: list[Plugin],
+) -> list[Plugin]:
+    """Topologically order plugins by declared dependencies/effects.
+
+    A plugin is schedulable when every declared dependency is either:
+
+    * a pre-seeded SceneContext field, or
+    * an effect produced by a plugin already scheduled.
+
+    Multiple ready plugins are emitted in their original input order. This
+    makes config/registry order a stable deterministic tie-break without
+    making it the actual dependency mechanism.
+
+    Raises:
+        DependencyError: if a cycle or otherwise unresolved dependency exists.
     """
-    remaining = list(plugins)
-    available = set(PRESEEDED_FIELDS)
-    ordered: list[Plugin] = []
+
+    plugins = list(
+        plugins
+    )
+
+    _validate_plugins(
+        plugins
+    )
+
+    remaining = list(
+        plugins
+    )
+
+    available = set(
+        PRESEEDED_FIELDS
+    )
+
+    ordered: list[
+        Plugin
+    ] = []
+
+    # Track which plugin owns each produced field. This gives much clearer
+    # diagnostics when two plugins claim the same artifact.
+    producers: dict[
+        str,
+        str,
+    ] = {}
+
+    for plugin in plugins:
+        for effect in (
+            plugin.declare_effects()
+            or []
+        ):
+            previous = producers.get(
+                effect
+            )
+
+            if (
+                previous is not None
+                and previous != plugin.name
+            ):
+                raise DependencyError(
+                    f"multiple plugins produce "
+                    f"field {effect!r}: "
+                    f"{previous!r}, {plugin.name!r}"
+                )
+
+            producers[
+                effect
+            ] = plugin.name
 
     while remaining:
-        ready = [p for p in remaining
-                 if set(p.declare_dependencies()) <= available]
+
+        ready: list[
+            Plugin
+        ] = []
+
+        for plugin in remaining:
+            dependencies = set(
+                plugin.declare_dependencies()
+                or []
+            )
+
+            if dependencies <= available:
+                ready.append(
+                    plugin
+                )
+
         if not ready:
-            stuck = {p.name: sorted(set(p.declare_dependencies()) - available)
-                     for p in remaining}
+            stuck: dict[
+                str,
+                list[str],
+            ] = {}
+
+            for plugin in remaining:
+                unmet = sorted(
+                    set(
+                        plugin.declare_dependencies()
+                        or []
+                    )
+                    - available
+                )
+
+                stuck[
+                    plugin.name
+                ] = unmet
+
+            # Identify dependencies that are expected to be produced by
+            # plugins still in the unresolved set. This makes cycle errors
+            # considerably easier to diagnose.
+            remaining_names = {
+                p.name
+                for p in remaining
+            }
+
+            waiting_on = {
+                plugin.name: {
+                    dependency: producers.get(
+                        dependency
+                    )
+                    for dependency in unmet
+                    if producers.get(
+                        dependency
+                    ) in remaining_names
+                }
+                for plugin_name, unmet in stuck.items()
+                for plugin in remaining
+                if plugin.name == plugin_name
+            }
+
             raise DependencyError(
-                f"cannot resolve plugin order — unmet dependencies: {stuck}")
-        for p in ready:
-            ordered.append(p)
-            available.update(p.declare_effects())
-            remaining.remove(p)
+                "cannot resolve plugin order. "
+                f"Unmet dependencies: {stuck}. "
+                f"Waiting on unresolved producers: {waiting_on}. "
+                f"Already available fields: "
+                f"{sorted(available)}"
+            )
+
+        # Input order is the deterministic tie-break.
+        for plugin in ready:
+            ordered.append(
+                plugin
+            )
+
+            effects = set(
+                plugin.declare_effects()
+                or []
+            )
+
+            available.update(
+                effects
+            )
+
+            remaining.remove(
+                plugin
+            )
+
     return ordered
 
 
-def load_config(path: Path | None = None) -> dict:
-    import yaml
-    p = path or DEFAULT_CONFIG_PATH
-    if not p.exists():
-        return {}
-    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+def load_config(
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Load and validate ``config.yaml``.
 
-
-def build_plugins(config: dict | None = None, config_path: Path | None = None) -> list[Plugin]:
-    """Instantiate every registered, enabled *pipeline* plugin, in resolved order.
-
-    Excludes repair_router — it's an event subscriber, not a pipeline stage (see
-    prompt2render/harness/plugins/repair_router's docstring); get it from build_repair_router() instead.
+    Missing configuration is valid and produces an empty configuration.
     """
-    from .plugins import NON_PIPELINE, REGISTRY
-    cfg = config if config is not None else load_config(config_path)
 
-    instances = []
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ConfigError(
+            "PyYAML is required to load harness configuration."
+        ) from exc
+
+    config_path = (
+        Path(path)
+        if path is not None
+        else DEFAULT_CONFIG_PATH
+    )
+
+    if not config_path.exists():
+        return {}
+
+    try:
+        value = yaml.safe_load(
+            config_path.read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception as exc:
+        raise ConfigError(
+            f"could not parse {config_path}: {exc}"
+        ) from exc
+
+    if value is None:
+        return {}
+
+    if not isinstance(
+        value,
+        dict,
+    ):
+        raise ConfigError(
+            f"{config_path} must contain a YAML mapping at its root."
+        )
+
+    return value
+
+
+def _plugin_config(
+    config: dict[str, Any],
+    name: str,
+) -> dict[str, Any]:
+    """Extract one plugin's configuration safely."""
+
+    value = config.get(
+        name,
+        {},
+    )
+
+    if value is None:
+        return {}
+
+    if not isinstance(
+        value,
+        dict,
+    ):
+        raise ConfigError(
+            f"configuration for plugin {name!r} "
+            "must be a mapping."
+        )
+
+    return dict(
+        value
+    )
+
+
+def build_plugins(
+    config: dict[str, Any] | None = None,
+    config_path: Path | None = None,
+) -> list[Plugin]:
+    """Instantiate enabled ordinary pipeline plugins and resolve their order.
+
+    ``repair_router`` is excluded because it is event-driven infrastructure,
+    not a DAG stage.
+    """
+
+    from .plugins import (
+        NON_PIPELINE,
+        REGISTRY,
+    )
+
+    cfg = (
+        dict(config)
+        if config is not None
+        else load_config(
+            config_path
+        )
+    )
+
+    if not isinstance(
+        cfg,
+        dict,
+    ):
+        raise ConfigError(
+            "harness configuration must be a mapping."
+        )
+
+    instances: list[
+        Plugin
+    ] = []
+
     for name, cls in REGISTRY.items():
+
         if name in NON_PIPELINE:
             continue
-        pcfg = dict(cfg.get(name, {}))
-        inst = cls(pcfg)
-        if inst.enabled():
-            instances.append(inst)
-    return resolve_order(instances)
+
+        plugin_config = _plugin_config(
+            cfg,
+            name,
+        )
+
+        try:
+            instance = cls(
+                plugin_config
+            )
+        except Exception as exc:
+            raise ConfigError(
+                f"could not instantiate plugin "
+                f"{name!r}: {exc}"
+            ) from exc
+
+        if instance.enabled():
+            instances.append(
+                instance
+            )
+
+    return resolve_order(
+        instances
+    )
 
 
-def build_repair_router(config: dict | None = None, config_path: Path | None = None):
-    """Instantiate repair_router (or None if disabled) — not part of the ordinary pipeline."""
+def build_repair_router(
+    config: dict[str, Any] | None = None,
+    config_path: Path | None = None,
+):
+    """Instantiate the event-driven repair router.
+
+    Returns ``None`` when disabled by configuration.
+    """
+
     from .plugins import REGISTRY
-    cfg = config if config is not None else load_config(config_path)
-    cls = REGISTRY["repair_router"]
-    inst = cls(dict(cfg.get("repair_router", {})))
-    return inst if inst.enabled() else None
+
+    cfg = (
+        dict(config)
+        if config is not None
+        else load_config(
+            config_path
+        )
+    )
+
+    if not isinstance(
+        cfg,
+        dict,
+    ):
+        raise ConfigError(
+            "harness configuration must be a mapping."
+        )
+
+    try:
+        cls = REGISTRY[
+            "repair_router"
+        ]
+    except KeyError as exc:
+        raise ConfigError(
+            "registry does not contain repair_router"
+        ) from exc
+
+    plugin_config = _plugin_config(
+        cfg,
+        "repair_router",
+    )
+
+    instance = cls(
+        plugin_config
+    )
+
+    return (
+        instance
+        if instance.enabled()
+        else None
+    )
+
+
+__all__ = [
+    "DEFAULT_CONFIG_PATH",
+    "PRESEEDED_FIELDS",
+    "DependencyError",
+    "ConfigError",
+    "resolve_order",
+    "load_config",
+    "build_plugins",
+    "build_repair_router",
+]

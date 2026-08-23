@@ -112,25 +112,67 @@ def _expand(manifest: list[dict], state_starts: list[float], sents: list[dict],
 
 
 def _fit(items: list[dict], total_frames: int) -> list[int] | None:
-    """Frame counts, or None if these stills cannot be made to fit."""
+    """Fit still boundaries to cues while enforcing hard minimum durations.
+
+    The old implementation pushed boundaries forward and then pulled them
+    backward independently.  Those two passes could cross: a later boundary
+    pulled behind an earlier boundary made one shot zero/negative frames.
+
+    This version treats the problem as constrained boundary placement.  Each
+    boundary is clamped to the interval that leaves the minimum duration on
+    both sides, then adjusted monotonically.  The final boundary is always
+    `total_frames`, so the returned frame counts are exact.
+    """
     n = len(items)
-    minf = [MIN_STATE_FRAMES if it["kind"] == "state" else MIN_REVEAL_FRAMES
-            for it in items]
-    if sum(minf) > total_frames:
+    if n == 0 or total_frames < 1:
         return None
 
-    s = [round(it["t"] * cfg.FPS) for it in items]
-    s[0] = 0
-    for i in range(1, n):                       # push forward
-        s[i] = max(s[i], s[i - 1] + minf[i - 1])
-    for i in range(n - 1, 0, -1):               # pull back
-        s[i] = min(s[i], total_frames - sum(minf[i:]))
-    if any(s[i] <= s[i - 1] for i in range(1, n)) or s[0] != 0:
+    minf = [
+        MIN_STATE_FRAMES if it["kind"] == "state" else MIN_REVEAL_FRAMES
+        for it in items
+    ]
+    required = sum(minf)
+    if required > total_frames:
         return None
 
-    frames = [s[i + 1] - s[i] for i in range(n - 1)]
-    frames.append(total_frames - s[-1])
-    if any(f < 1 for f in frames) or sum(frames) != total_frames:
+    # Boundary i is the start of item i.  The first boundary is fixed at zero.
+    # For each interior boundary i:
+    #   lower = minimum duration consumed by items before i
+    #   upper = total duration minus minimum duration of items i onward
+    # The original cue is the preferred location inside that feasible interval.
+    raw = [round(it["t"] * cfg.FPS) for it in items]
+    starts = [0] * n
+    for i in range(1, n):
+        lower = sum(minf[:i])
+        upper = total_frames - sum(minf[i:])
+        starts[i] = min(max(raw[i], lower), upper)
+
+    # Enforce monotonicity without ever violating a minimum duration.
+    for i in range(1, n):
+        starts[i] = max(starts[i], starts[i - 1] + minf[i - 1])
+
+    # The forward pass can consume slack near the end. Pull only within the
+    # mathematically valid interval, from right to left.
+    for i in range(n - 1, 0, -1):
+        upper = total_frames - sum(minf[i:])
+        starts[i] = min(starts[i], upper)
+        starts[i] = max(starts[i], starts[i - 1] + minf[i - 1])
+
+    if starts[0] != 0:
+        return None
+    if any(starts[i] < starts[i - 1] + minf[i - 1]
+           for i in range(1, n)):
+        return None
+
+    frames = [
+        starts[i + 1] - starts[i]
+        for i in range(n - 1)
+    ]
+    frames.append(total_frames - starts[-1])
+
+    if any(f < minf[i] for i, f in enumerate(frames)):
+        return None
+    if sum(frames) != total_frames:
         return None
     return frames
 
@@ -217,7 +259,11 @@ def build(proj: Path, script: Script, motion: str | None = None,
 
     shots.sort()
     mean = sum(shots) / len(shots) if shots else 0
-    p95 = shots[int(len(shots) * 0.95)] if shots else 0
+    if shots:
+        p95_index = min(len(shots) - 1, max(0, int(len(shots) * 0.95) - 1))
+        p95 = shots[p95_index]
+    else:
+        p95 = 0
     dst = proj / "build" / "plan.json"
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(json.dumps({

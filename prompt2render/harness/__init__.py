@@ -1,7 +1,9 @@
-"""Prompt2Render harness — an additive research/evaluation layer over prompt2render's live pipeline.
+"""Prompt2Render harness package.
 
-Scope (see docs/MIGRATION_INVENTORY.md and the Stage 2-5 plan): the generation/verification/
-repair loop only (script -> scene_plan -> code_artifacts -> render_artifacts -> check_results).
-`voice`/`align`/`timeline`/`encode`/`finish`/`publish` stay exactly as they are, invoked directly
-by prompt2render.py's existing CLI — this package does not touch that CLI or its behavior.
+Plugin implementations and the registry live in :mod:`prompt2render.harness.plugins`.
+This initializer intentionally performs no plugin imports. Keeping package initialization
+side-effect-free prevents imports such as ``prompt2render.harness.context`` from trying to
+resolve plugin modules from the wrong directory on Windows.
 """
+
+__all__ = []

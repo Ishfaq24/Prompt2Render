@@ -1,19 +1,36 @@
-"""Real wrap of qc.py's caption-drift gate — the closest live analogue to `verifier_audio`.
+"""Whole-video audio/caption-drift verifier.
 
-Structurally whole-video, not per-scene: it re-transcribes the *finished, muxed* out/final.mp4
-and aggregates drift across every section into one PASS/WARN/FAIL verdict, run only after
-`finish` — a stage entirely outside this harness's scope (see the migration plan's
-reconciliation #6 and #9). It can only run when out/final.mp4 already exists (the same
-precondition qc.check itself has today); otherwise it reports SKIP, exactly like qc.py's own
-missing-prerequisite gates. It structurally cannot participate in repair_router's per-scene
-revert/re-invoke loop without new work to make caption-drift per-scene.
+This plugin wraps ``qc.caption_drift`` and deliberately operates on the
+finished, muxed ``out/final.mp4`` rather than individual scene artifacts.
 
-Delegates the actual re-transcription to qc.caption_drift(), which is cached by final.mp4's
-signature — so a `prompt2render check` and a `tools/harness_run.py` run against the same build
-don't each pay for an independent whisper pass over the whole finished video, and this plugin
-gets qc's own thread-pool parallelism across sections for free instead of a duplicated serial loop.
+It is therefore a post-finish quality check:
+
+    renderer_finish
+        ↓
+    out/final.mp4
+        ↓
+    independent ASR
+        ↓
+    qc.caption_drift()
+        ↓
+    PASS / WARN / FAIL
+
+Important design constraints
+----------------------------
+* It does not attempt per-scene repair.
+* It does not manufacture an audio verdict when the final video is missing.
+* Missing final-video or ASR prerequisites are reported as ``skip``.
+* The underlying ``qc.caption_drift`` implementation remains authoritative.
+* Any real caption-drift failure is exposed using the harness finding taxonomy
+  so future routing can distinguish audio problems from code/visual problems.
+* The verifier itself is a soft/post-finish gate; ``repair_router`` cannot
+  directly regenerate a scene from this whole-video result.
 """
+
 from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
 
 from ...context import SceneContext
 from ...plugin import Plugin
@@ -22,36 +39,228 @@ from ....project import parse_script
 
 
 class VerifierAudioPlugin(Plugin):
+    """Run the independent whole-video caption-drift verification."""
+
     name = "verifier_audio"
 
     def declare_dependencies(self) -> list[str]:
-        # Its real precondition (out/final.mp4) is outside this harness's own field schema — see
-        # the module docstring. Declaring render_artifacts too is not a true data dependency, only
-        # an ordering one: it keeps this whole-video check running after the per-scene
-        # generation/render/verify loop instead of scheduling early just because `narration`
-        # alone happens to be satisfied first.
-        return ["narration", "render_artifacts"]
+        return [
+            "final_video",
+            "narration",
+            "render_artifacts",
+        ]
 
     def declare_effects(self) -> list[str]:
-        return ["check_results"]
+        return [
+            "check_results",
+        ]
 
-    def run(self, context: SceneContext) -> SceneContext:
-        final = context.project_dir / "out" / "final.mp4"
-        if not final.exists():
-            context.check_results[self.name] = [{
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _final_video(
+        context: SceneContext,
+    ) -> Path:
+        return (
+            context.project_dir
+            / "out"
+            / "final.mp4"
+        )
+
+    @staticmethod
+    def _skip(
+        context: SceneContext,
+        detail: str,
+        finding_type: str,
+    ) -> SceneContext:
+        """Record an explicit prerequisite skip."""
+
+        context.check_results[
+            VerifierAudioPlugin.name
+        ] = [
+            {
                 "status": "skip",
-                "detail": "no out/final.mp4 — this harness doesn't run finish; "
-                          "run `prompt2render build` (or at least `prompt2render finish`) first",
-            }]
-            return context
+                "finding_type": finding_type,
+                "detail": detail,
+                "scope": "video",
+                "repairable_per_scene": False,
+            }
+        ]
 
-        model = asrmodel.available()
-        if model is None:
-            context.check_results[self.name] = [{
-                "status": "skip", "detail": "no ASR model — cannot verify independently"}]
-            return context
-
-        script = parse_script(context.prompt)
-        result = qc.caption_drift(context.project_dir, script, final, model)
-        context.check_results[self.name] = [result]
         return context
+
+    @staticmethod
+    def _normalize_result(
+        result: Any,
+    ) -> dict[str, Any]:
+        """Normalize qc.caption_drift output without changing its semantics."""
+
+        if isinstance(
+            result,
+            dict,
+        ):
+            normalized = dict(result)
+        else:
+            normalized = {
+                "status": "fail",
+                "detail": str(result),
+            }
+
+        status = str(
+            normalized.get(
+                "status",
+                "fail",
+            )
+        ).lower()
+
+        if status not in {
+            "pass",
+            "warn",
+            "fail",
+            "skip",
+        }:
+            status = "fail"
+
+        normalized["status"] = status
+        normalized.setdefault(
+            "finding_type",
+            "audio_visual_mismatch",
+        )
+        normalized.setdefault(
+            "scope",
+            "video",
+        )
+        normalized.setdefault(
+            "repairable_per_scene",
+            False,
+        )
+
+        # Preserve the audio-specific mismatch information when qc supplies
+        # it. Otherwise classify a non-pass caption-drift result as an
+        # unclear audio/visual mismatch. This gives routing_policy enough
+        # information without inventing a more specific diagnosis.
+        if (
+            status in {"warn", "fail"}
+            and normalized.get(
+                "finding_type"
+            ) == "audio_visual_mismatch"
+        ):
+            normalized.setdefault(
+                "mismatch_subtype",
+                "unclear",
+            )
+
+        return normalized
+
+    # ------------------------------------------------------------------
+    # Main verifier
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        context: SceneContext,
+    ) -> SceneContext:
+        final = self._final_video(
+            context
+        )
+
+        # qc.caption_drift() requires the finished muxed video. This is a
+        # prerequisite skip, not a quality failure.
+        if not final.exists():
+            return self._skip(
+                context,
+                (
+                    "no out/final.mp4 after "
+                    "renderer_finish"
+                ),
+                "missing_final_video",
+            )
+
+        if not final.is_file():
+            return self._skip(
+                context,
+                (
+                    "out/final.mp4 exists but is "
+                    "not a regular file"
+                ),
+                "invalid_final_video",
+            )
+
+        # ASR availability is another prerequisite. Do not convert an
+        # unavailable verification dependency into a false quality failure.
+        try:
+            model = asrmodel.available()
+        except Exception as exc:
+            return self._skip(
+                context,
+                f"ASR availability check failed: {exc}",
+                "asr_unavailable",
+            )
+
+        if model is None:
+            return self._skip(
+                context,
+                (
+                    "no ASR model — cannot verify "
+                    "caption drift independently"
+                ),
+                "asr_unavailable",
+            )
+
+        # Parse the authoritative source script exactly once for this
+        # verification. qc.caption_drift remains responsible for the actual
+        # cached transcription/drift analysis.
+        try:
+            script = parse_script(
+                context.prompt
+            )
+
+            result = qc.caption_drift(
+                context.project_dir,
+                script,
+                final,
+                model,
+            )
+
+        except SystemExit as exc:
+            # Some legacy prompt2render utilities use SystemExit for missing
+            # runtime prerequisites. Treat this as a verifier failure only
+            # when the final video and ASR model were already established.
+            result = {
+                "status": "fail",
+                "finding_type": "audio_verification_failure",
+                "detail": str(exc),
+                "scope": "video",
+                "repairable_per_scene": False,
+            }
+
+        except Exception as exc:
+            result = {
+                "status": "fail",
+                "finding_type": "audio_verification_failure",
+                "detail": (
+                    "caption-drift verification failed: "
+                    f"{exc}"
+                ),
+                "scope": "video",
+                "repairable_per_scene": False,
+            }
+
+        normalized = self._normalize_result(
+            result
+        )
+
+        context.check_results[
+            self.name
+        ] = [
+            normalized
+        ]
+
+        return context
+
+    def _default_gate(self) -> bool:
+        """This is a post-finish whole-video verifier, not a pipeline gate."""
+
+        return False

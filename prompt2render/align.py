@@ -345,14 +345,22 @@ def clamp_to_prior(sents: list[dict], prior: list[voice.Cue]) -> list[dict]:
         lo, hi = p.start, p.end
         s["start"], s["end"] = round(lo, 3), round(hi, 3)
         for w in s["words"]:
-            w["s"] = round(min(max(w["s"], lo), hi), 3)
-            w["e"] = round(min(max(w["e"], w["s"] + MIN_WORD), hi), 3)
+            start = min(max(float(w["s"]), lo), hi)
+            end = min(max(float(w["e"]), start + MIN_WORD), hi)
+            if end < start:
+                end = start
+            w["s"] = round(start, 3)
+            w["e"] = round(end, 3)
         if s["words"]:
             s["words"][0]["s"] = round(lo, 3)
             s["words"][-1]["e"] = round(hi, 3)
             for a, b in zip(s["words"], s["words"][1:]):
                 if b["s"] < a["s"]:
                     b["s"] = a["s"]
+                if b["e"] < b["s"]:
+                    b["e"] = b["s"]
+                if a["e"] > b["s"]:
+                    a["e"] = b["s"]
     return sents
 
 
@@ -498,7 +506,7 @@ def transcribe_programme(proj: Path, master: Path, model: Path,
         cues = _transcribe_chunked(master, model, spans, jobs)
         if not cues:
             return []
-        stamp.write_text(_to_srt(cues), encoding="utf-8")
+        _atomic_write_text(stamp, _to_srt(cues))
         return _asr_tokens(cues)
 
     cfg.say(f"transcribing {cfg.duration(master)/60:.1f} min with "
@@ -509,7 +517,7 @@ def transcribe_programme(proj: Path, master: Path, model: Path,
             return []
         src = Path(td) / "words.srt"
         if src.exists():
-            stamp.write_bytes(src.read_bytes())
+            _atomic_write_text(stamp, src.read_text(encoding="utf-8", errors="replace"))
     return _asr_tokens(cues)
 
 
@@ -565,7 +573,10 @@ def align(proj: Path, script: Script, only: str | None = None,
             continue
         dst = path_for(proj, sec.stem)
         info = amap["sections"][sec.stem]
-        start, dur = info["start"], info["dur"]
+        start, dur = float(info["start"]), float(info["dur"])
+        if dur <= 0:
+            cfg.warn(f"section {sec.stem}: non-positive audio duration; skipping alignment")
+            continue
         sig = _section_sig(sec.narration, start, dur, master_stamp)
         if dst.exists() and not force:
             try:
@@ -589,8 +600,12 @@ def align(proj: Path, script: Script, only: str | None = None,
         if prior:
             aligned = clamp_to_prior(aligned, prior)
 
+        # Final invariant: all sentence/word timestamps stay inside the
+        # section and are monotonically ordered.
+        aligned = _normalize_timestamps(aligned, dur)
+
         source = _source(prior, asr, conf)
-        dst.write_text(json.dumps({
+        _atomic_write_text(dst, json.dumps({
             "version": VERSION, "sig": sig, "source": source,
             "confidence": round(conf, 3),
             "audio_dur": round(dur, 3),
@@ -598,10 +613,72 @@ def align(proj: Path, script: Script, only: str | None = None,
             "asr_tokens": len(asr),
             "snapped": moved,
             "sentences": aligned,
-        }, indent=2), encoding="utf-8")
+        }, indent=2))
         cfg.say(f"section {sec.stem}: {source}  conf {conf:.2f}  "
                 f"{len(aligned)} sentences"
                 + (f"  ({len(asr)} asr tokens, {moved} snapped)" if asr else ""))
+
+
+def _normalize_timestamps(sents: list[dict], dur: float) -> list[dict]:
+    """Enforce the alignment invariants at the serialization boundary.
+
+    Every timestamp is finite, inside [0, dur], and non-decreasing. The
+    function is deliberately deterministic and does not alter caption text.
+    """
+    import math
+
+    out: list[dict] = []
+    previous_end = 0.0
+
+    for sent in sents:
+        try:
+            start = float(sent.get("start", previous_end))
+            end = float(sent.get("end", start))
+        except (TypeError, ValueError):
+            start, end = previous_end, previous_end
+
+        if not math.isfinite(start):
+            start = previous_end
+        if not math.isfinite(end):
+            end = start
+
+        start = min(max(start, previous_end), dur)
+        end = min(max(end, start), dur)
+
+        words = []
+        previous_word_end = start
+
+        for word in sent.get("words", []):
+            try:
+                ws = float(word.get("s", previous_word_end))
+                we = float(word.get("e", ws))
+            except (TypeError, ValueError):
+                ws, we = previous_word_end, previous_word_end
+
+            if not math.isfinite(ws):
+                ws = previous_word_end
+            if not math.isfinite(we):
+                we = ws
+
+            ws = min(max(ws, previous_word_end), end)
+            we = min(max(we, ws), end)
+
+            words.append({
+                **word,
+                "s": round(ws, 3),
+                "e": round(we, 3),
+            })
+            previous_word_end = we
+
+        out.append({
+            **sent,
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "words": words,
+        })
+        previous_end = end
+
+    return out
 
 
 def _source(prior: list, asr: list, conf: float) -> str:

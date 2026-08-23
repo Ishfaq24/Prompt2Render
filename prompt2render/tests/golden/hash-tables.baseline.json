@@ -1,0 +1,3075 @@
+{
+  "json": {
+    "build/plan.json": {
+      "clips": [
+        {
+          "clip": "build/clips/01_000.mp4",
+          "cue": {
+            "sentence": 0,
+            "t": 0.0
+          },
+          "frames": 110,
+          "i": 0,
+          "kind": "state",
+          "name": "s01",
+          "png": "build/scenes/01/000_s01.png",
+          "prev_png": "",
+          "seconds": 3.667,
+          "section": "01",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/01_001.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 3.677
+          },
+          "frames": 96,
+          "i": 1,
+          "kind": "state",
+          "name": "s02",
+          "png": "build/scenes/01/001_s02.png",
+          "prev_png": "build/scenes/01/000_s01.png",
+          "seconds": 3.2,
+          "section": "01",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/01_002.mp4",
+          "cue": {
+            "sentence": 3,
+            "t": 6.867
+          },
+          "frames": 194,
+          "i": 2,
+          "kind": "state",
+          "name": "s03",
+          "png": "build/scenes/01/002_s03.png",
+          "prev_png": "build/scenes/01/001_s02.png",
+          "seconds": 6.467,
+          "section": "01",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/01_003.mp4",
+          "cue": {
+            "sentence": 4,
+            "t": 13.32
+          },
+          "frames": 59,
+          "i": 3,
+          "kind": "state",
+          "name": "s04",
+          "png": "build/scenes/01/003_s04_s0.png",
+          "prev_png": "build/scenes/01/002_s03.png",
+          "seconds": 1.967,
+          "section": "01",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/01_004.mp4",
+          "cue": {
+            "sentence": 4,
+            "t": 15.3
+          },
+          "frames": 65,
+          "i": 4,
+          "kind": "reveal",
+          "name": "s04",
+          "png": "build/scenes/01/004_s04_s1.png",
+          "prev_png": "build/scenes/01/003_s04_s0.png",
+          "seconds": 2.167,
+          "section": "01",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/01_005.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 17.46
+          },
+          "frames": 45,
+          "i": 5,
+          "kind": "state",
+          "name": "s05",
+          "png": "build/scenes/01/005_s05_s0.png",
+          "prev_png": "build/scenes/01/004_s04_s1.png",
+          "seconds": 1.5,
+          "section": "01",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/01_006.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 18.46
+          },
+          "frames": 33,
+          "i": 6,
+          "kind": "reveal",
+          "name": "s05",
+          "png": "build/scenes/01/006_s05_s1.png",
+          "prev_png": "build/scenes/01/005_s05_s0.png",
+          "seconds": 1.1,
+          "section": "01",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/01_007.mp4",
+          "cue": {
+            "sentence": 7,
+            "t": 19.347
+          },
+          "frames": 421,
+          "i": 7,
+          "kind": "state",
+          "name": "s06",
+          "png": "build/scenes/01/007_s06.png",
+          "prev_png": "build/scenes/01/006_s05_s1.png",
+          "seconds": 14.033,
+          "section": "01",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/02_000.mp4",
+          "cue": {
+            "sentence": 0,
+            "t": 0.0
+          },
+          "frames": 101,
+          "i": 0,
+          "kind": "section",
+          "name": "s01",
+          "png": "build/scenes/02/000_s01.png",
+          "prev_png": "build/scenes/01/007_s06.png",
+          "seconds": 3.367,
+          "section": "02",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/02_001.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 3.367
+          },
+          "frames": 50,
+          "i": 1,
+          "kind": "state",
+          "name": "s02",
+          "png": "build/scenes/02/001_s02_s0.png",
+          "prev_png": "build/scenes/02/000_s01.png",
+          "seconds": 1.667,
+          "section": "02",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/02_002.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 5.027
+          },
+          "frames": 79,
+          "i": 2,
+          "kind": "reveal",
+          "name": "s02",
+          "png": "build/scenes/02/002_s02_s1.png",
+          "prev_png": "build/scenes/02/001_s02_s0.png",
+          "seconds": 2.633,
+          "section": "02",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/02_003.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 7.677
+          },
+          "frames": 62,
+          "i": 3,
+          "kind": "reveal",
+          "name": "s02",
+          "png": "build/scenes/02/003_s02_s2.png",
+          "prev_png": "build/scenes/02/002_s02_s1.png",
+          "seconds": 2.067,
+          "section": "02",
+          "step": 2
+        },
+        {
+          "clip": "build/clips/02_004.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 9.727
+          },
+          "frames": 68,
+          "i": 4,
+          "kind": "reveal",
+          "name": "s02",
+          "png": "build/scenes/02/004_s02_s3.png",
+          "prev_png": "build/scenes/02/003_s02_s2.png",
+          "seconds": 2.267,
+          "section": "02",
+          "step": 3
+        },
+        {
+          "clip": "build/clips/02_005.mp4",
+          "cue": {
+            "sentence": 4,
+            "t": 11.997
+          },
+          "frames": 407,
+          "i": 5,
+          "kind": "state",
+          "name": "s03",
+          "png": "build/scenes/02/005_s03.png",
+          "prev_png": "build/scenes/02/004_s02_s3.png",
+          "seconds": 13.567,
+          "section": "02",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/02_006.mp4",
+          "cue": {
+            "sentence": 6,
+            "t": 25.553
+          },
+          "frames": 45,
+          "i": 6,
+          "kind": "state",
+          "name": "s04",
+          "png": "build/scenes/02/006_s04_s0.png",
+          "prev_png": "build/scenes/02/005_s03.png",
+          "seconds": 1.5,
+          "section": "02",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/02_007.mp4",
+          "cue": {
+            "sentence": 6,
+            "t": 26.847
+          },
+          "frames": 33,
+          "i": 7,
+          "kind": "reveal",
+          "name": "s04",
+          "png": "build/scenes/02/007_s04_s1.png",
+          "prev_png": "build/scenes/02/006_s04_s0.png",
+          "seconds": 1.1,
+          "section": "02",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/02_008.mp4",
+          "cue": {
+            "sentence": 6,
+            "t": 28.167
+          },
+          "frames": 39,
+          "i": 8,
+          "kind": "reveal",
+          "name": "s04",
+          "png": "build/scenes/02/008_s04_s2.png",
+          "prev_png": "build/scenes/02/007_s04_s1.png",
+          "seconds": 1.3,
+          "section": "02",
+          "step": 2
+        },
+        {
+          "clip": "build/clips/02_009.mp4",
+          "cue": {
+            "sentence": 7,
+            "t": 29.469
+          },
+          "frames": 351,
+          "i": 9,
+          "kind": "state",
+          "name": "s05",
+          "png": "build/scenes/02/009_s05.png",
+          "prev_png": "build/scenes/02/008_s04_s2.png",
+          "seconds": 11.7,
+          "section": "02",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/02_010.mp4",
+          "cue": {
+            "sentence": 9,
+            "t": 41.181
+          },
+          "frames": 286,
+          "i": 10,
+          "kind": "state",
+          "name": "s06",
+          "png": "build/scenes/02/010_s06.png",
+          "prev_png": "build/scenes/02/009_s05.png",
+          "seconds": 9.533,
+          "section": "02",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/02_011.mp4",
+          "cue": {
+            "sentence": 11,
+            "t": 50.696
+          },
+          "frames": 431,
+          "i": 11,
+          "kind": "state",
+          "name": "s07",
+          "png": "build/scenes/02/011_s07.png",
+          "prev_png": "build/scenes/02/010_s06.png",
+          "seconds": 14.367,
+          "section": "02",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_000.mp4",
+          "cue": {
+            "sentence": 0,
+            "t": 0.0
+          },
+          "frames": 358,
+          "i": 0,
+          "kind": "section",
+          "name": "s01",
+          "png": "build/scenes/03/000_s01.png",
+          "prev_png": "build/scenes/02/011_s07.png",
+          "seconds": 11.933,
+          "section": "03",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_001.mp4",
+          "cue": {
+            "sentence": 2,
+            "t": 11.933
+          },
+          "frames": 52,
+          "i": 1,
+          "kind": "state",
+          "name": "s02",
+          "png": "build/scenes/03/001_s02_s0.png",
+          "prev_png": "build/scenes/03/000_s01.png",
+          "seconds": 1.733,
+          "section": "03",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_002.mp4",
+          "cue": {
+            "sentence": 2,
+            "t": 13.665
+          },
+          "frames": 48,
+          "i": 2,
+          "kind": "reveal",
+          "name": "s02",
+          "png": "build/scenes/03/002_s02_s1.png",
+          "prev_png": "build/scenes/03/001_s02_s0.png",
+          "seconds": 1.6,
+          "section": "03",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/03_003.mp4",
+          "cue": {
+            "sentence": 4,
+            "t": 15.283
+          },
+          "frames": 182,
+          "i": 3,
+          "kind": "state",
+          "name": "s03",
+          "png": "build/scenes/03/003_s03.png",
+          "prev_png": "build/scenes/03/002_s02_s1.png",
+          "seconds": 6.067,
+          "section": "03",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_004.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 21.32
+          },
+          "frames": 185,
+          "i": 4,
+          "kind": "state",
+          "name": "s04",
+          "png": "build/scenes/03/004_s04_s0.png",
+          "prev_png": "build/scenes/03/003_s03.png",
+          "seconds": 6.167,
+          "section": "03",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_005.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 27.495
+          },
+          "frames": 188,
+          "i": 5,
+          "kind": "reveal",
+          "name": "s04",
+          "png": "build/scenes/03/005_s04_s1.png",
+          "prev_png": "build/scenes/03/004_s04_s0.png",
+          "seconds": 6.267,
+          "section": "03",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/03_006.mp4",
+          "cue": {
+            "sentence": 7,
+            "t": 33.757
+          },
+          "frames": 62,
+          "i": 6,
+          "kind": "state",
+          "name": "s05",
+          "png": "build/scenes/03/006_s05_s0.png",
+          "prev_png": "build/scenes/03/005_s04_s1.png",
+          "seconds": 2.067,
+          "section": "03",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_007.mp4",
+          "cue": {
+            "sentence": 7,
+            "t": 35.835
+          },
+          "frames": 86,
+          "i": 7,
+          "kind": "reveal",
+          "name": "s05",
+          "png": "build/scenes/03/007_s05_s1.png",
+          "prev_png": "build/scenes/03/006_s05_s0.png",
+          "seconds": 2.867,
+          "section": "03",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/03_008.mp4",
+          "cue": {
+            "sentence": 10,
+            "t": 38.685
+          },
+          "frames": 431,
+          "i": 8,
+          "kind": "state",
+          "name": "s06",
+          "png": "build/scenes/03/008_s06.png",
+          "prev_png": "build/scenes/03/007_s05_s1.png",
+          "seconds": 14.367,
+          "section": "03",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_009.mp4",
+          "cue": {
+            "sentence": 12,
+            "t": 53.064
+          },
+          "frames": 45,
+          "i": 9,
+          "kind": "state",
+          "name": "s07",
+          "png": "build/scenes/03/009_s07_s0.png",
+          "prev_png": "build/scenes/03/008_s06.png",
+          "seconds": 1.5,
+          "section": "03",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/03_010.mp4",
+          "cue": {
+            "sentence": 12,
+            "t": 54.435
+          },
+          "frames": 234,
+          "i": 10,
+          "kind": "reveal",
+          "name": "s07",
+          "png": "build/scenes/03/010_s07_s1.png",
+          "prev_png": "build/scenes/03/009_s07_s0.png",
+          "seconds": 7.8,
+          "section": "03",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/04_000.mp4",
+          "cue": {
+            "sentence": 0,
+            "t": 0.0
+          },
+          "frames": 116,
+          "i": 0,
+          "kind": "section",
+          "name": "s01",
+          "png": "build/scenes/04/000_s01.png",
+          "prev_png": "build/scenes/03/010_s07_s1.png",
+          "seconds": 3.867,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_001.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 3.869
+          },
+          "frames": 68,
+          "i": 1,
+          "kind": "state",
+          "name": "s02",
+          "png": "build/scenes/04/001_s02_s0.png",
+          "prev_png": "build/scenes/04/000_s01.png",
+          "seconds": 2.267,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_002.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 6.139
+          },
+          "frames": 70,
+          "i": 2,
+          "kind": "reveal",
+          "name": "s02",
+          "png": "build/scenes/04/002_s02_s1.png",
+          "prev_png": "build/scenes/04/001_s02_s0.png",
+          "seconds": 2.333,
+          "section": "04",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/04_003.mp4",
+          "cue": {
+            "sentence": 3,
+            "t": 8.459
+          },
+          "frames": 70,
+          "i": 3,
+          "kind": "state",
+          "name": "s03",
+          "png": "build/scenes/04/003_s03_s0.png",
+          "prev_png": "build/scenes/04/002_s02_s1.png",
+          "seconds": 2.333,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_004.mp4",
+          "cue": {
+            "sentence": 3,
+            "t": 10.795
+          },
+          "frames": 60,
+          "i": 4,
+          "kind": "reveal",
+          "name": "s03",
+          "png": "build/scenes/04/004_s03_s1.png",
+          "prev_png": "build/scenes/04/003_s03_s0.png",
+          "seconds": 2.0,
+          "section": "04",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/04_005.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 12.808
+          },
+          "frames": 198,
+          "i": 5,
+          "kind": "state",
+          "name": "s04",
+          "png": "build/scenes/04/005_s04.png",
+          "prev_png": "build/scenes/04/004_s03_s1.png",
+          "seconds": 6.6,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_006.mp4",
+          "cue": {
+            "sentence": 6,
+            "t": 19.389
+          },
+          "frames": 58,
+          "i": 6,
+          "kind": "state",
+          "name": "s05",
+          "png": "build/scenes/04/006_s05_s0.png",
+          "prev_png": "build/scenes/04/005_s04.png",
+          "seconds": 1.933,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_007.mp4",
+          "cue": {
+            "sentence": 6,
+            "t": 21.349
+          },
+          "frames": 50,
+          "i": 7,
+          "kind": "reveal",
+          "name": "s05",
+          "png": "build/scenes/04/007_s05_s1.png",
+          "prev_png": "build/scenes/04/006_s05_s0.png",
+          "seconds": 1.667,
+          "section": "04",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/04_008.mp4",
+          "cue": {
+            "sentence": 9,
+            "t": 22.984
+          },
+          "frames": 195,
+          "i": 8,
+          "kind": "state",
+          "name": "s06",
+          "png": "build/scenes/04/008_s06.png",
+          "prev_png": "build/scenes/04/007_s05_s1.png",
+          "seconds": 6.5,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_009.mp4",
+          "cue": {
+            "sentence": 10,
+            "t": 29.491
+          },
+          "frames": 219,
+          "i": 9,
+          "kind": "state",
+          "name": "s07",
+          "png": "build/scenes/04/009_s07.png",
+          "prev_png": "build/scenes/04/008_s06.png",
+          "seconds": 7.3,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_010.mp4",
+          "cue": {
+            "sentence": 11,
+            "t": 36.789
+          },
+          "frames": 55,
+          "i": 10,
+          "kind": "state",
+          "name": "s08",
+          "png": "build/scenes/04/010_s08_s0.png",
+          "prev_png": "build/scenes/04/009_s07.png",
+          "seconds": 1.833,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_011.mp4",
+          "cue": {
+            "sentence": 11,
+            "t": 38.639
+          },
+          "frames": 59,
+          "i": 11,
+          "kind": "reveal",
+          "name": "s08",
+          "png": "build/scenes/04/011_s08_s1.png",
+          "prev_png": "build/scenes/04/010_s08_s0.png",
+          "seconds": 1.967,
+          "section": "04",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/04_012.mp4",
+          "cue": {
+            "sentence": 11,
+            "t": 40.599
+          },
+          "frames": 65,
+          "i": 12,
+          "kind": "reveal",
+          "name": "s08",
+          "png": "build/scenes/04/012_s08_s2.png",
+          "prev_png": "build/scenes/04/011_s08_s1.png",
+          "seconds": 2.167,
+          "section": "04",
+          "step": 2
+        },
+        {
+          "clip": "build/clips/04_013.mp4",
+          "cue": {
+            "sentence": 14,
+            "t": 42.781
+          },
+          "frames": 287,
+          "i": 13,
+          "kind": "state",
+          "name": "s09",
+          "png": "build/scenes/04/013_s09.png",
+          "prev_png": "build/scenes/04/012_s08_s2.png",
+          "seconds": 9.567,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_014.mp4",
+          "cue": {
+            "sentence": 16,
+            "t": 52.317
+          },
+          "frames": 205,
+          "i": 14,
+          "kind": "state",
+          "name": "s10",
+          "png": "build/scenes/04/014_s10.png",
+          "prev_png": "build/scenes/04/013_s09.png",
+          "seconds": 6.833,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_015.mp4",
+          "cue": {
+            "sentence": 17,
+            "t": 59.165
+          },
+          "frames": 386,
+          "i": 15,
+          "kind": "state",
+          "name": "s11",
+          "png": "build/scenes/04/015_s11.png",
+          "prev_png": "build/scenes/04/014_s10.png",
+          "seconds": 12.867,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_016.mp4",
+          "cue": {
+            "sentence": 19,
+            "t": 72.049
+          },
+          "frames": 113,
+          "i": 16,
+          "kind": "state",
+          "name": "s12",
+          "png": "build/scenes/04/016_s12_s0.png",
+          "prev_png": "build/scenes/04/015_s11.png",
+          "seconds": 3.767,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/04_017.mp4",
+          "cue": {
+            "sentence": 19,
+            "t": 75.809
+          },
+          "frames": 119,
+          "i": 17,
+          "kind": "reveal",
+          "name": "s12",
+          "png": "build/scenes/04/017_s12_s1.png",
+          "prev_png": "build/scenes/04/016_s12_s0.png",
+          "seconds": 3.967,
+          "section": "04",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/04_018.mp4",
+          "cue": {
+            "sentence": 20,
+            "t": 79.752
+          },
+          "frames": 544,
+          "i": 18,
+          "kind": "state",
+          "name": "s13",
+          "png": "build/scenes/04/018_s13.png",
+          "prev_png": "build/scenes/04/017_s12_s1.png",
+          "seconds": 18.133,
+          "section": "04",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_000.mp4",
+          "cue": {
+            "sentence": 0,
+            "t": 0.0
+          },
+          "frames": 227,
+          "i": 0,
+          "kind": "section",
+          "name": "s00",
+          "png": "build/scenes/05/000_s00.png",
+          "prev_png": "build/scenes/04/018_s13.png",
+          "seconds": 7.567,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_001.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 7.56
+          },
+          "frames": 173,
+          "i": 1,
+          "kind": "state",
+          "name": "s01",
+          "png": "build/scenes/05/001_s01.png",
+          "prev_png": "build/scenes/05/000_s00.png",
+          "seconds": 5.767,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_002.mp4",
+          "cue": {
+            "sentence": 2,
+            "t": 13.32
+          },
+          "frames": 75,
+          "i": 2,
+          "kind": "state",
+          "name": "s02",
+          "png": "build/scenes/05/002_s02.png",
+          "prev_png": "build/scenes/05/001_s01.png",
+          "seconds": 2.5,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_003.mp4",
+          "cue": {
+            "sentence": 3,
+            "t": 15.837
+          },
+          "frames": 357,
+          "i": 3,
+          "kind": "state",
+          "name": "s03",
+          "png": "build/scenes/05/003_s03.png",
+          "prev_png": "build/scenes/05/002_s02.png",
+          "seconds": 11.9,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_004.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 27.723
+          },
+          "frames": 66,
+          "i": 4,
+          "kind": "state",
+          "name": "s05",
+          "png": "build/scenes/05/004_s05_s0.png",
+          "prev_png": "build/scenes/05/003_s03.png",
+          "seconds": 2.2,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_005.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 29.923
+          },
+          "frames": 76,
+          "i": 5,
+          "kind": "reveal",
+          "name": "s05",
+          "png": "build/scenes/05/005_s05_s1.png",
+          "prev_png": "build/scenes/05/004_s05_s0.png",
+          "seconds": 2.533,
+          "section": "05",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/05_006.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 32.473
+          },
+          "frames": 63,
+          "i": 6,
+          "kind": "reveal",
+          "name": "s05",
+          "png": "build/scenes/05/006_s05_s2.png",
+          "prev_png": "build/scenes/05/005_s05_s1.png",
+          "seconds": 2.1,
+          "section": "05",
+          "step": 2
+        },
+        {
+          "clip": "build/clips/05_007.mp4",
+          "cue": {
+            "sentence": 6,
+            "t": 34.568
+          },
+          "frames": 168,
+          "i": 7,
+          "kind": "state",
+          "name": "s06",
+          "png": "build/scenes/05/007_s06.png",
+          "prev_png": "build/scenes/05/006_s05_s2.png",
+          "seconds": 5.6,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_008.mp4",
+          "cue": {
+            "sentence": 7,
+            "t": 40.157
+          },
+          "frames": 290,
+          "i": 8,
+          "kind": "state",
+          "name": "s07",
+          "png": "build/scenes/05/008_s07.png",
+          "prev_png": "build/scenes/05/007_s06.png",
+          "seconds": 9.667,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_009.mp4",
+          "cue": {
+            "sentence": 8,
+            "t": 49.843
+          },
+          "frames": 162,
+          "i": 9,
+          "kind": "state",
+          "name": "s08",
+          "png": "build/scenes/05/009_s08_s0.png",
+          "prev_png": "build/scenes/05/008_s07.png",
+          "seconds": 5.4,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_010.mp4",
+          "cue": {
+            "sentence": 8,
+            "t": 55.223
+          },
+          "frames": 182,
+          "i": 10,
+          "kind": "reveal",
+          "name": "s08",
+          "png": "build/scenes/05/010_s08_s1.png",
+          "prev_png": "build/scenes/05/009_s08_s0.png",
+          "seconds": 6.067,
+          "section": "05",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/05_011.mp4",
+          "cue": {
+            "sentence": 9,
+            "t": 61.303
+          },
+          "frames": 119,
+          "i": 11,
+          "kind": "state",
+          "name": "s09",
+          "png": "build/scenes/05/011_s09_s0.png",
+          "prev_png": "build/scenes/05/010_s08_s1.png",
+          "seconds": 3.967,
+          "section": "05",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/05_012.mp4",
+          "cue": {
+            "sentence": 9,
+            "t": 65.263
+          },
+          "frames": 268,
+          "i": 12,
+          "kind": "reveal",
+          "name": "s09",
+          "png": "build/scenes/05/012_s09_s1.png",
+          "prev_png": "build/scenes/05/011_s09_s0.png",
+          "seconds": 8.933,
+          "section": "05",
+          "step": 1
+        },
+        {
+          "clip": "build/clips/06_000.mp4",
+          "cue": {
+            "sentence": 0,
+            "t": 0.0
+          },
+          "frames": 50,
+          "i": 0,
+          "kind": "section",
+          "name": "s00",
+          "png": "build/scenes/06/000_s00.png",
+          "prev_png": "build/scenes/05/012_s09_s1.png",
+          "seconds": 1.667,
+          "section": "06",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/06_001.mp4",
+          "cue": {
+            "sentence": 1,
+            "t": 1.651
+          },
+          "frames": 177,
+          "i": 1,
+          "kind": "state",
+          "name": "s01",
+          "png": "build/scenes/06/001_s01.png",
+          "prev_png": "build/scenes/06/000_s00.png",
+          "seconds": 5.9,
+          "section": "06",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/06_002.mp4",
+          "cue": {
+            "sentence": 2,
+            "t": 7.581
+          },
+          "frames": 280,
+          "i": 2,
+          "kind": "state",
+          "name": "s02",
+          "png": "build/scenes/06/002_s02.png",
+          "prev_png": "build/scenes/06/001_s01.png",
+          "seconds": 9.333,
+          "section": "06",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/06_003.mp4",
+          "cue": {
+            "sentence": 3,
+            "t": 16.904
+          },
+          "frames": 215,
+          "i": 3,
+          "kind": "state",
+          "name": "s03",
+          "png": "build/scenes/06/003_s03.png",
+          "prev_png": "build/scenes/06/002_s02.png",
+          "seconds": 7.167,
+          "section": "06",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/06_004.mp4",
+          "cue": {
+            "sentence": 4,
+            "t": 24.051
+          },
+          "frames": 218,
+          "i": 4,
+          "kind": "state",
+          "name": "s04",
+          "png": "build/scenes/06/004_s04.png",
+          "prev_png": "build/scenes/06/003_s03.png",
+          "seconds": 7.267,
+          "section": "06",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/06_005.mp4",
+          "cue": {
+            "sentence": 5,
+            "t": 31.325
+          },
+          "frames": 148,
+          "i": 5,
+          "kind": "state",
+          "name": "s05",
+          "png": "build/scenes/06/005_s05.png",
+          "prev_png": "build/scenes/06/004_s04.png",
+          "seconds": 4.933,
+          "section": "06",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/06_006.mp4",
+          "cue": {
+            "sentence": 6,
+            "t": 36.275
+          },
+          "frames": 134,
+          "i": 6,
+          "kind": "state",
+          "name": "s06",
+          "png": "build/scenes/06/006_s06.png",
+          "prev_png": "build/scenes/06/005_s05.png",
+          "seconds": 4.467,
+          "section": "06",
+          "step": 0
+        },
+        {
+          "clip": "build/clips/06_007.mp4",
+          "cue": {
+            "sentence": 7,
+            "t": 40.733
+          },
+          "frames": 179,
+          "i": 7,
+          "kind": "state",
+          "name": "s07",
+          "png": "build/scenes/06/007_s07.png",
+          "prev_png": "build/scenes/06/006_s06.png",
+          "seconds": 5.967,
+          "section": "06",
+          "step": 0
+        }
+      ],
+      "fps": 30,
+      "lead_ms": 120,
+      "motion": "dissolve+reveal",
+      "pacing": {
+        "mean_shot_s": 5.36,
+        "notes": [
+          "state s05 flashes by in 1.1s",
+          "state s06 holds 14.0s \u2014 add reveal steps",
+          "state s03 holds 13.6s \u2014 add reveal steps",
+          "state s04 flashes by in 1.1s",
+          "state s04 flashes by in 1.3s",
+          "state s07 holds 14.4s \u2014 add reveal steps",
+          "state s06 holds 14.4s \u2014 add reveal steps",
+          "state s11 holds 12.9s \u2014 add reveal steps",
+          "state s13 holds 18.1s \u2014 add reveal steps"
+        ],
+        "p95_shot_s": 14.03
+      }
+    },
+    "build\\scenes\\01\\audit.json": {
+      "stills": 8,
+      "warnings": []
+    },
+    "build\\scenes\\01\\manifest.json": [
+      {
+        "anchor": "",
+        "cue": 0,
+        "i": 0,
+        "kind": "state",
+        "name": "s01",
+        "png": "000_s01.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 1,
+        "i": 1,
+        "kind": "state",
+        "name": "s02",
+        "png": "001_s02.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 3,
+        "i": 2,
+        "kind": "state",
+        "name": "s03",
+        "png": "002_s03.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "without looking",
+        "cue": 4,
+        "i": 3,
+        "kind": "state",
+        "name": "s04",
+        "png": "003_s04_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "without looking",
+        "cue": 4,
+        "i": 4,
+        "kind": "reveal",
+        "name": "s04",
+        "png": "004_s04_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "not checking",
+        "cue": 5,
+        "i": 5,
+        "kind": "state",
+        "name": "s05",
+        "png": "005_s05_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "not checking",
+        "cue": 5,
+        "i": 6,
+        "kind": "reveal",
+        "name": "s05",
+        "png": "006_s05_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "",
+        "cue": 7,
+        "i": 7,
+        "kind": "state",
+        "name": "s06",
+        "png": "007_s06.png",
+        "step": 0,
+        "steps": 1
+      }
+    ],
+    "build\\scenes\\02\\audit.json": {
+      "stills": 12,
+      "warnings": []
+    },
+    "build\\scenes\\02\\manifest.json": [
+      {
+        "anchor": "",
+        "cue": 0,
+        "i": 0,
+        "kind": "state",
+        "name": "s01",
+        "png": "000_s01.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "check them one at a time",
+        "cue": 1,
+        "i": 1,
+        "kind": "state",
+        "name": "s02",
+        "png": "001_s02_s0.png",
+        "step": 0,
+        "steps": 4
+      },
+      {
+        "anchor": "check them one at a time",
+        "cue": 1,
+        "i": 2,
+        "kind": "reveal",
+        "name": "s02",
+        "png": "002_s02_s1.png",
+        "step": 1,
+        "steps": 4
+      },
+      {
+        "anchor": "check them one at a time",
+        "cue": 1,
+        "i": 3,
+        "kind": "reveal",
+        "name": "s02",
+        "png": "003_s02_s2.png",
+        "step": 2,
+        "steps": 4
+      },
+      {
+        "anchor": "check them one at a time",
+        "cue": 1,
+        "i": 4,
+        "kind": "reveal",
+        "name": "s02",
+        "png": "004_s02_s3.png",
+        "step": 3,
+        "steps": 4
+      },
+      {
+        "anchor": "",
+        "cue": 4,
+        "i": 5,
+        "kind": "state",
+        "name": "s03",
+        "png": "005_s03.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "halving the search space",
+        "cue": 6,
+        "i": 6,
+        "kind": "state",
+        "name": "s04",
+        "png": "006_s04_s0.png",
+        "step": 0,
+        "steps": 3
+      },
+      {
+        "anchor": "halving the search space",
+        "cue": 6,
+        "i": 7,
+        "kind": "reveal",
+        "name": "s04",
+        "png": "007_s04_s1.png",
+        "step": 1,
+        "steps": 3
+      },
+      {
+        "anchor": "halving the search space",
+        "cue": 6,
+        "i": 8,
+        "kind": "reveal",
+        "name": "s04",
+        "png": "008_s04_s2.png",
+        "step": 2,
+        "steps": 3
+      },
+      {
+        "anchor": "",
+        "cue": 7,
+        "i": 9,
+        "kind": "state",
+        "name": "s05",
+        "png": "009_s05.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 9,
+        "i": 10,
+        "kind": "state",
+        "name": "s06",
+        "png": "010_s06.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 11,
+        "i": 11,
+        "kind": "state",
+        "name": "s07",
+        "png": "011_s07.png",
+        "step": 0,
+        "steps": 1
+      }
+    ],
+    "build\\scenes\\03\\audit.json": {
+      "stills": 11,
+      "warnings": []
+    },
+    "build\\scenes\\03\\manifest.json": [
+      {
+        "anchor": "",
+        "cue": 0,
+        "i": 0,
+        "kind": "state",
+        "name": "s01",
+        "png": "000_s01.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "Not a meaningful number",
+        "cue": 2,
+        "i": 1,
+        "kind": "state",
+        "name": "s02",
+        "png": "001_s02_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "Not a meaningful number",
+        "cue": 2,
+        "i": 2,
+        "kind": "reveal",
+        "name": "s02",
+        "png": "002_s02_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "",
+        "cue": 4,
+        "i": 3,
+        "kind": "state",
+        "name": "s03",
+        "png": "003_s03.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 5,
+        "i": 4,
+        "kind": "state",
+        "name": "s04",
+        "png": "004_s04_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "",
+        "cue": 5,
+        "i": 5,
+        "kind": "reveal",
+        "name": "s04",
+        "png": "005_s04_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "One computation",
+        "cue": 7,
+        "i": 6,
+        "kind": "state",
+        "name": "s05",
+        "png": "006_s05_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "One computation",
+        "cue": 7,
+        "i": 7,
+        "kind": "reveal",
+        "name": "s05",
+        "png": "007_s05_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "",
+        "cue": 10,
+        "i": 8,
+        "kind": "state",
+        "name": "s06",
+        "png": "008_s06.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "Break that",
+        "cue": 12,
+        "i": 9,
+        "kind": "state",
+        "name": "s07",
+        "png": "009_s07_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "Break that",
+        "cue": 12,
+        "i": 10,
+        "kind": "reveal",
+        "name": "s07",
+        "png": "010_s07_s1.png",
+        "step": 1,
+        "steps": 2
+      }
+    ],
+    "build\\scenes\\04\\audit.json": {
+      "stills": 19,
+      "warnings": []
+    },
+    "build\\scenes\\04\\manifest.json": [
+      {
+        "anchor": "",
+        "cue": 0,
+        "i": 0,
+        "kind": "state",
+        "name": "s01",
+        "png": "000_s01.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "comes out to 2",
+        "cue": 1,
+        "i": 1,
+        "kind": "state",
+        "name": "s02",
+        "png": "001_s02_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "comes out to 2",
+        "cue": 1,
+        "i": 2,
+        "kind": "reveal",
+        "name": "s02",
+        "png": "002_s02_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "comes out to 5",
+        "cue": 3,
+        "i": 3,
+        "kind": "state",
+        "name": "s03",
+        "png": "003_s03_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "comes out to 5",
+        "cue": 3,
+        "i": 4,
+        "kind": "reveal",
+        "name": "s03",
+        "png": "004_s03_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "",
+        "cue": 5,
+        "i": 5,
+        "kind": "state",
+        "name": "s04",
+        "png": "005_s04.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "comes out to 2",
+        "cue": 6,
+        "i": 6,
+        "kind": "state",
+        "name": "s05",
+        "png": "006_s05_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "comes out to 2",
+        "cue": 6,
+        "i": 7,
+        "kind": "reveal",
+        "name": "s05",
+        "png": "007_s05_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "",
+        "cue": 9,
+        "i": 8,
+        "kind": "state",
+        "name": "s06",
+        "png": "008_s06.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 10,
+        "i": 9,
+        "kind": "state",
+        "name": "s07",
+        "png": "009_s07.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "tiny list",
+        "cue": 11,
+        "i": 10,
+        "kind": "state",
+        "name": "s08",
+        "png": "010_s08_s0.png",
+        "step": 0,
+        "steps": 3
+      },
+      {
+        "anchor": "tiny list",
+        "cue": 11,
+        "i": 11,
+        "kind": "reveal",
+        "name": "s08",
+        "png": "011_s08_s1.png",
+        "step": 1,
+        "steps": 3
+      },
+      {
+        "anchor": "tiny list",
+        "cue": 11,
+        "i": 12,
+        "kind": "reveal",
+        "name": "s08",
+        "png": "012_s08_s2.png",
+        "step": 2,
+        "steps": 3
+      },
+      {
+        "anchor": "",
+        "cue": 14,
+        "i": 13,
+        "kind": "state",
+        "name": "s09",
+        "png": "013_s09.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 16,
+        "i": 14,
+        "kind": "state",
+        "name": "s10",
+        "png": "014_s10.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 17,
+        "i": 15,
+        "kind": "state",
+        "name": "s11",
+        "png": "015_s11.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "probes forward",
+        "cue": 19,
+        "i": 16,
+        "kind": "state",
+        "name": "s12",
+        "png": "016_s12_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "probes forward",
+        "cue": 19,
+        "i": 17,
+        "kind": "reveal",
+        "name": "s12",
+        "png": "017_s12_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "",
+        "cue": 20,
+        "i": 18,
+        "kind": "state",
+        "name": "s13",
+        "png": "018_s13.png",
+        "step": 0,
+        "steps": 1
+      }
+    ],
+    "build\\scenes\\05\\audit.json": {
+      "stills": 13,
+      "warnings": []
+    },
+    "build\\scenes\\05\\manifest.json": [
+      {
+        "anchor": "",
+        "cue": 0,
+        "i": 0,
+        "kind": "state",
+        "name": "s00",
+        "png": "000_s00.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 1,
+        "i": 1,
+        "kind": "state",
+        "name": "s01",
+        "png": "001_s01.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 2,
+        "i": 2,
+        "kind": "state",
+        "name": "s02",
+        "png": "002_s02.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 3,
+        "i": 3,
+        "kind": "state",
+        "name": "s03",
+        "png": "003_s03.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "seventy percent",
+        "cue": 5,
+        "i": 4,
+        "kind": "state",
+        "name": "s05",
+        "png": "004_s05_s0.png",
+        "step": 0,
+        "steps": 3
+      },
+      {
+        "anchor": "seventy percent",
+        "cue": 5,
+        "i": 5,
+        "kind": "reveal",
+        "name": "s05",
+        "png": "005_s05_s1.png",
+        "step": 1,
+        "steps": 3
+      },
+      {
+        "anchor": "seventy percent",
+        "cue": 5,
+        "i": 6,
+        "kind": "reveal",
+        "name": "s05",
+        "png": "006_s05_s2.png",
+        "step": 2,
+        "steps": 3
+      },
+      {
+        "anchor": "",
+        "cue": 6,
+        "i": 7,
+        "kind": "state",
+        "name": "s06",
+        "png": "007_s06.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 7,
+        "i": 8,
+        "kind": "state",
+        "name": "s07",
+        "png": "008_s07.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "pile into one slot",
+        "cue": 8,
+        "i": 9,
+        "kind": "state",
+        "name": "s08",
+        "png": "009_s08_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "pile into one slot",
+        "cue": 8,
+        "i": 10,
+        "kind": "reveal",
+        "name": "s08",
+        "png": "010_s08_s1.png",
+        "step": 1,
+        "steps": 2
+      },
+      {
+        "anchor": "seed their hash function",
+        "cue": 9,
+        "i": 11,
+        "kind": "state",
+        "name": "s09",
+        "png": "011_s09_s0.png",
+        "step": 0,
+        "steps": 2
+      },
+      {
+        "anchor": "seed their hash function",
+        "cue": 9,
+        "i": 12,
+        "kind": "reveal",
+        "name": "s09",
+        "png": "012_s09_s1.png",
+        "step": 1,
+        "steps": 2
+      }
+    ],
+    "build\\scenes\\06\\audit.json": {
+      "stills": 8,
+      "warnings": []
+    },
+    "build\\scenes\\06\\manifest.json": [
+      {
+        "anchor": "",
+        "cue": 0,
+        "i": 0,
+        "kind": "state",
+        "name": "s00",
+        "png": "000_s00.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 1,
+        "i": 1,
+        "kind": "state",
+        "name": "s01",
+        "png": "001_s01.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 2,
+        "i": 2,
+        "kind": "state",
+        "name": "s02",
+        "png": "002_s02.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 3,
+        "i": 3,
+        "kind": "state",
+        "name": "s03",
+        "png": "003_s03.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 4,
+        "i": 4,
+        "kind": "state",
+        "name": "s04",
+        "png": "004_s04.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 5,
+        "i": 5,
+        "kind": "state",
+        "name": "s05",
+        "png": "005_s05.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 6,
+        "i": 6,
+        "kind": "state",
+        "name": "s06",
+        "png": "006_s06.png",
+        "step": 0,
+        "steps": 1
+      },
+      {
+        "anchor": "",
+        "cue": 7,
+        "i": 7,
+        "kind": "state",
+        "name": "s07",
+        "png": "007_s07.png",
+        "step": 0,
+        "steps": 1
+      }
+    ],
+    "out/captions.srt": "1\n00:00:00,000 --> 00:00:03,477\nType a word into a dictionary app and the\ndefinition is just there.\n\n2\n00:00:03,797 --> 00:00:05,696\nNot \"searching,\" not a spinner.\n\n3\n00:00:06,016 --> 00:00:06,849\nThere.\n\n4\n00:00:06,987 --> 00:00:10,077\nAnd that word could have been any of a few\nhundred thousand others.\n\n5\n00:00:10,144 --> 00:00:13,963\nSomewhere underneath, a program found the\none entry you wanted without looking at\n\n6\n00:00:14,030 --> 00:00:15,030\nthe ones you didn't.\n\n7\n00:00:15,264 --> 00:00:17,227\nNot by being fast at checking.\n\n8\n00:00:17,547 --> 00:00:19,147\nBy not checking at all.\n\n9\n00:00:19,467 --> 00:00:20,853\nThat's a hash table.\n\n10\n00:00:21,173 --> 00:00:24,873\nBy the end of this you'll know exactly how\na piece of text turns into a place to\n\n11\n00:00:24,940 --> 00:00:29,093\nlook, and why that trick can also go wrong\nin a way that's bitten real production\n\n12\n00:00:29,160 --> 00:00:29,993\nsystems.\n\n13\n00:00:34,101 --> 00:00:35,829\nSay what you'd try first.\n\n14\n00:00:36,149 --> 00:00:39,989\nKeep the entries in a list and check them\none at a time until one matches.\n\n15\n00:00:40,309 --> 00:00:41,226\nThat works.\n\n16\n00:00:41,546 --> 00:00:45,898\nIt's also the whole problem: to find one\nitem you may have to look at all of them.\n\n17\n00:00:46,218 --> 00:00:48,842\nTwice as many entries, twice as long a\nwait.\n\n18\n00:00:49,162 --> 00:00:53,831\nThat's linear time, and it does not scale\nto the millions of rows a real database or\n\n19\n00:00:53,898 --> 00:00:57,056\nthe tens of thousands of variables a real\ncompiler is tracking.\n\n20\n00:00:57,376 --> 00:01:01,121\nYou can do better by keeping the list\nsorted and halving the search space each\n\n21\n00:01:01,188 --> 00:01:03,588\nstep, the way you'd find a name in a phone\nbook.\n\n22\n00:01:03,690 --> 00:01:07,531\nThat's logarithmic time, a real\nimprovement a million entries drops to\n\n23\n00:01:07,598 --> 00:01:09,898\nabout twenty comparisons instead of a\nmillion.\n\n24\n00:01:10,197 --> 00:01:14,331\nBut twenty comparisons is still not zero,\nand it grows, just slowly, as the table\n\n25\n00:01:14,398 --> 00:01:15,231\ngrows.\n\n26\n00:01:15,402 --> 00:01:19,301\nAnd keeping the list sorted costs you\nevery time you insert something new shift\n\n27\n00:01:19,368 --> 00:01:21,482\neverything over to make room, or re-sort.\n\n28\n00:01:21,802 --> 00:01:24,597\nNone of that goes away, it just gets\ncheaper per step.\n\n29\n00:01:24,917 --> 00:01:28,202\nWhat you actually want is to skip the\ncomparisons entirely.\n\n30\n00:01:28,522 --> 00:01:29,952\nNot search faster.\n\n31\n00:01:30,272 --> 00:01:31,722\nNot search at all.\n\n32\n00:01:39,177 --> 00:01:41,225\nHere's the idea that gets you there.\n\n33\n00:01:41,545 --> 00:01:45,236\nInstead of asking \"where in this list is\nmy item,\" compute where it is.\n\n34\n00:01:45,556 --> 00:01:48,806\nTake the key the word, the username,\nwhatever you're looking up and run it\n\n35\n00:01:48,872 --> 00:01:51,164\nthrough a function that turns it into a\nnumber.\n\n36\n00:01:51,230 --> 00:01:54,260\nNot a meaningful number, not an ID anyone\nassigned it.\n\n37\n00:01:54,580 --> 00:01:59,286\nJust an arithmetic mess of the key's bits,\nchosen so that similar keys land on wildly\n\n38\n00:01:59,352 --> 00:02:00,297\ndifferent outputs.\n\n39\n00:02:00,617 --> 00:02:04,596\nThat's a hash function, and the number it\nproduces, reduced to fit your array size,\n\n40\n00:02:04,662 --> 00:02:05,495\nis an index.\n\n41\n00:02:05,737 --> 00:02:07,636\nStore the value at that index.\n\n42\n00:02:07,956 --> 00:02:11,186\nTo look it up again, don't search hash the\nkey a second time, get the same number\n\n43\n00:02:11,252 --> 00:02:12,734\nback, and go straight there.\n\n44\n00:02:13,054 --> 00:02:15,657\nOne computation, one array access, done.\n\n45\n00:02:15,977 --> 00:02:17,662\nThat's the whole mechanism.\n\n46\n00:02:17,982 --> 00:02:20,628\nAverage case, that's constant time: O(1).\n\n47\n00:02:20,948 --> 00:02:24,756\nThe size of the table barely matters,\nbecause you never touch the entries you're\n\n48\n00:02:24,822 --> 00:02:25,662\nnot looking for.\n\n49\n00:02:25,982 --> 00:02:30,916\nThe entire cost of a hash table lives in\none guarantee: the same key always hashes\n\n50\n00:02:30,982 --> 00:02:32,041\nto the same number.\n\n51\n00:02:32,361 --> 00:02:34,324\nBreak that, and nothing else works.\n\n52\n00:02:41,545 --> 00:02:44,595\nWalk through it with three words and an\narray of eight slots.\n\n53\n00:02:44,894 --> 00:02:47,284\nHash \"cat,\" and say it comes out to 2.\n\n54\n00:02:47,604 --> 00:02:49,481\nSlot 2 now holds cat.\n\n55\n00:02:49,801 --> 00:02:52,020\nHash \"dog,\" it comes out to 5.\n\n56\n00:02:52,340 --> 00:02:54,153\nSlot 5 holds dog.\n\n57\n00:02:54,473 --> 00:02:56,820\nTwo lookups, two slots, no scanning.\n\n58\n00:02:57,140 --> 00:02:58,462\nNow hash \"owl.\n\n59\n00:02:58,782 --> 00:03:02,089\nSame function, same rules and it also\ncomes out to 2.\n\n60\n00:03:02,409 --> 00:03:04,329\nTwo different keys, one slot.\n\n61\n00:03:04,649 --> 00:03:08,017\nThat's a collision, and with only eight\nslots and an unbounded number of possible\n\n62\n00:03:08,084 --> 00:03:10,836\nwords, it is not a bug, it is a certainty.\n\n63\n00:03:11,156 --> 00:03:14,057\nThis is where the \"average case\" in O(1)\nis hiding.\n\n64\n00:03:14,377 --> 00:03:18,437\nThe fix used here is chaining: slot 2\ndoesn't hold one value, it holds a tiny\n\n65\n00:03:18,504 --> 00:03:19,302\nlist.\n\n66\n00:03:19,369 --> 00:03:20,841\nCat is still first.\n\n67\n00:03:21,161 --> 00:03:24,126\nOwl gets appended right after it in that\nsame slot.\n\n68\n00:03:24,446 --> 00:03:28,487\nLooking up owl now costs two comparisons\ninstead of one still nowhere near scanning\n\n69\n00:03:28,554 --> 00:03:30,740\nthe whole table, but not free either.\n\n70\n00:03:31,060 --> 00:03:33,662\nThat's the trade the whole structure is\nbuilt on.\n\n71\n00:03:33,982 --> 00:03:37,837\nA good hash function spreads keys thinly\nenough that most slots hold zero or one\n\n72\n00:03:37,904 --> 00:03:40,510\nentries and collisions stay rare and\nshort.\n\n73\n00:03:40,830 --> 00:03:44,777\nA bad one piles everything into a handful\nof slots and you've quietly rebuilt the\n\n74\n00:03:44,844 --> 00:03:48,169\nlinear scan you were trying to escape, one\nchain at a time.\n\n75\n00:03:48,489 --> 00:03:50,708\nChaining isn't the only fix, either.\n\n76\n00:03:51,028 --> 00:03:54,617\nOpen addressing skips the linked list and,\non a collision, just probes forward to the\n\n77\n00:03:54,684 --> 00:03:59,637\nnext empty slot in the array itself slot\n3, then 4, then 5 and remembers to keep\n\n78\n00:03:59,704 --> 00:04:01,097\nprobing on lookup too.\n\n79\n00:04:01,417 --> 00:04:05,747\nNo extra memory for pointers, but the\ntable fills up faster and probing gets\n\n80\n00:04:05,814 --> 00:04:06,900\nlonger as it does.\n\n81\n00:04:07,220 --> 00:04:09,801\nDifferent trade, same underlying problem.\n\n82\n00:04:19,432 --> 00:04:22,975\nThis isn't a theory exercise it's the data\nstructure under Python's dict,\n\n83\n00:04:23,042 --> 00:04:26,792\nJavaScript's object and Map, and every\nlanguage's HashMap.\n\n84\n00:04:27,112 --> 00:04:31,118\nEvery one of them is quietly running this\nsame array-plus-hash-function design under\n\n85\n00:04:31,185 --> 00:04:32,552\na much friendlier name.\n\n86\n00:04:32,872 --> 00:04:35,069\nTwo things keep it fast in practice.\n\n87\n00:04:35,389 --> 00:04:38,675\nFirst, load factor: the fraction of slots\nthat are occupied.\n\n88\n00:04:38,995 --> 00:04:42,648\nPush that too high and collisions stop\nbeing rare chains get long and you're back\n\n89\n00:04:42,715 --> 00:04:43,548\nto scanning.\n\n90\n00:04:43,688 --> 00:04:47,208\nSo implementations track it, and once it\ncrosses a threshold, usually around\n\n91\n00:04:47,275 --> 00:04:51,838\nseventy percent, they allocate a bigger\narray, often double the size, and re-hash\n\n92\n00:04:51,905 --> 00:04:53,800\nevery existing key into a new slot.\n\n93\n00:04:54,120 --> 00:04:57,968\nExpensive when it happens, but it happens\nrarely enough that the average cost per\n\n94\n00:04:58,035 --> 00:04:59,389\ninsert stays constant.\n\n95\n00:04:59,709 --> 00:05:03,928\nSecond, and this one is easy to miss: the\nhash function itself has to be hard to\n\n96\n00:05:03,995 --> 00:05:04,845\nreverse-engineer.\n\n97\n00:05:05,128 --> 00:05:08,148\nIf an attacker can predict which keys\ncollide, they can hand your server\n\n98\n00:05:08,215 --> 00:05:12,193\nthousands of keys that all pile into one\nslot on purpose, turning every one of your\n\n99\n00:05:12,260 --> 00:05:15,091\nO(1) lookups into an O(n) scan at once.\n\n100\n00:05:15,411 --> 00:05:19,558\nThat's not hypothetical it's a real\ndenial-of-service class, and it's why\n\n101\n00:05:19,625 --> 00:05:23,538\nproduction hash tables seed their hash\nfunction with randomness that changes\n\n102\n00:05:23,605 --> 00:05:25,373\nevery time the program starts.\n\n103\n00:05:33,639 --> 00:05:35,090\nThree things to keep.\n\n104\n00:05:35,410 --> 00:05:40,214\nA hash function turns a key into an index,\nso lookup becomes one computation instead\n\n105\n00:05:40,280 --> 00:05:41,113\nof a search.\n\n106\n00:05:41,340 --> 00:05:45,214\nCollisions aren't an edge case, they're\nguaranteed once your key space is bigger\n\n107\n00:05:45,280 --> 00:05:49,534\nthan your table, so every real hash table\nhas a plan for them chaining is one, there\n\n108\n00:05:49,600 --> 00:05:50,433\nare others.\n\n109\n00:05:50,663 --> 00:05:54,804\nAnd load factor is the number that decides\nwhen the table has to grow, trading an\n\n110\n00:05:54,870 --> 00:05:57,490\nexpensive rehash now for cheap lookups\nafter.\n\n111\n00:05:57,810 --> 00:06:01,644\nThat word \"hash function\" is doing more\nwork than we gave it credit for here I\n\n112\n00:06:01,710 --> 00:06:04,764\ntreated it like a black box that just\nspreads keys around.\n\n113\n00:06:05,084 --> 00:06:09,154\nMake that box impossible to run backwards,\nand you don't just get a fast lookup\n\n114\n00:06:09,220 --> 00:06:09,968\ntable.\n\n115\n00:06:10,034 --> 00:06:14,172\nYou get the one-way function underneath\npassword storage and digital signatures.\n\n116\n00:06:14,492 --> 00:06:15,474\nThat's next.\n",
+    "out/qc.json": {
+      "gates": [
+        {
+          "detail": "71 stills clean (0 warnings)",
+          "gate": "layout",
+          "status": "pass"
+        },
+        {
+          "detail": "exact+asr (min confidence 0.87)",
+          "gate": "alignment",
+          "status": "pass"
+        },
+        {
+          "detail": "2 under 0.833s; 2 over 20 cps",
+          "gate": "captions",
+          "status": "warn"
+        },
+        {
+          "detail": "mean shot 5.4s, p95 14.03s, 71 shots",
+          "gate": "pacing",
+          "status": "pass"
+        },
+        {
+          "detail": "one encoder profile across all clips",
+          "gate": "concat safety",
+          "status": "pass"
+        },
+        {
+          "detail": "video 380.333s, audio 380.348s, delta 15 ms",
+          "gate": "a/v length",
+          "status": "pass"
+        },
+        {
+          "detail": "all 6 sections exact",
+          "gate": "per-section sync",
+          "status": "pass"
+        },
+        {
+          "detail": "-14.1 LUFS, true peak -1.5 dBTP (target -14)",
+          "gate": "loudness",
+          "status": "pass"
+        },
+        {
+          "detail": "0 clipped samples, peak -1.7 dB, noise floor -inf dB",
+          "gate": "clipping",
+          "status": "pass"
+        },
+        {
+          "detail": "none over 1.5s",
+          "gate": "dead air",
+          "status": "pass"
+        },
+        {
+          "detail": "1 (opening fade)",
+          "gate": "black frames",
+          "status": "pass"
+        },
+        {
+          "detail": "3 still(s) held over 14s (longest 18s)",
+          "gate": "frozen picture",
+          "status": "warn"
+        },
+        {
+          "detail": "p95 6731 ms, max 8595 ms over 77 sentences",
+          "gate": "caption drift",
+          "status": "fail"
+        }
+      ]
+    }
+  },
+  "png_hashes": {
+    "build\\scenes\\01\\000_s01.png": "64780e93813bf43f666eb247358056ed02b64830e337b620131d8ba6e016d8e4",
+    "build\\scenes\\01\\001_s02.png": "e542acfc36a04588a70750a894057acc21311c6f660a650d5ff15a8c47d8b5fa",
+    "build\\scenes\\01\\002_s03.png": "f8a7798507b7945d3197baf6bfad23a4fb3863d3b14e981869787b1b91661b3e",
+    "build\\scenes\\01\\003_s04_s0.png": "f9574fdfe80881d2bda50b96deea50cc504b43f2ab5ef1ceabe13c7d6f3fb774",
+    "build\\scenes\\01\\004_s04_s1.png": "ff81724dbb283a8f7c2888d689465c5c64d1d87f2438c4e43b69fd09c62201de",
+    "build\\scenes\\01\\005_s05_s0.png": "b357e731638bf6c4b89138f8f28784ef53921f13c0858fed40575df1cf7f83ea",
+    "build\\scenes\\01\\006_s05_s1.png": "20d18c86875b645ffbfbe72811c087e4fcbb674757d9e62ffb91fe2df09dddb9",
+    "build\\scenes\\01\\007_s06.png": "eca3972081e4e5efb75ee7e5a5c89bd64a915159630ec503cefe7d6c07c73cc3",
+    "build\\scenes\\02\\000_s01.png": "d61667ec748b39faa4136dd586aaa78dcd3576718cccf433103e283e995af764",
+    "build\\scenes\\02\\001_s02_s0.png": "ae311b46e119191b922dffc037d1564426e9619461ca176fcae3b74610c33834",
+    "build\\scenes\\02\\002_s02_s1.png": "9745fce09cc066952b363925433bb807ef61939225c4a40f93ef9f504d3239bc",
+    "build\\scenes\\02\\003_s02_s2.png": "d300fbc35e810c138b812b4c44337ff0e73666835e51e982be0e0a8adcca42cd",
+    "build\\scenes\\02\\004_s02_s3.png": "0d6713c3e140524cf1c95947b88d6b2b106497e3ed94e0feee1e94e2e26e6fb6",
+    "build\\scenes\\02\\005_s03.png": "a14bf783d8baf655661fc5da17745b9e9673193cae8e4a0786d9ebe684e673d8",
+    "build\\scenes\\02\\006_s04_s0.png": "c63e8e41f2601cee92a91433b541e56d7d87f299f04a621fe2e83604eb73ba01",
+    "build\\scenes\\02\\007_s04_s1.png": "b75d290131ad7013a821faa4eb06e1dedc519945e21a201a2e0e992e81acd4de",
+    "build\\scenes\\02\\008_s04_s2.png": "0e2a0aadcc6e37bda8128453d201d38a6357a2f85529f5ef5370660c4c512d03",
+    "build\\scenes\\02\\009_s05.png": "4e20d517987dbb47e9bd9828dfe704759a57da9165b07eb0a98e6e2483be8828",
+    "build\\scenes\\02\\010_s06.png": "f6f39e49a7a8b87d5bbb7996022b4327ffcaf1c80c2d9524a0870b9ab55a6ac7",
+    "build\\scenes\\02\\011_s07.png": "73c466288bdd2c2c9cbe385f2d49356c1e7b5817da5b30a9cbd7f5d43f4496e5",
+    "build\\scenes\\03\\000_s01.png": "f83917d1ade9673651ca2d7b94a34e71a7e40213acb3d26b46473557847f2cab",
+    "build\\scenes\\03\\001_s02_s0.png": "74b8682a83b438f86c663b10ca6528a975fa17245865c3d7f90e0d32e4e96f34",
+    "build\\scenes\\03\\002_s02_s1.png": "62063c63840af4c1c549bec93ce6fd3274083cf71321d7f51dea7c7d949bfc01",
+    "build\\scenes\\03\\003_s03.png": "9298e88935b351f5d1be06d5553edacd17a1133f13e41a49857f1ca6d80fe324",
+    "build\\scenes\\03\\004_s04_s0.png": "6b5f5cb09e3331f040094cde9c86c46506ab855b018415ff0e88b673d31bf119",
+    "build\\scenes\\03\\005_s04_s1.png": "89494c170469b79c6f6184d9f4f45cc14d2aa92ee1f9d588f444caac06cb1c33",
+    "build\\scenes\\03\\006_s05_s0.png": "e1f547a95e6c2610072a23c491fa8ab802e34e9a435bd6c6d3b76ea0ca70850c",
+    "build\\scenes\\03\\007_s05_s1.png": "266f3459bed0358967609bf4734870a30994df6b035ef6a3b60b97013e1e9ac7",
+    "build\\scenes\\03\\008_s06.png": "b91381c0a25bf2bd8debe40b5f4e36ed15ba2567b9b4998e02a99f821d580962",
+    "build\\scenes\\03\\009_s07_s0.png": "39e3be8c66ed8cd53bd38219eb6a10876a2848537811f25c43c7eaf5b8583f64",
+    "build\\scenes\\03\\010_s07_s1.png": "4bc92844d5e12bacfe395fe9dbd8318c7f0a5b02d97e0f66424d46b387044f16",
+    "build\\scenes\\04\\000_s01.png": "a78a08652d67da6d7dd21c507fe4a2bef5aa31e84b9e7e0ec536b4c256c185d5",
+    "build\\scenes\\04\\001_s02_s0.png": "cc1504e197673936a4b69b865f13c2de7727b20fa968d9d9255d99f48a2783b9",
+    "build\\scenes\\04\\002_s02_s1.png": "2b40467970c60408cd9a1cbede38b431aca2d7d17a607b3fb855762b351224b5",
+    "build\\scenes\\04\\003_s03_s0.png": "4c2e05076b8c0121bdfe70d56cb485024f4e53b8d649f50ff54edcb1cfb70f72",
+    "build\\scenes\\04\\004_s03_s1.png": "77ec23adbcbe5ccdd7e002f54aaaf95439a450860ed4ffc425887e744e899606",
+    "build\\scenes\\04\\005_s04.png": "993352ffe00eaabec45ba4427936cc15e7c5b6761813deec89bb572003378a26",
+    "build\\scenes\\04\\006_s05_s0.png": "0c991e9f7eb18e8562bc9039589f8a9662143e8b2b680c08c2efa26f2df37e71",
+    "build\\scenes\\04\\007_s05_s1.png": "af5cccec622cc4265c4d7937448e59e3011544f7e30f640730b2cd0b044440d6",
+    "build\\scenes\\04\\008_s06.png": "d864d1ee9a8416135ae50346b60e80e1618513a5f48b7bdf03d329ddcb24f763",
+    "build\\scenes\\04\\009_s07.png": "57bb09d1e7aaf9259cc16d1bca6fa399d553196843a35ead90ceb23c2b067d13",
+    "build\\scenes\\04\\010_s08_s0.png": "467cbd89a3a0bbe5d809f6cacda062469e15c1d78e965551b44061ced38da23d",
+    "build\\scenes\\04\\011_s08_s1.png": "693c825194a8f27c6aeb16c8200fa9d316d51fe163fac09cac27ac8ad58bf9a8",
+    "build\\scenes\\04\\012_s08_s2.png": "eb27151b64c88c030f1c662e11a64159bbfe23dbdd738a7589f69c635cdd785f",
+    "build\\scenes\\04\\013_s09.png": "a0276995d45d5bff3b13e19d12c194e77ace7bedc1640142d9faeba6a891d524",
+    "build\\scenes\\04\\014_s10.png": "3e01555bc2b82370d02852ca447a1f60d7fc94fba9eb60c7835d13500045587c",
+    "build\\scenes\\04\\015_s11.png": "59ba1691bc4c315bd2f66817be56639c9e92c9b0595d24261111fbd1d6e3825c",
+    "build\\scenes\\04\\016_s12_s0.png": "0fa3a6365238f4e4d1e6581dce311c82da409c187c1fdddce1c3530ad138c989",
+    "build\\scenes\\04\\017_s12_s1.png": "62c48f0077380d0de28fe09588e1e69ccd0bf85ebe8b1d1b31be8155067a8c16",
+    "build\\scenes\\04\\018_s13.png": "6a342438a1cb39842428832c1854672c73ecea5d407137135c84ef9be5a246c8",
+    "build\\scenes\\05\\000_s00.png": "14578071569d6b0eb3824130265dacae05accfc97f84c20c31d246f3358507c2",
+    "build\\scenes\\05\\001_s01.png": "94dfd43e076f246b46f90be93fa5c49a19b2f647fc2d3dd5daab759299a1842a",
+    "build\\scenes\\05\\002_s02.png": "647f8c21304ac7789860915f821f446f5faacb084c864d9e9a144def53513055",
+    "build\\scenes\\05\\003_s03.png": "b59ad2c4985646ad78accfd1020ebce1c7087891d9c74bf51630a876eeb5f1c4",
+    "build\\scenes\\05\\004_s05_s0.png": "f9b5bfc9994f67b99cd00911c427cbda8c1c568145b217eb8f997866de8161fa",
+    "build\\scenes\\05\\005_s05_s1.png": "0b6ea104fae1bdb2ab3b80f6e0b8b45c050dc3f8521435396c0e0b7feb485619",
+    "build\\scenes\\05\\006_s05_s2.png": "f420287eb7cd1d93870a39d310d3745ea7ee5ba3fc5c6f9aaa86f2e7a278d696",
+    "build\\scenes\\05\\007_s06.png": "b686b32bf7a8164ea97c4c1ce4a72841951bb06769206ebe4a7fc081285fbf3a",
+    "build\\scenes\\05\\008_s07.png": "e918833d7ee5643ffa99174033c9eeaf81b900e95f6f6f5f79b840f1ed836327",
+    "build\\scenes\\05\\009_s08_s0.png": "70a7db1425de633d671ad8d0ecc09e042c41de2b97465095194c4ed2c0dd429f",
+    "build\\scenes\\05\\010_s08_s1.png": "37207c3012763b167b6d6ddca417f5aa1662ffef372f79af431febbbaa84c160",
+    "build\\scenes\\05\\011_s09_s0.png": "6f4df19dd2ecb3fcffe4253ab919d4ef169c67bd8fd67bc4f5119dc33f22f7df",
+    "build\\scenes\\05\\012_s09_s1.png": "74524276bfb594487267f90c03cb276b52f1b48690c4f46a31a0b92c15e84d1a",
+    "build\\scenes\\06\\000_s00.png": "9fa3ed32a1e24ff91cb7f43ced3a462106d1fd8119977365c9a498d1f9897cc8",
+    "build\\scenes\\06\\001_s01.png": "d61259c38d89176c210e2ed3bcc443ebee64cd7a75ad4a718679034a8d525dc8",
+    "build\\scenes\\06\\002_s02.png": "759943207b53975c468abafd5e171e0d7437b56604d09b5ee16a4270a5032cfa",
+    "build\\scenes\\06\\003_s03.png": "c92cd31c351c89ec5abd9dc1bd86db2a6480779d2cf10e2785e60fef5593d65c",
+    "build\\scenes\\06\\004_s04.png": "e81611b145394ffd22797dbedd3f3ae4e4fc98dc3c41fd086db9145a51aefbd5",
+    "build\\scenes\\06\\005_s05.png": "c78c12a098a06a98971e3b64e2fb2c09e7cf96b51c311fadb358c26e9964cab7",
+    "build\\scenes\\06\\006_s06.png": "4e417b85be0a05f6f9614ff7ed75648aa591d6ff50b52a997b44e5cb30959c81",
+    "build\\scenes\\06\\007_s07.png": "2fd904b0943a3af727fee67768d6a145e33441ddc27a723967433943764490b0"
+  },
+  "video_stats": {
+    "build\\clips\\01_000.mp4": {
+      "duration": 3.667,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "110",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\01_001.mp4": {
+      "duration": 3.2,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "96",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\01_002.mp4": {
+      "duration": 6.467,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "194",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\01_003.mp4": {
+      "duration": 1.967,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "59",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\01_004.mp4": {
+      "duration": 2.167,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "65",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\01_005.mp4": {
+      "duration": 1.5,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "45",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\01_006.mp4": {
+      "duration": 1.1,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "33",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\01_007.mp4": {
+      "duration": 14.033,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "421",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_000.mp4": {
+      "duration": 3.367,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "101",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_001.mp4": {
+      "duration": 1.667,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "50",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_002.mp4": {
+      "duration": 2.633,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "79",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_003.mp4": {
+      "duration": 2.067,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "62",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_004.mp4": {
+      "duration": 2.267,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "68",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_005.mp4": {
+      "duration": 13.567,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "407",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_006.mp4": {
+      "duration": 1.5,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "45",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_007.mp4": {
+      "duration": 1.1,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "33",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_008.mp4": {
+      "duration": 1.3,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "39",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_009.mp4": {
+      "duration": 11.7,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "351",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_010.mp4": {
+      "duration": 9.533,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "286",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\02_011.mp4": {
+      "duration": 14.367,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "431",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_000.mp4": {
+      "duration": 11.933,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "358",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_001.mp4": {
+      "duration": 1.733,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "52",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_002.mp4": {
+      "duration": 1.6,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "48",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_003.mp4": {
+      "duration": 6.067,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "182",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_004.mp4": {
+      "duration": 6.167,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "185",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_005.mp4": {
+      "duration": 6.267,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "188",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_006.mp4": {
+      "duration": 2.066,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "62",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_007.mp4": {
+      "duration": 2.867,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "86",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_008.mp4": {
+      "duration": 14.367,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "431",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_009.mp4": {
+      "duration": 1.5,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "45",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\03_010.mp4": {
+      "duration": 7.8,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "234",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_000.mp4": {
+      "duration": 3.867,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "116",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_001.mp4": {
+      "duration": 2.267,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "68",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_002.mp4": {
+      "duration": 2.333,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "70",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_003.mp4": {
+      "duration": 2.333,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "70",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_004.mp4": {
+      "duration": 2.0,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "60",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_005.mp4": {
+      "duration": 6.6,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "198",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_006.mp4": {
+      "duration": 1.933,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "58",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_007.mp4": {
+      "duration": 1.667,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "50",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_008.mp4": {
+      "duration": 6.5,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "195",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_009.mp4": {
+      "duration": 7.3,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "219",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_010.mp4": {
+      "duration": 1.833,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "55",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_011.mp4": {
+      "duration": 1.967,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "59",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_012.mp4": {
+      "duration": 2.167,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "65",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_013.mp4": {
+      "duration": 9.567,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "287",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_014.mp4": {
+      "duration": 6.833,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "205",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_015.mp4": {
+      "duration": 12.867,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "386",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_016.mp4": {
+      "duration": 3.767,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "113",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_017.mp4": {
+      "duration": 3.967,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "119",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\04_018.mp4": {
+      "duration": 18.133,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "544",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_000.mp4": {
+      "duration": 7.567,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "227",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_001.mp4": {
+      "duration": 5.767,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "173",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_002.mp4": {
+      "duration": 2.5,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "75",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_003.mp4": {
+      "duration": 11.9,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "357",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_004.mp4": {
+      "duration": 2.2,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "66",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_005.mp4": {
+      "duration": 2.533,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "76",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_006.mp4": {
+      "duration": 2.1,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "63",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_007.mp4": {
+      "duration": 5.6,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "168",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_008.mp4": {
+      "duration": 9.667,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "290",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_009.mp4": {
+      "duration": 5.4,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "162",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_010.mp4": {
+      "duration": 6.067,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "182",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_011.mp4": {
+      "duration": 3.967,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "119",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\05_012.mp4": {
+      "duration": 8.933,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "268",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_000.mp4": {
+      "duration": 1.667,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "50",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_001.mp4": {
+      "duration": 5.9,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "177",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_002.mp4": {
+      "duration": 9.333,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "280",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_003.mp4": {
+      "duration": 7.167,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "215",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_004.mp4": {
+      "duration": 7.267,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "218",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_005.mp4": {
+      "duration": 4.933,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "148",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_006.mp4": {
+      "duration": 4.467,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "134",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "build\\clips\\06_007.mp4": {
+      "duration": 5.967,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "179",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        }
+      ]
+    },
+    "out/final.mp4": {
+      "duration": 380.348,
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "height": 1080,
+          "nb_frames": "11410",
+          "pix_fmt": "yuv420p",
+          "r_frame_rate": "30/1",
+          "width": 1920
+        },
+        {
+          "channels": 1,
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "sample_rate": "48000"
+        },
+        {
+          "codec_name": "mov_text",
+          "codec_type": "subtitle"
+        },
+        {
+          "codec_name": "bin_data",
+          "codec_type": "data"
+        }
+      ]
+    }
+  }
+}

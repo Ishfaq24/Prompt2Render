@@ -15,6 +15,8 @@ retry loop already knew how to handle.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import re
@@ -82,7 +84,10 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
   k.curves(ax, y=4.6, w=9.0, h=4.2, show=("linear","log"))
         -> linear vs logarithmic on shared axes. Needs the whole w x h box.
   k.hanoi(ax, [[3,2,1], [], []], x=8.0, y=5.0, w=9.0, h=4.0)
-        -> Tower of Hanoi puzzle state. First list is left peg, last is right peg.
+        -> Tower of Hanoi puzzle state with EXACTLY THREE pegs. The lists are
+           bottom-to-top: a legal peg is descending, e.g. [3,2,1]. A larger
+           disk on a smaller disk is only allowed in an explicitly labelled
+           illegal/invalid demonstration.
   k.tree(ax, (10, (5, 2, 7), (15, None, 20)), x=8.0, y=7.0, dx=3.0, dy=1.5, active_node=5)
         -> Binary tree. Nodes are values or (val, left, right) tuples.
   k.grid(ax, [[1,2],[3,4]], x=8.0, y=5.0, cell_w=1.2, cell_h=1.2, highlight=[(0,1)])
@@ -104,7 +109,13 @@ DYNAMIC COMPOSITION FOR COMPLEX TOPICS:
   * Example: To draw a custom stack of items, use a `for` loop to calculate the `y` coordinate and draw a `k.block` for each item.
   * Example: To draw a graph, calculate `(x, y)` for each node, draw `k.circle` for nodes, and `k.arrow` between them.
   * You are writing a Python script; use the full power of Python to dynamically adapt to the topic's requirements.
-  * IMPORTANT: The user prefers JIOHotsatr coloring. When using custom colors, prefer vibrant blues ("#0000ff"), reds ("#ff0000"), and greens ("#00ff00").
+  * IMPORTANT COLOR POLICY: Do not hard-code arbitrary RGB/hex colors in generated
+    scene code. Prefer the semantic scenekit palette (`k.FG`, `k.DIM`, `k.ONE`,
+    `k.GOOD`, `k.BAD`, `k.WARN`, `k.ACCENT`). Use `k.ONE` and `k.ACCENT` for
+    neutral distinctions, and reserve `k.GOOD`, `k.BAD`, and `k.WARN` for
+    correct/wrong/caution states as specified below. If a custom color is truly
+    necessary and no palette color is appropriate, keep it minimal and explain
+    the semantic reason in the scene code.
 
 LAYOUT RULES (these matter more than cleverness):
   * EVERY k. CALL OWNS AN EXCLUSIVE REGION OF THE FRAME. Two of them may
@@ -120,13 +131,20 @@ LAYOUT RULES (these matter more than cleverness):
     cy=4.3 already reaches the title -- drop cy, or drop the outer labels.
   * k.code, k.table and k.curves are opaque panels: nothing else may be
     drawn inside their footprint, and k.curves fills its whole w x h box.
-  * Never place two elements in the same horizontal band. If a state feels
-    crowded, split it into two states instead. Two states always beat one
-    crowded one.
-  * A caption at y=0.85 is always safe.
-  * Nothing may cross the frame edge. Keep every element within x=0.4..15.6
-    and y=0.4..8.6. This too is measured on the drawn geometry, so an element
-    that is *nearly* inside still fails.
+      * LAYOUT ZONES: You MUST use these strict horizontal zones to keep scenes consistent:
+          - y=7.6..8.6: Title Zone (already enforced)
+          - y=4.0..7.0: Primary Visualization Zone (Arrays, Trees, Code, Main Data)
+          - y=1.5..3.5: Secondary Visualization Zone (Pointers, Variables, Comparisons)
+          - y=0.85: Caption Zone (always safe)
+      * Never place two elements in the same horizontal band unless they are small and widely separated on the x-axis. If a state feels crowded, split it into two states.
+      * When a frame contains more than one major visual, assign one explicit
+        zone to each and leave a visible gap. Do not solve an overlap by merely
+        changing colors, font sizes, or z-order; move, resize, or split the
+        visual.
+      * GHOST STATES: To show movement or transitions, you can draw the previous state of an element with `alpha=0.3` and the new state with `alpha=1.0`, connected by an arrow.
+      * Nothing may cross the frame edge. Keep every element within x=0.4..15.6
+        and y=0.4..8.6. This too is measured on the drawn geometry, so an element
+        that is *nearly* inside still fails.
 
 COLOR RULES (measured, not eyeballed — k.GOOD vs k.BAD is a near-collision for
 red-green colorblind viewers, about 8% of men, so color alone never carries
@@ -171,7 +189,7 @@ only once the step has reached it:
 
 
 def build_prompt(script: Script, sec, sents: list[dict],
-                 include_reveal: bool = True) -> str:
+                 include_reveal: bool = True, previous_context: str = "") -> str:
     # Give the model the clock, not just the words. Without timings it cannot
     # tell that two adjacent cues are 30 seconds apart, and it leaves frames
     # sitting on screen long past the point they stop being interesting.
@@ -187,6 +205,8 @@ def build_prompt(script: Script, sec, sents: list[dict],
 
     ANIMATION BRIEF (what the visuals must show):
     {sec.anim}
+    
+    {previous_context}
 
     The narration is already recorded and measured. It runs {total:.0f} seconds.
     These are its sentences, with the time each is spoken and the index you must
@@ -218,13 +238,25 @@ def build_prompt(script: Script, sec, sents: list[dict],
       * Every frame carries a k.title(...) under 52 characters.
       * Use real, correct numbers, consistent frame to frame. A wrong value is
         worse than a plain frame.
-      * INTENTIONAL RULE DEMONSTRATION: If the narration explicitly talks about an illegal move (e.g., placing a large disk on a small disk in Tower of Hanoi), you MUST actually draw the physically illegal state to show what NOT to do. For Hanoi, this means passing a list like `[1, 2]` to `k.hanoi` so disk 2 is visibly on top of disk 1. You MUST also clearly mark it as illegal (e.g., use `k.title(ax, "ILLEGAL MOVE", color=k.BAD)` or `k.badge(ax, x, y, "X", color=k.BAD)`). Do NOT just draw a legal state and label it illegal.
+      * COLOR DISCIPLINE: use only the documented semantic palette (`k.FG`,
+        `k.DIM`, `k.ONE`, `k.GOOD`, `k.BAD`, `k.WARN`, `k.ACCENT`) unless a
+        documented primitive requires another value. Never hard-code arbitrary
+        hex/RGB colors merely for visual preference; color must communicate
+        semantic state, not decoration.
+      * INTENTIONAL RULE DEMONSTRATION: If the narration explicitly explains an illegal move or anti-pattern for the topic, you MUST actually draw the physically illegal state to show what NOT to do. You MUST also clearly mark it as illegal (e.g., use `k.title(ax, "ILLEGAL MOVE", color=k.BAD)` or `k.badge(ax, x, y, "X", color=k.BAD)`). Do NOT just draw a legal state and label it illegal.
+      * CONTINUITY: If this is not the first section, you MUST maintain the same coordinates (`x`, `y`) for persistent data structures (like the main array or tree) that were used in the previous section. Do not let the main visualization jump up and down between scenes.
       * LAYOUT IS THE THING THAT USUALLY FAILS. Two elements in the same
         horizontal band will overlap and ruin the frame.
       * k.curves fills its whole w x h box. Never draw a k.table, k.array or
         k.code inside that box.
       * Pass `bracket` a plain string, never a tuple.
       * No imports, no file IO, no prints. `k` is already available.
+      * PRE-FLIGHT CONTRACT: use only the documented k.* signatures and valid
+        literal data. k.hanoi accepts exactly three peg lists; never pass four
+        pegs or another variant. k.grid must be rectangular, k.table rows must
+        have equal widths, and array/pointer indices must stay inside the data.
+        If a topic needs a different structure, compose it from the generic
+        primitives instead of inventing an undocumented k.* call.
 
     Output ONLY the Python code, no prose, no markdown fences.
     """).strip()
@@ -236,7 +268,273 @@ def strip_fences(code: str) -> str:
     return m.group(1) if m else code
 
 
-def generate(proj: Path, script: Script, index: int, retries: int = 3,
+_LITERAL_MISSING = object()
+_ALLOWED_PRIMITIVES = {
+    "title", "caption", "label", "bits", "bit_brace", "arrow", "strike",
+    "badge", "compare", "addition", "number_line", "dial", "register",
+    "array", "predicate_strip", "code", "table", "rectangle", "curves",
+    "hanoi", "tree", "grid", "block", "bus", "circle",
+}
+
+
+def _literal(node):
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError, MemoryError, RecursionError):
+        return _LITERAL_MISSING
+
+
+def _argument(node: ast.Call, position: int, name: str):
+    """Get a positional or keyword argument without executing model code."""
+    if len(node.args) > position:
+        return node.args[position]
+    for kw in node.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
+def _source_value(node):
+    value = _literal(node)
+    if value is not _LITERAL_MISSING:
+        return value
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return "<dynamic>"
+
+
+def trace_scene_source(code: str) -> dict:
+    """Return a JSON-serializable trace of documented ``k.*`` calls.
+
+    The trace is static by design: generated code is untrusted model output and
+    must not be executed merely to inspect it. Literal arguments are preserved as
+    values; dynamic expressions are represented by their source text.
+    """
+    tree = ast.parse(code)
+    calls = []
+    primitive_counts: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "k"):
+            continue
+        primitive = node.func.attr
+        primitive_counts[primitive] = primitive_counts.get(primitive, 0) + 1
+        fn = _containing_function(tree, node)
+        calls.append({
+            "line": node.lineno,
+            "state": fn.name if fn is not None else "<module>",
+            "primitive": primitive,
+            "args": [_source_value(arg) for arg in node.args],
+            "keywords": {kw.arg: _source_value(kw.value) for kw in node.keywords if kw.arg},
+        })
+    calls.sort(key=lambda item: item["line"])
+    states = [node.name for node in tree.body
+              if isinstance(node, ast.FunctionDef) and node.name == "states"]
+    return {"states_functions": states, "primitive_counts": primitive_counts, "calls": calls}
+
+
+def _containing_function(tree: ast.AST, target: ast.AST) -> ast.FunctionDef | None:
+    """Return the generated state function containing target, if any."""
+    for fn in (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        if any(child is target for child in ast.walk(fn)):
+            return fn
+    return None
+
+
+def _has_intent_marker(fn: ast.FunctionDef | None) -> bool:
+    if fn is None:
+        return False
+    markers = ("illegal", "invalid", "not allowed", "not valid", "wrong", "anti-pattern", "bad move")
+    text = " ".join(str(n.value).lower() for n in ast.walk(fn)
+                     if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    return any(marker in text for marker in markers)
+
+
+def validate_manim_source(code: str) -> list[str]:
+    """Validate generated Manim code before rendering.
+    
+    Catches known Manim 0.19 incompatibilities, invalid imports, and structural
+    mistakes without running the code.
+    """
+    errors: list[str] = []
+    import ast
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return [f"syntax error at line {exc.lineno}: {exc.msg}"]
+
+    has_scene_class = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            has_scene_class = True
+            
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            # Only allow from manim import * or import math/numpy
+            if isinstance(node, ast.ImportFrom) and node.module == "manim":
+                continue
+            if isinstance(node, ast.Import) and any(alias.name in {"math", "numpy"} for alias in node.names):
+                continue
+            errors.append(f"imports other than 'manim', 'math', or 'numpy' are not allowed (line {node.lineno})")
+            
+        if isinstance(node, ast.Call):
+            func_name = ""
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                func_name = node.func.attr
+
+            if func_name in {"print", "open", "exec", "eval"}:
+                errors.append(f"{func_name}() is not allowed in a scene module (line {node.lineno})")
+                
+            # Manim 0.19 specific checks
+            if func_name in {"get_x_label", "get_y_label"}:
+                for kw in node.keywords:
+                    if kw.arg in {"font_size", "direction"}:
+                        errors.append(f"Axes.{func_name}() does not accept '{kw.arg}' in Manim 0.19 (line {node.lineno})")
+                        
+            if func_name == "move_to":
+                for kw in node.keywords:
+                    if kw.arg == "corner":
+                        errors.append(f"move_to() does not accept 'corner=' in Manim 0.19; use align_to() or next_to() (line {node.lineno})")
+                        
+            if func_name == "Code":
+                for kw in node.keywords:
+                    if kw.arg == "theme":
+                        errors.append(f"Code() does not accept 'theme=' in Manim 0.19 (line {node.lineno})")
+                    if kw.arg == "insert_line_numbers":
+                        errors.append(f"Code() expects 'add_line_numbers=', not 'insert_line_numbers=' (line {node.lineno})")
+
+            if func_name == "set_shadow":
+                errors.append(f"set_shadow() is deprecated and causes rendering errors (line {node.lineno})")
+                
+            # Prevent scalar interpolation in put_start_and_end_on / move_to inside lambda/UpdateFromAlphaFunc.
+            # Manim requires 3D coordinate arrays, not a single float. Search recursively because
+            # the bad expression is often nested inside number_line.number_to_point(alpha * PI).
+            if func_name in {"put_start_and_end_on", "move_to"}:
+                for arg in node.args:
+                    for child in ast.walk(arg):
+                        if (isinstance(child, ast.BinOp) and isinstance(child.op, ast.Mult)
+                                and isinstance(child.left, ast.Name) and child.left.id == "alpha"
+                                and isinstance(child.right, ast.Name) and child.right.id == "PI"):
+                            errors.append(f"{func_name}() contains scalar alpha * PI where a 3D coordinate array is required (line {node.lineno})")
+                            break
+                
+    if not has_scene_class:
+        errors.append("module must define a Scene class")
+
+    return errors
+
+
+def validate_scene_source(code: str, max_cue: int | None = None) -> list[str]:
+    """Validate generated source before it reaches Matplotlib.
+
+    This is deliberately structural and topic-agnostic. It catches impossible API
+    inputs, malformed table/grid data, invalid pointer indices, forbidden imports,
+    and unsupported primitive calls. It does not pretend to prove arbitrary domain
+    correctness; explicit topic profiles or the semantic reviewer remain responsible
+    for claims that cannot be inferred from the drawing API alone.
+    """
+    errors: list[str] = []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return [f"syntax error at line {exc.lineno}: {exc.msg}"]
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            errors.append(f"imports are not allowed (line {node.lineno})")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"print", "open", "exec", "eval"}:
+            errors.append(f"{node.func.id}() is not allowed in a scene module (line {node.lineno})")
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "k"):
+            continue
+
+        method = node.func.attr
+        if method not in _ALLOWED_PRIMITIVES:
+            errors.append(f"unsupported k.{method} primitive (line {node.lineno})")
+            continue
+
+        # All checks below only apply when the model supplied literal data. Dynamic
+        # expressions are left for the real renderer and its exact audit.
+        if method == "hanoi":
+            state_node = _argument(node, 1, "state")
+            state = _literal(state_node) if state_node is not None else _LITERAL_MISSING
+            if state is not _LITERAL_MISSING:
+                if not isinstance(state, list) or len(state) != 3:
+                    errors.append("k.hanoi supports exactly three pegs: [left, middle, right]")
+                elif any(not isinstance(peg, list) for peg in state):
+                    errors.append("k.hanoi state must be a list of three peg lists")
+                else:
+                    disks = [d for peg in state for d in peg]
+                    if any(not isinstance(d, (int, float)) or isinstance(d, bool) or d <= 0 for d in disks):
+                        errors.append("k.hanoi disk sizes must be positive numbers")
+                    elif len(set(disks)) != len(disks):
+                        errors.append("k.hanoi cannot draw duplicate disk sizes")
+                    elif any(peg[i] < peg[i + 1] for peg in state for i in range(len(peg) - 1)) and not _has_intent_marker(_containing_function(tree, node)):
+                        errors.append("k.hanoi shows a larger disk on a smaller disk without an explicit illegal/invalid label")
+        elif method == "grid":
+            data_node = _argument(node, 1, "data")
+            data = _literal(data_node) if data_node is not None else _LITERAL_MISSING
+            if data is not _LITERAL_MISSING and isinstance(data, list) and data:
+                if any(not isinstance(row, list) for row in data):
+                    errors.append("k.grid data must be a list of row lists")
+                elif len({len(row) for row in data}) > 1:
+                    errors.append("k.grid rows must all have the same number of columns")
+        elif method == "table":
+            rows_node = _argument(node, 1, "rows")
+            rows = _literal(rows_node) if rows_node is not None else _LITERAL_MISSING
+            if rows is not _LITERAL_MISSING and isinstance(rows, list) and rows:
+                widths = [len(row) for row in rows if isinstance(row, (list, tuple))]
+                if len(widths) != len(rows):
+                    errors.append("k.table rows must be lists or tuples")
+                elif len(set(widths)) > 1:
+                    errors.append("k.table rows must all have the same number of columns")
+        elif method == "array":
+            values_node = _argument(node, 1, "values")
+            values = _literal(values_node) if values_node is not None else _LITERAL_MISSING
+            if values is not _LITERAL_MISSING and not isinstance(values, (list, tuple)):
+                errors.append("k.array values must be a list or tuple")
+            for name, pos in (("lo", 5), ("hi", 6), ("mid", 7), ("found", 8)):
+                arg_node = _argument(node, pos, name)
+                value = _literal(arg_node) if arg_node is not None else _LITERAL_MISSING
+                if isinstance(value, int) and not isinstance(value, bool) and isinstance(values, (list, tuple)) and not (-1 <= value < len(values)):
+                    errors.append(f"k.array {name} index {value} is outside 0..{len(values)-1}")
+        elif method == "predicate_strip":
+            flags_node = _argument(node, 1, "flags")
+            flags = _literal(flags_node) if flags_node is not None else _LITERAL_MISSING
+            if flags is not _LITERAL_MISSING and isinstance(flags, list):
+                if any(v not in (0, 1, False, True) for v in flags):
+                    errors.append("k.predicate_strip flags must contain only 0/1 or False/True")
+        elif method == "block":
+            for name, pos in (("w", 4), ("h", 5)):
+                if len(node.args) > pos:
+                    value = _literal(node.args[pos])
+                    if isinstance(value, (int, float)) and value <= 0:
+                        errors.append(f"k.block {name} must be positive")
+
+    # Cue validation is kept here so invalid generated code is rejected before a
+    # Matplotlib render and before a retry can be polluted by a stale PNG directory.
+    states_fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "states"), None)
+    if states_fn is not None and max_cue is not None:
+        return_values = [n for n in ast.walk(states_fn) if isinstance(n, ast.Return)]
+        for ret in return_values:
+            items = ret.value.elts if isinstance(ret.value, (ast.List, ast.Tuple)) else []
+            previous = -1
+            for item in items:
+                if not isinstance(item, (ast.Tuple, ast.List)) or len(item.elts) < 3:
+                    continue
+                cue = _literal(item.elts[1])
+                if isinstance(cue, int):
+                    if cue <= previous:
+                        errors.append(f"cue indices must strictly increase; found {cue} after {previous}")
+                    if cue < 0 or cue > max_cue:
+                        errors.append(f"cue index {cue} is outside valid range 0..{max_cue}")
+                    previous = cue
+    return list(dict.fromkeys(errors))
+
+
+def generate(proj: Path, script: Script, index: int, retries: int = 0,
             extra_feedback: str = "") -> Path:
     sec = next((s for s in script.sections if s.index == index), None)
     if sec is None:
@@ -250,21 +548,51 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
     outdir = proj / "build" / "scenes"
     outdir.mkdir(parents=True, exist_ok=True)
     dst = outdir / f"scene_{sec.stem}.py"
+    
+    # State-Carrying Context: Find the previous section's generated code to anchor the layout
+    previous_context = ""
+    if index > 1:
+        prev_sec = next((s for s in script.sections if s.index == index - 1), None)
+        if prev_sec:
+            prev_dst = outdir / f"scene_{prev_sec.stem}.py"
+            if prev_dst.exists():
+                prev_code = prev_dst.read_text(encoding="utf-8")
+                # Extract the actual final state function, not the first state.
+                # The previous implementation used re.search(), which always
+                # selected s01 and made continuity misleading.
+                matches = re.findall(
+                    r"def s\d+\(ax(?:,[^)]*)?\):.*?(?=\n\s*def s\d+\(|\n\s*return\s+\[)",
+                    prev_code, re.DOTALL)
+                if matches:
+                    last_state = matches[-1].strip()[:6000]
+                    previous_context = (
+                        "CONTINUITY CONTEXT:\n"
+                        "To prevent jarring visual jumps, you MUST maintain the exact `x` and `y` coordinates "
+                        "for any persistent data structures (like arrays, trees, or grids) that were used in the previous section. "
+                        "Here is the code for the final visual state of the previous section for reference:\n"
+                        f"```python\n{last_state}\n```\n"
+                    )
 
-    prompt = build_prompt(script, sec, sents)
+    prompt = build_prompt(script, sec, sents, previous_context=previous_context)
     # extra_feedback: repair_router's harness-level cycle (prompt2render/harness/plugins/repair_router)
     # seeds diagnostics from *its own* prior repair attempts here — separate from this loop's own
     # internal `feedback`, which is still exactly the same reject-and-retry text as before.
     feedback = extra_feedback
 
-    attempt = 1                  # content attempts
-    total_attempt = 1            # across every model, for the final message
+    # A positive retries value preserves the old explicit cap: retries + 1
+    # calls. The new default (zero) continues until validation passes. Set
+    # P2R_MAX_SCENE_ATTEMPTS to a positive value when an explicit cap is desired.
+    configured_cap = cfg.env_int("P2R_MAX_SCENE_ATTEMPTS", 0)
+    max_attempts = retries + 1 if retries > 0 else (configured_cap if configured_cap > 0 else None)
+    attempt = 1
+    total_attempt = 1
+    seen_digests: set[str] = set()
     while True:
         try:
             code = llm.complete(
                 prompt + feedback, 
                 max_tokens=16000, 
-                label=f"section {sec.stem} (attempt {attempt}/{retries + 1})"
+                label=f"section {sec.stem} (attempt {attempt}/{max_attempts or 'until pass'})"
             )
         except Exception as e:
             sys.exit(f"[prompt2render] section {sec.stem}: LLM call failed — {e}")
@@ -274,55 +602,44 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
             sys.exit(f"[prompt2render] section {sec.stem}: empty completion — "
                      "lower the state count or raise the token budget")
         
-        # Defensive cue repair: if the LLM emitted out-of-order cues, sort them.
-        # This prevents stills.py from rejecting the code solely because a cue index went backward.
+        # Never silently rewrite model output. Silent cue mutation can change the
+        # intended timing and can turn several out-of-range states into duplicate
+        # cues. Reject the source with all deterministic diagnostics so the next
+        # model attempt can repair the actual defect.
         raw_code = strip_fences(code)
-        import re
-        
-        def fix_cues(match):
-            inner = match.group(1)
-            # Find all tuples: ("s01", 0, s01) or ("s02", 3, s02, {"steps": 2})
-            # We look for the integer right after the first string.
-            tuples = re.findall(r'(\(\s*["\'][^"\']+["\']\s*,\s*)(\d+)(\s*,[^)]+\))', inner)
-            if not tuples:
-                return match.group(0)
-                
-            fixed_inner = inner
-            prev_cue = -1
-            max_allowed = len(sents) - 1
-            
-            for prefix, cue_str, suffix in tuples:
-                cue = int(cue_str)
-                
-                # 1. Enforce strictly increasing
-                if cue <= prev_cue:
-                    cue = prev_cue + 1
-                    
-                # 2. Enforce max bounds (clamp to max_allowed)
-                if cue > max_allowed:
-                    cue = max_allowed
-                    
-                # If we clamped and it's no longer strictly increasing because
-                # multiple states are bunched at the very end, we have to accept
-                # that stills.py might reject it, or we can just let it be equal 
-                # at the max bound and let stills.py fail it with a clear message.
-                # Actually, stills.py requires strictly increasing. So if we hit the ceiling:
-                if cue <= prev_cue:
-                    cue = prev_cue + 1 # We must increase, even if it breaks the ceiling
-                    
-                if cue != int(cue_str):
-                    # Replace just this specific occurrence in the string
-                    old_tuple = f"{prefix}{cue_str}{suffix}"
-                    new_tuple = f"{prefix}{cue}{suffix}"
-                    fixed_inner = fixed_inner.replace(old_tuple, new_tuple, 1)
-                    
-                prev_cue = cue
-                    
-            return f"return [{fixed_inner}]"
+        digest = hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
+        preflight_errors = validate_scene_source(raw_code, max_cue=len(sents) - 1)
+        if digest in seen_digests:
+            preflight_errors.append("model returned identical scene source after a failed attempt; change the geometry or state structure")
+        seen_digests.add(digest)
+        if preflight_errors:
+            err = "preflight validation failed:\n  " + "\n  ".join(preflight_errors)
+            first = preflight_errors[0][:110]
+            cfg.say(f"section {sec.stem}: rejected — {first}")
+            feedback_msg = (
+                "\n\nYour previous answer was rejected before rendering. Return the whole corrected module.\n\n"
+                "PRE-FLIGHT PROBLEMS:\n  - " + "\n  - ".join(preflight_errors) + "\n"
+            )
+            if any("hanoi" in item for item in preflight_errors):
+                feedback_msg += (
+                    "\nCRITICAL FIX: k.hanoi accepts exactly three peg lists in bottom-to-top order. "
+                    "Do not pass four pegs. If showing an invalid move, keep three pegs, physically "
+                    "place the larger disk on the smaller one, and label the state ILLEGAL or INVALID.\n"
+                )
+            if any("cue" in item for item in preflight_errors):
+                feedback_msg += (
+                    f"\nCRITICAL FIX: use cue indices 0..{len(sents) - 1}, strictly increasing. "
+                    "Do not add more states than available cue positions; use progressive reveal steps "
+                    "inside a state instead.\n"
+                )
+            feedback = extra_feedback + feedback_msg
+            if max_attempts is None or attempt < max_attempts:
+                attempt += 1
+                total_attempt += 1
+                continue
+            sys.exit(f"[prompt2render] section {sec.stem}: still failing after "
+                     f"{total_attempt} total attempts — {err}")
 
-        # Apply the fix if we find the return list
-        raw_code = re.sub(r"return\s+\[(.*?)\]", fix_cues, raw_code, flags=re.DOTALL)
-            
         dst.write_text(raw_code, encoding="utf-8")
 
         try:
@@ -336,8 +653,8 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
                 man = stills.render_into(dst, outdir / sec.stem,
                                          max_cue=len(sents) - 1)
         except SystemExit as e:
-            err = str(e)[-1500:]
-            first = err.splitlines()[0][:110] if err.splitlines() else err[:110]
+            err = str(e)
+            first = next((line.strip() for line in err.splitlines() if line.strip()), err[:110])[:110]
             cfg.say(f"section {sec.stem}: rejected — {first}")
             # A stack trace tells it the code crashed. An audit failure tells
             # it *where two things collided, in pixels*. Both go back verbatim.
@@ -346,8 +663,27 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
                 feedback_msg += "\n\nCRITICAL FIX: You emitted a cue index that was smaller than or equal to the previous state's cue index. Look at your `return [...]` list at the bottom. The second element of each tuple (the cue index) MUST strictly increase: e.g., 0, 2, 5, 8. Fix the numbers so they go up."
             elif "but the section only has sentences" in err:
                 feedback_msg += f"\n\nCRITICAL FIX: You emitted a cue index that is too large. This section only has {len(sents)} sentences (indices 0 to {len(sents)-1}). You MUST NOT use a cue index larger than {len(sents)-1}."
-            elif "overlaps" in err or "share space" in err or "different horizontal bands" in err:
-                feedback_msg += "\n\nCRITICAL FIX: You have elements overlapping or sharing the same space on the screen. The canvas is 16 units wide and 9 units tall. You MUST change the `y` coordinates to put elements in different horizontal bands, OR split the content into two completely separate states."
+            elif "overlaps" in err or "share space" in err or "different horizontal bands" in err or "layout audit failed" in err:
+                feedback_msg += (
+                    "\n\nCRITICAL FIX: This is a geometry failure, not a color or z-order problem. "
+                    "Use one major visual per horizontal zone, move the complete visual to a free zone, "
+                    "reduce its footprint while preserving readability, or split it into separate states. "
+                    "Do not repeat the rejected coordinates. The 16x9 canvas must keep a visible gap "
+                    "between every non-connector primitive.\n"
+                )
+                if "curves" in err:
+                    feedback_msg += (
+                        "\nCURVES-SPECIFIC FIX: k.curves is an opaque full plot panel. Do not draw any "
+                        "k.label, k.badge, k.block, k.array, or other non-connector primitive inside "
+                        "its x/y/w/h footprint. Remove the external annotation, place it in the caption "
+                        "or a separate secondary-zone state, and keep the curves panel by itself.\n"
+                    )
+            elif "supports exactly three pegs" in err or "hanoi" in err:
+                feedback_msg += (
+                    "\n\nCRITICAL FIX: k.hanoi supports exactly three peg lists. Replace any four-peg "
+                    "state with a three-peg state or compose a different multi-column visual from "
+                    "generic primitives.\n"
+                )
                 
             feedback = extra_feedback + feedback_msg
             # The rejected code already shows whether this section wants
@@ -356,16 +692,14 @@ def generate(proj: Path, script: Script, index: int, retries: int = 3,
             # doesn't use it, resent unchanged on top of the same API_DOC
             # every attempt already pays for.
             if "steps" not in code:
-                prompt = build_prompt(script, sec, sents, include_reveal=False)
+                prompt = build_prompt(script, sec, sents, include_reveal=False,
+                                      previous_context=previous_context)
 
-            if attempt < retries + 1:
+            if max_attempts is None or attempt < max_attempts:
                 attempt += 1
                 total_attempt += 1
                 continue
-            
-            # Since llm.complete() handles quota rotation transparently, if we run out of 
-            # content retries here, we just fail the section. We don't try to outsmart 
-            # the model rotation for content errors anymore.
+
             sys.exit(f"[prompt2render] section {sec.stem}: still failing after "
                      f"{total_attempt} total attempts — {err}")
 
@@ -394,7 +728,7 @@ def default_jobs(n: int) -> int:
 
 
 def generate_all(proj: Path, script: Script, index: int | None = None,
-                 retries: int = 3, jobs: int | None = None) -> None:
+                 retries: int = 0, jobs: int | None = None) -> None:
     todo = []
     for sec in script.sections:
         if index is not None and sec.index != index:
@@ -414,6 +748,12 @@ def generate_all(proj: Path, script: Script, index: int | None = None,
     if not todo:
         return
     n = jobs or default_jobs(len(todo))
+    continuity = os.environ.get("P2R_CONTINUITY", "1").strip().lower() not in {"0", "false", "off", "no"}
+    # Previous-section context is a dependency, so concurrent generation would
+    # race: section N may be generated before N-1 has an accepted scene. Keep
+    # the reliable default serial; opt out explicitly for independent sections.
+    if continuity:
+        n = 1
     if n <= 1 or len(todo) == 1:
         for sec in todo:
             generate(proj, script, sec.index, retries)

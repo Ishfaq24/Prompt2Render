@@ -1,0 +1,25 @@
+# Secrets — never commit these.
+.env
+*.key
+*.env
+# Generated media
+projects/*/sections/
+projects/*/audio/
+projects/*/build/
+projects/*/out/
+!.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Downloadable model weights (fetched by setup scripts, not source)
+models/
+tools/kokoro/*.onnx
+tools/kokoro/*.bin
+
+# OS
+.DS_Store
+Thumbs.db

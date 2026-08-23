@@ -197,6 +197,11 @@ def _run_pipeline(d, s, a) -> int:
 
 def cmd_build(a):
     """The whole chain. Every stage is cached, so re-running is cheap."""
+    if getattr(a, "manim", False) and not getattr(a, "harness", False):
+        sys.exit(
+            "[prompt2render] --manim requires the harness path; "
+            "use `build SLUG --harness --manim`"
+        )
     if getattr(a, "harness", False):
         # Route through the harness instead of the raw pipeline
         cmd_harness(a)
@@ -215,24 +220,82 @@ def cmd_harness(a):
     d, s = _load(a.slug)
     script_path = d / "script.md"
     
-    # The harness expects voice and align to be done first, as it doesn't wrap them yet.
-    # See docs/MIGRATION_INVENTORY.md §6.
-    from prompt2render import align, voice
-    voice.build(d, s, voice.settings(a))
-    align.align(d, s)
-    
+    # The harness now wraps voice and align natively via GeneratorVoicePlugin
+    # and GeneratorAlignPlugin.
     config_path = Path(a.config) if getattr(a, "config", None) else None
-    plugins = build_plugins(config_path=config_path)
+    
+    from prompt2render.harness.loader import load_config
+    cfg_dict = load_config(config_path)
+    
+    # Forward CLI arguments into the plugin config so the harness wrappers
+    # can respect them just like the raw pipeline did.
+    if "planner_script" not in cfg_dict:
+        cfg_dict["planner_script"] = {}
+    cfg_dict["planner_script"]["force"] = getattr(a, "redraft", False)
+
+    if "generator_voice" not in cfg_dict:
+        cfg_dict["generator_voice"] = {}
+    cfg_dict["generator_voice"]["kokoro_voice"] = getattr(a, "voice", None) or "am_eric"
+    cfg_dict["generator_voice"]["kokoro_speed"] = getattr(a, "speed", None) or 1.0
+    cfg_dict["generator_voice"]["lufs"] = getattr(a, "lufs", None) or cfg.LUFS
+    
+    if "renderer_encode" not in cfg_dict:
+        cfg_dict["renderer_encode"] = {}
+    cfg_dict["renderer_encode"]["jobs"] = getattr(a, "jobs", None)
+    
+    if "renderer_finish" not in cfg_dict:
+        cfg_dict["renderer_finish"] = {}
+    cfg_dict["renderer_finish"]["burn"] = getattr(a, "burn", False)
+
+    # A stale config from an earlier experimental run must not inject Manim
+    # into ordinary --harness builds. Only an explicit --manim opts in.
+    if not getattr(a, "manim", False):
+        cfg_dict.setdefault("renderer_manim", {})["enabled"] = False
+    else:
+        # Manim produces opaque section clips, not still manifests.
+        # It is fundamentally incompatible with the timeline/encode/finish stages.
+        cfg_dict.setdefault("generator_timeline", {})["enabled"] = False
+        cfg_dict.setdefault("renderer_encode", {})["enabled"] = False
+        cfg_dict.setdefault("renderer_finish", {})["enabled"] = False
+        cfg_dict.setdefault("generator_publish", {})["enabled"] = False
+        # We also disable verifier_audio because it expects out/final.mp4 which won't exist yet
+        # (assemble runs *after* the harness).
+        cfg_dict.setdefault("verifier_audio", {})["enabled"] = False
+        cfg_dict.setdefault("verifier_final_qc", {})["enabled"] = False
+    
+    plugins = build_plugins(config=cfg_dict)
     
     # Hot-swap plugins if --manim is requested
     if getattr(a, "manim", False):
         from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, RendererManimPlugin
         # Replace generator_code with generator_manim
         plugins = [GeneratorManimPlugin() if p.name == "generator_code" else p for p in plugins]
-        # Replace renderer_stills with renderer_manim
-        plugins = [RendererManimPlugin() if p.name == "renderer_stills" else p for p in plugins]
+        # Replace renderer_stills with exactly one renderer_manim instance.
+        new_plugins = []
+        for p in plugins:
+            if p.name == "renderer_stills":
+                new_plugins.append(
+                    RendererManimPlugin({"enabled": True, "gate_override": True})
+                )
+            elif p.name != "renderer_manim":
+                new_plugins.append(p)
+                
+        # Ensure verifier_temporal is enabled in Manim mode and runs after the renderer
+        if not any(p.name == "verifier_temporal" for p in new_plugins):
+            from prompt2render.harness.plugins.verifier_temporal import VerifierTemporalPlugin
+            # Insert right after renderer_manim
+            idx = next((i for i, p in enumerate(new_plugins) if p.name == "renderer_manim"), len(new_plugins))
+            new_plugins.insert(idx + 1, VerifierTemporalPlugin({"enabled": True, "gate_override": True}))
+        # Manim produces section-level MP4 clips, not scenekit still manifests.
+        # Never allow still-based timeline/encode/finish plugins into this graph,
+        # even if a stale config file enabled them.
+        incompatible = {
+            "generator_timeline", "renderer_encode", "renderer_finish",
+            "verifier_audio", "verifier_final_qc", "generator_publish",
+        }
+        plugins = [p for p in new_plugins if p.name not in incompatible]
         cfg.say("harness: running in experimental --manim mode")
-    repair_router = build_repair_router(config_path=config_path)
+    repair_router = build_repair_router(config=cfg_dict)
     
     log_path = d / "build" / "harness" / "log.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,6 +309,14 @@ def cmd_harness(a):
             log_path=d / "build" / "harness" / "repair_log.jsonl",
         )
         
+    # Attach live progress UI if running in a TTY
+    progress = None
+    import sys
+    if sys.stdout.isatty():
+        from prompt2render.harness.progress import HarnessProgressUI
+        progress = HarnessProgressUI(total_stages=len(plugins))
+        progress.attach(bus)
+        
     ctx = SceneContext(prompt=script_path, project_dir=d)
     runner = HarnessRunner(plugins, logger, bus)
     
@@ -253,27 +324,34 @@ def cmd_harness(a):
     try:
         ctx = runner.run(ctx)
     except GateFailure as e:
+        if progress:
+            progress.stop()
         sys.exit(f"[prompt2render] harness hard gate failed: {e}")
+    finally:
+        if progress:
+            progress.stop()
         
-    # The harness runs generator_code -> renderer_stills -> verifiers.
-    # It does not yet run timeline -> encode -> finish -> publish.
-    # We must finish the pipeline manually after the harness completes successfully.
-    from prompt2render import assemble, encode, finish, publish, qc, timeline
-    
+    # The default harness now runs timeline -> encode -> finish -> final QC ->
+    # publish natively. Do not run qc.check a second time; it would repeat the
+    # expensive independent caption-drift transcription. The final-QC plugin
+    # has already recorded the authoritative result in the harness log.
     if getattr(a, "manim", False):
-        # Manim produces section-level MP4s directly, so we skip timeline/encode
-        # and use the legacy assemble path to pad them to the audio and concat.
+        from prompt2render import assemble
         cfg.say("harness: assembling Manim section clips...")
         assemble.assemble(d, s, burn_captions=getattr(a, "burn", False))
-    else:
-        timeline.build(d, s, motion=getattr(a, "motion", None))
-        jobs = getattr(a, "jobs", None) or cfg.env_int("P2R_ENCODE_JOBS", cfg.default_encode_jobs())
-        if encode.encode(d, limit=None, jobs=jobs) != 0:
-            sys.exit("[prompt2render] encode did not finish")
-        finish.finish(d, s, burn=getattr(a, "burn", False))
-        
-    publish.build_packet(d, s)
-    sys.exit(qc.check(d, s, strict=getattr(a, "strict", False)))
+        final = d / "out" / "final.mp4"
+        if not final.exists() or final.stat().st_size < 1024:
+            sys.exit("[prompt2render] Manim assembly did not produce a valid out/final.mp4")
+        cfg.say(f"harness: Manim final video ready at {final}")
+        # Manim has no still/timeline plan, so the Scenekit final-QC plugin is
+        # intentionally not run here. The section-clip assembly is complete;
+        # run `prompt2render check` only for a Scenekit build.
+        sys.exit(0)
+
+    final_results = ctx.check_results.get("verifier_final_qc")
+    if final_results:
+        sys.exit(0 if all(r.get("status") in {"pass", "warn", "skip"} for r in final_results) else 1)
+    sys.exit(0)
 
 
 def cmd_auto(a):
@@ -285,6 +363,11 @@ def cmd_auto(a):
     `outline.py`, README) that narration should get a human read before it is
     voiced -- opted into here because the caller asked for exactly that.
     """
+    if getattr(a, "manim", False) and not getattr(a, "harness", False):
+        sys.exit(
+            "[prompt2render] --manim requires the harness path; "
+            "use `auto SLUG --harness --manim`"
+        )
     from prompt2render import draft, outline
     d = cfg.PROJECTS / a.slug
     if d.exists():
@@ -451,7 +534,9 @@ def main() -> None:
 
     sc = add("scenes", cmd_scenes, "storyboard each section with the model")
     sc.add_argument("slug"); sc.add_argument("--section", type=int)
-    sc.add_argument("--retries", type=int, default=3)
+    sc.add_argument("--retries", type=int, default=0,
+                    help="positive N caps total attempts at N+1; default 0 continues "
+                         "until validation passes; set $P2R_MAX_SCENE_ATTEMPTS>0 for a cap")
     sc.add_argument("--jobs", type=int, default=None,
                     help="storyboard this many sections concurrently "
                          "(default 3, or $P2R_SCENE_JOBS; lower it if the "
@@ -510,6 +595,7 @@ def main() -> None:
 
     bd = add("build", cmd_build, "voice -> align -> scenes -> ... -> check")
     bd.add_argument("slug")
+    bd.add_argument("--config", help="path to harness config.yaml")
     add_pipeline_args(bd)
 
     au = add("auto", cmd_auto,
@@ -553,6 +639,10 @@ def main() -> None:
         a.fn(a)
     except KeyboardInterrupt:
         sys.exit("\n[prompt2render] interrupted")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        sys.exit(f"[prompt2render] {type(exc).__name__}: {exc}")
 
 
 if __name__ == "__main__":

@@ -31,10 +31,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import cfg, textseg
+from . import cfg, mathspeech, textseg
 from .project import Script, Section
 
-ENGINE = 3                      # bump to invalidate every cached synthesis
+ENGINE = 4                      # math-aware speech rendering invalidates old TTS cache
 KOKORO_SR = 24000
 PHONEME_LIMIT = 500             # kokoro truncates at 510; leave headroom
 FADE_MS = 8.0                   # raised-cosine edge on each sentence
@@ -236,13 +236,25 @@ def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
     # concurrency knob at all; every other stage (align, encode, scenes,
     # check) already has one.
     jobs = jobs or cfg.env_int("P2R_VOICE_JOBS", 1)
-    idx_text = [(i, s.text) for i, s in enumerate(prepared) if s.text.strip()]
+    # TTS receives a spoken rendering of recognized math spans. Cue text stays
+    # as the original narration so captions and alignment retain the source.
+    idx_text = [(i, mathspeech.speech_text(s.text))
+                for i, s in enumerate(prepared) if s.text.strip()]
     if jobs > 1 and len(idx_text) > 1:
         n = max(1, min(jobs, len(idx_text)))
         cfg.say(f"synthesising {len(idx_text)} sentences, {n} at a time")
         payload = [(t, voice, speed) for _, t in idx_text]
-        with ProcessPoolExecutor(max_workers=n) as pool:
-            computed = list(pool.map(_synth_one, payload))
+        try:
+            with ProcessPoolExecutor(max_workers=n) as pool:
+                computed = list(pool.map(_synth_one, payload))
+        except Exception as exc:
+            # Do not silently fall back to serial synthesis after a worker
+            # failure: a partial process pool can otherwise hide the real
+            # backend error and make a failed build look like a cache issue.
+            raise RuntimeError(
+                f"parallel Kokoro synthesis failed with "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
     else:
         computed = [_synth_one((t, voice, speed)) for _, t in idx_text]
     pcm_by_index = dict(zip((i for i, _ in idx_text), computed))
@@ -347,19 +359,32 @@ def _chain(profile: str) -> str:
             "deesser=i=0.35:m=0.5:f=0.45:s=o")
 
 
+def _read_loudnorm_stats(stats: Path) -> dict:
+    if not stats.exists():
+        sys.exit(f"[prompt2render] loudnorm wrote no stats to {stats}")
+    text = stats.read_text(encoding="utf-8")
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        sys.exit(f"[prompt2render] loudnorm wrote invalid stats to {stats}")
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        sys.exit(f"[prompt2render] invalid loudnorm JSON in {stats}: {exc}")
+    if "input_i" not in data or "input_tp" not in data:
+        sys.exit(f"[prompt2render] loudnorm stats missing input_i/input_tp in {stats}")
+    return data
+
+
 def _measure(src: Path, chain: str, lufs: float, stats: Path) -> dict:
     stats.parent.mkdir(parents=True, exist_ok=True)
+    stats.unlink(missing_ok=True)
     cfg.run([
         "ffmpeg", "-hide_banner", "-nostats", "-v", "error", "-y", "-i", str(src),
         "-af", (f"{chain},loudnorm=I={lufs}:TP={cfg.TRUE_PEAK}:LRA={cfg.LRA}"
                 f":print_format=json:stats_file={cfg.filter_path(stats)}"),
         "-f", "null", "-",
     ])
-    text = stats.read_text(encoding="utf-8")
-    start = text.find("{")
-    if start < 0:
-        sys.exit(f"[prompt2render] loudnorm wrote no stats to {stats}")
-    return json.loads(text[start:text.rfind("}") + 1])
+    return _read_loudnorm_stats(stats)
 
 
 def loudness_of(src: Path) -> dict:
@@ -373,8 +398,7 @@ def loudness_of(src: Path) -> dict:
                     f":print_format=json:stats_file={cfg.filter_path(stats)}"),
             "-f", "null", "-",
         ])
-        text = stats.read_text(encoding="utf-8")
-        return json.loads(text[text.find("{"):text.rfind("}") + 1])
+        return _read_loudnorm_stats(stats)
 
 
 def _apply(src: Path, dst: Path, chain: str, gain_db: float) -> None:
@@ -414,6 +438,9 @@ def master(raw_master: Path, dst_wav: Path, dst_m4a: Path,
     touches the loudest transients. That is what a mastering engineer does,
     and unlike loudnorm it cannot quietly change strategy on us.
     """
+    if not raw_master.exists() or raw_master.stat().st_size <= 44:
+        sys.exit(f"[prompt2render] empty or missing raw programme: {raw_master}")
+
     chain = _chain(profile)
     stats = raw_master.with_name("loudnorm.json")
 
@@ -563,6 +590,21 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
         meta_f.write_text(json.dumps(want, indent=2), encoding="utf-8")
         cfg.say(f"  {len(pcm)/KOKORO_SR:.1f}s across {len(cues)} measured cues")
 
+    if only:
+        # `--only` is a synthesis/cache operation, not a partial programme
+        # master. A programme master necessarily needs every section in order.
+        # Refuse here with a useful message instead of failing later on a
+        # missing raw.wav from another section.
+        missing = [
+            sec.stem for sec in script.sections
+            if not (vdir / sec.stem / "raw.wav").exists()
+        ]
+        if missing:
+            sys.exit(
+                f"[prompt2render] voice --only {only} produced no full master; "
+                f"missing section audio: {', '.join(missing)}"
+            )
+
     return _assemble_master(proj, script, opts, used_own)
 
 
@@ -582,6 +624,8 @@ def _assemble_master(proj: Path, script: Script, opts: dict,
         pcm, sr = _read_wav(p)
         if sr != cfg.AUDIO_SR:
             sys.exit(f"[prompt2render] {p} is {sr} Hz, expected {cfg.AUDIO_SR}")
+        if pcm.size == 0:
+            sys.exit(f"[prompt2render] {p} contains no audio samples")
         tracks.append(pcm)
 
     if used_own:
@@ -660,12 +704,15 @@ def _slice_previews(proj: Path, script: Script, master_wav: Path,
 
     def slice_one(sec) -> None:
         o = offsets[sec.stem]
+        dst = audio / f"{sec.stem}.m4a"
+        part = dst.with_name(dst.stem + ".part.m4a")
         cfg.run(["ffmpeg", "-y", "-v", "error",
                  "-ss", f"{o['start']:.6f}", "-t", f"{o['dur']:.6f}",
                  "-i", str(master_wav),
                  "-c:a", "aac", "-b:a", cfg.AAC_BITRATE,
                  "-ar", str(cfg.AUDIO_SR), "-ac", "1",
-                 str(audio / f"{sec.stem}.m4a")])
+                 str(part)])
+        part.replace(dst)
 
     cfg.parallel(slice_one, list(script.sections),
                  cfg.env_int("P2R_AUDIO_JOBS", 4), "preview")

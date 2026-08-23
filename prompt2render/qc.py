@@ -71,13 +71,7 @@ def _floats(text: str, pat: str) -> list[float]:
 
 
 def analyse_audio(path: Path, lufs: float) -> dict:
-    """Every audio measurement `prompt2render check` needs, in one pass over the file.
-
-    loudnorm joins the same chain when this ffmpeg supports `stats_file`
-    (8.x does; it is what prompt2render/voice.py's mastering already relies on). Where
-    it does not, the loudness measurement falls back to its own pass and only
-    that one gate pays for it.
-    """
+    """Every audio measurement `prompt2render check` needs, in one pass over the file."""
     with tempfile.TemporaryDirectory(prefix="prompt2render-qc-a") as td:
         stats = Path(td) / "ln.json"
         chain = (f"{AUDIO_CHAIN},loudnorm=I={lufs}:TP={cfg.TRUE_PEAK}:"
@@ -87,12 +81,14 @@ def analyse_audio(path: Path, lufs: float) -> dict:
                             "-i", str(path), "-map", "0:a:0",
                             "-af", chain, "-f", "null", "-"])
         text, loud = _log_of(proc), None
+
         if proc.returncode == 0 and stats.exists():
             try:
                 raw = stats.read_text(encoding="utf-8")
                 loud = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
             except (OSError, ValueError):
                 loud = None
+
         if proc.returncode != 0:
             # Almost certainly an ffmpeg without loudnorm's stats_file. Retry
             # the analysers that definitely exist, and let the loudness gate
@@ -111,7 +107,6 @@ def analyse_audio(path: Path, lufs: float) -> dict:
             except ValueError:
                 pass
     return out
-
 
 def analyse_video(path: Path) -> dict:
     """Black-frame and frozen-picture detection, in one pass over the file."""
@@ -198,7 +193,7 @@ def _gate_alignment(g: Gates, proj: Path, script: Script) -> None:
 
 
 def _drift_for_section(sec, proj: Path, o: dict, work: Path, wav: Path,
-                       model: Path) -> list[float]:
+                       model: Path) -> tuple[list[float], str | None]:
     """One section's alignment deltas against its shipped captions."""
     # align.transcribe() writes a fixed "words.srt" into whatever workdir
     # it's given -- fine for the single call transcribe_programme() makes,
@@ -212,21 +207,26 @@ def _drift_for_section(sec, proj: Path, o: dict, work: Path, wav: Path,
     asr = align.transcribe(part, model, sub)
     deltas: list[float] = []
     if asr:
-        sents = textseg.sentences(sec.narration)
-        fresh, conf = align.reconcile(sents, align._asr_tokens(asr), o["dur"])
-        if conf >= align.CONF_FLOOR:
-            # The shipped alignment was clamped to exact synthesis cues. 
-            # If we don't clamp the fresh ASR, we are comparing exact synthesis 
-            # boundaries against raw whisper estimates, which naturally drift.
-            prior = voice.section_cues(proj, sec.stem)
-            if prior:
-                fresh = align.clamp_to_prior(fresh, prior)
-                
-            shipped = align.load(proj, sec.stem)["sentences"]
-            for a, b in zip(shipped, fresh):
-                deltas.append(abs(a["start"] - b["start"]))
+        try:
+            sents = textseg.sentences(sec.narration)
+            fresh, conf = align.reconcile(sents, align._asr_tokens(asr), o["dur"])
+            if conf >= align.CONF_FLOOR:
+                # The shipped alignment was clamped to exact synthesis cues.
+                # If we don't clamp the fresh ASR, we are comparing exact
+                # synthesis boundaries against raw whisper estimates.
+                prior = voice.section_cues(proj, sec.stem)
+                if prior:
+                    fresh = align.clamp_to_prior(fresh, prior)
+
+                shipped = align.load(proj, sec.stem)["sentences"]
+                for a, b in zip(shipped, fresh):
+                    deltas.append(abs(a["start"] - b["start"]))
+        except (ValueError, TypeError, KeyError, IndexError) as exc:
+            message = f"section {sec.stem}: caption-drift comparison skipped ({exc})"
+            cfg.warn(message)
+            return [], message
     cfg.say(f"caption drift: section {sec.stem} checked")
-    return deltas
+    return deltas, None
 
 
 def _drift_cache_path(proj: Path) -> Path:
@@ -271,6 +271,7 @@ def caption_drift(proj: Path, script: Script, final: Path, model: Path,
     n = min(n, len(script.sections) or 1, os.cpu_count() or n)
 
     deltas: list[float] = []
+    errors: list[str] = []
     with tempfile.TemporaryDirectory(prefix="prompt2render-qc-") as td:
         work = Path(td)
         wav = work / "final.wav"
@@ -300,13 +301,21 @@ def caption_drift(proj: Path, script: Script, final: Path, model: Path,
                 futures.append(pool.submit(_drift_for_section, sec, proj,
                                            adjusted_info, work, wav, model))
             for fut in as_completed(futures):
-                deltas.extend(fut.result())
+                got, error = fut.result()
+                deltas.extend(got)
+                if error:
+                    errors.append(error)
 
-    if not deltas:
+    if errors:
+        detail = "independent caption check incomplete: " + "; ".join(errors)
+        if deltas:
+            detail += f"; compared {len(deltas)} sentences"
+        result = {"status": WARN, "detail": detail}
+    elif not deltas:
         result = {"status": SKIP, "detail": "alignment produced nothing to compare"}
     else:
         deltas.sort()
-        p95 = deltas[int(len(deltas) * 0.95)]
+        p95 = deltas[max(0, int(__import__('math').ceil(len(deltas) * 0.95)) - 1)]
         mx = deltas[-1]
         detail = f"p95 {p95*1000:.0f} ms, max {mx*1000:.0f} ms over {len(deltas)} sentences"
         if p95 <= 0.250 and mx <= 0.500:

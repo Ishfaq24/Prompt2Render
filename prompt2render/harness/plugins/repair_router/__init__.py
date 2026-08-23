@@ -1,187 +1,720 @@
-"""Stage 4: the real repair_router, generalizing scenes.py generate()'s existing inline retry
-loop (single-purpose: spatial_conflict -> generator_code, max_retries=3) into the general
-event-driven mechanism the migration brief specifies.
+"""Stage 4: event-driven repair router for Prompt2Render.
 
-Not an ordinary pipeline stage — see loader.build_repair_router(), which excludes it from the
-resolve_order pipeline. It's attached directly to the harness's event bus and reacts to
-`check.failed` events emitted by HarnessRunner._run_one(), synchronously, before the runner
-decides whether a hard gate should halt the run — so a successful repair can turn a would-be
-GateFailure into a pass within the same plugin invocation.
+The repair router is not an ordinary pipeline stage. It is attached to the
+harness event bus and reacts synchronously to ``check.failed`` events.
 
-Known limitation, stated rather than hidden: for `spatial_conflict` (the one finding type with
-real, working detection today — verifier_spatial), this will rarely actually trigger in practice.
-scenes.py generate()'s own internal accept/reject loop already resolves layout conflicts before a
-section is ever recorded as "accepted" — so by the time verifier_spatial runs, code_artifacts are
-already past that gate. This router is real and load-bearing for when verifier_semantic /
-verifier_lifecycle grow real detection logic (both currently stubs, per Stage 3), and it's fully
-exercised by tests/harness/test_repair_router.py with dummy plugins — but it is not something a
-`hash-tables` harness run today will visibly exercise.
+Responsibilities
+----------------
+* Map verifier findings to repair-capable plugins.
+* Maintain a per-scene/per-finding repair budget.
+* Preserve repair diagnostics for downstream generators.
+* Revert and regenerate only the affected scene when supported.
+* Emit repair lifecycle events.
+* Record auditable repair history.
+* Keep hard-gate and soft-gate behaviour distinct.
+
+The router does not claim that a repair is semantically successful merely
+because generation did not crash. The runner must re-run the originating
+verifier after the repair and prove that the finding is gone.
 """
+
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 from ...context import SceneContext
 from ...events import Event, EventBus
 from ...plugin import Plugin
 from .policy import RoutingPolicy, StaticTableRoutingPolicy
 
-#: source verifier plugin name -> the finding_type its failures are routed under. A verifier can
-#: override this by putting an explicit "finding_type" key on its own finding dicts.
-_DEFAULT_FINDING_TYPE = {
+
+# ---------------------------------------------------------------------------
+# Finding routing
+# ---------------------------------------------------------------------------
+
+#: Source verifier plugin -> default finding type.
+#: A verifier can override this by supplying ``finding_type`` itself.
+_DEFAULT_FINDING_TYPE: dict[str, str] = {
     "verifier_spatial": "spatial_conflict",
     "verifier_semantic": "semantic_mismatch",
     "verifier_lifecycle": "lifecycle_violation",
     "verifier_audio": "audio_visual_mismatch",
+    "verifier_storyboard": "storyboard_failure",
+    "verifier_pedagogy": "pedagogy_review",
 }
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_int(
+    value: Any,
+    default: int,
+    minimum: int = 0,
+) -> int:
+    """Safely parse an integer configuration value."""
+
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+
+    return max(minimum, result)
+
+
+def _detail(finding: dict[str, Any]) -> str:
+    """Extract a stable human-readable diagnostic from a finding."""
+
+    for key in ("detail", "message", "diagnostic", "description"):
+        value = finding.get(key)
+
+        if value is not None:
+            text = str(value).strip()
+
+            if text:
+                return text
+
+    return ""
+
+
+def _scene_id(finding: dict[str, Any]) -> str:
+    """Resolve the affected scene identifier."""
+
+    value = (
+        finding.get("stem")
+        or finding.get("scene_id")
+        or "__all__"
+    )
+
+    return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Router
+# ---------------------------------------------------------------------------
+
 class RepairRouterPlugin(Plugin):
+    """Event-driven, policy-based repair router."""
+
     name = "repair_router"
 
-    def __init__(self, config: dict | None = None):
+    def __init__(
+        self,
+        config: dict | None = None,
+    ):
         super().__init__(config)
-        self.max_repair_cycles = int(self.config.get("max_repair_cycles", 3))
-        self.policy: RoutingPolicy = StaticTableRoutingPolicy(self.config.get("routing_table"))
-        self._cycles_used: dict[str, int] = {}
-        self._plugins_by_name: dict[str, Plugin] = {}
+
+        self.max_repair_cycles = _safe_int(
+            self.config.get(
+                "max_repair_cycles",
+                3,
+            ),
+            default=3,
+            minimum=0,
+        )
+
+        self.policy: RoutingPolicy = (
+            StaticTableRoutingPolicy(
+                self.config.get(
+                    "routing_table"
+                )
+            )
+        )
+
+        # Budget is intentionally keyed by scene + finding type + source.
+        # This prevents an unrelated finding from consuming another finding's
+        # repair budget.
+        self._cycles_used: dict[
+            str,
+            int,
+        ] = {}
+
+        self._plugins_by_name: dict[
+            str,
+            Plugin,
+        ] = {}
+
         self._log_path: Path | None = None
         self._cycle_id = 0
+        self.history: list[Any] = []
+        self._active_context: SceneContext | None = None
+        self._bus: EventBus | None = None
+
+    # ------------------------------------------------------------------
+    # Plugin interface
+    # ------------------------------------------------------------------
 
     def declare_dependencies(self) -> list[str]:
-        return ["check_results", "history"]
+        return [
+            "check_results",
+            "history",
+        ]
 
     def declare_effects(self) -> list[str]:
         return []
 
-    def run(self, context: SceneContext) -> SceneContext:
-        return context   # never called as an ordinary stage — see module docstring
+    def run(
+        self,
+        context: SceneContext,
+    ) -> SceneContext:
+        # The router is attached to the event bus and is deliberately not
+        # executed as a normal pipeline stage.
+        return context
 
     def _default_gate(self) -> bool:
         return False
 
-    # ------------------------------------------------------------------------------- wiring --
+    # ------------------------------------------------------------------
+    # Event-bus wiring
+    # ------------------------------------------------------------------
 
-    def attach(self, *, bus: EventBus, plugins_by_name: dict[str, Plugin],
-              log_path: Path) -> None:
-        """Wire this router into a live run. Needs the actual plugin instances (to revert/re-run
-        the ones a routing decision targets) — the event payload alone isn't enough."""
-        self._plugins_by_name = plugins_by_name
+    def attach(
+        self,
+        *,
+        bus: EventBus,
+        plugins_by_name: dict[str, Plugin],
+        log_path: Path,
+    ) -> None:
+        """Attach the router to a live harness run."""
+
+        self._plugins_by_name = dict(
+            plugins_by_name
+        )
+
         self._log_path = log_path
-        bus.subscribe("check.failed", self._on_check_failed)
+        self._bus = bus
 
-    def subscribe(self, bus: EventBus) -> None:
-        # Superseded by attach(), which also needs plugin instances + a log path that a bare
-        # EventBus reference can't supply. Kept only so callers matching the Stage 3 stub
-        # interface don't break; does nothing on its own.
+        bus.subscribe(
+            "check.failed",
+            self._on_check_failed,
+        )
+
+    def subscribe(
+        self,
+        bus: EventBus,
+    ) -> None:
+        """Compatibility hook.
+
+        ``attach()`` is preferred because the router also needs access to
+        plugin instances and the repair log path.
+        """
+
+        # Intentionally do not subscribe here. Subscribing both here and in
+        # attach() would process each failure twice.
         return
 
-    # --------------------------------------------------------------------------- the cycle --
+    # ------------------------------------------------------------------
+    # Event handling
+    # ------------------------------------------------------------------
 
-    def _on_check_failed(self, event: Event) -> None:
-        source = event.payload["plugin"]
-        ctx: SceneContext = event.payload["context"]
-        findings = event.payload["findings"]
-        source_is_gate = event.payload.get("is_gate", True)
+    def _on_check_failed(
+        self,
+        event: Event,
+    ) -> None:
+        """Handle one verifier failure event."""
 
-        for finding in findings:
-            self._repair_one(source, finding, ctx, source_is_gate)
+        payload = event.payload or {}
 
-    def _repair_one(self, source: str, finding: dict, ctx: SceneContext,
-                    source_is_gate: bool) -> None:
-        """The runner emits check.failed exactly once per failing plugin invocation — so the
-        per-scene retry budget (max_repair_cycles) is a loop *within* this one handler call, not
-        something a caller re-triggers.
-        """
-        finding_type = finding.get("finding_type") or _DEFAULT_FINDING_TYPE.get(source, source)
-        scene_id = finding.get("stem") or finding.get("scene_id") or "__all__"
-        routed_finding = {**finding, "finding_type": finding_type, "scene_id": scene_id,
-                          "source_plugin": source}
-        targets = self.policy.decide(routed_finding)
-        cycles_key = f"{scene_id}:{source}"
+        source = str(
+            payload.get(
+                "plugin",
+                "unknown",
+            )
+        )
 
-        if not targets:
-            self._log_cycle(scene_id, finding_type, routed_finding.get("mismatch_subtype"),
-                            routed_to=[], diagnostic_message=finding.get("detail", ""),
-                            pre_hash=_hash(ctx), post_hash=_hash(ctx), outcome="unresolved",
-                            cycles_used=self._cycles_used.get(cycles_key, 0))
+        ctx = payload.get(
+            "context"
+        )
+
+        findings = payload.get(
+            "findings",
+            [],
+        )
+
+        source_is_gate = bool(
+            payload.get(
+                "is_gate",
+                True,
+            )
+        )
+
+        if not isinstance(
+            ctx,
+            SceneContext,
+        ):
             return
 
-        resolved = False
-        while self._cycles_used.get(cycles_key, 0) < self.max_repair_cycles:
-            used = self._cycles_used.get(cycles_key, 0) + 1
-            self._cycles_used[cycles_key] = used
-            pre_hash = _hash(ctx)
+        if not isinstance(
+            findings,
+            list,
+        ):
+            findings = [findings]
 
-            ctx.repair_context.setdefault(scene_id, []).append(finding.get("detail", ""))
+        self._active_context = ctx
+
+        try:
+            for finding in findings:
+
+                if not isinstance(
+                    finding,
+                    dict,
+                ):
+                    continue
+
+                self._repair_one(
+                    source,
+                    finding,
+                    ctx,
+                    source_is_gate,
+                )
+        finally:
+            self._active_context = None
+
+    # ------------------------------------------------------------------
+    # Routing
+    # ------------------------------------------------------------------
+
+    def _resolve_targets(
+        self,
+        source: str,
+        routed_finding: dict[str, Any],
+    ) -> list[str]:
+        """Resolve repair targets, including the Manim backend alias."""
+
+        targets = self.policy.decide(
+            routed_finding
+        )
+
+        if not targets:
+            return []
+
+        targets = [
+            str(target)
+            for target in targets
+            if str(target).strip()
+        ]
+
+        # In --manim mode the live backend is generator_manim, while the
+        # shared routing policy normally names generator_code.
+        if (
+            "generator_code"
+            not in self._plugins_by_name
+            and "generator_manim"
+            in self._plugins_by_name
+        ):
+            targets = [
+                (
+                    "generator_manim"
+                    if target == "generator_code"
+                    else target
+                )
+                for target in targets
+            ]
+
+        # Preserve policy order while removing duplicates.
+        return list(
+            dict.fromkeys(targets)
+        )
+
+    def _cycles_key(
+        self,
+        scene_id: str,
+        finding_type: str,
+        source: str,
+    ) -> str:
+        return (
+            f"{scene_id}:"
+            f"{finding_type}:"
+            f"{source}"
+        )
+
+    def _repair_one(
+        self,
+        source: str,
+        finding: dict[str, Any],
+        ctx: SceneContext,
+        source_is_gate: bool,
+    ) -> None:
+        """Attempt repair for one finding."""
+
+        finding_type = (
+            finding.get("finding_type")
+            or _DEFAULT_FINDING_TYPE.get(
+                source,
+                source,
+            )
+        )
+
+        finding_type = str(
+            finding_type
+        )
+
+        scene_id = _scene_id(
+            finding
+        )
+
+        routed_finding = {
+            **finding,
+            "finding_type": finding_type,
+            "scene_id": scene_id,
+            "source_plugin": source,
+        }
+
+        targets = self._resolve_targets(
+            source,
+            routed_finding,
+        )
+
+        cycles_key = self._cycles_key(
+            scene_id,
+            finding_type,
+            source,
+        )
+
+        used_so_far = self._cycles_used.get(
+            cycles_key,
+            0,
+        )
+
+        # --------------------------------------------------------------
+        # No route
+        # --------------------------------------------------------------
+
+        if not targets:
+            self._log_cycle(
+                scene_id,
+                finding_type,
+                routed_finding.get(
+                    "mismatch_subtype"
+                ),
+                routed_to=[],
+                diagnostic_message=_detail(
+                    finding
+                ),
+                pre_hash=_hash(ctx),
+                post_hash=_hash(ctx),
+                outcome="unresolved",
+                cycles_used=used_so_far,
+            )
+
+            return
+
+        # --------------------------------------------------------------
+        # Repair cycles
+        # --------------------------------------------------------------
+
+        while (
+            self._cycles_used.get(
+                cycles_key,
+                0,
+            )
+            < self.max_repair_cycles
+        ):
+            used = (
+                self._cycles_used.get(
+                    cycles_key,
+                    0,
+                )
+                + 1
+            )
+
+            self._cycles_used[
+                cycles_key
+            ] = used
+
+            self._emit(
+                "repair.started",
+                scene_id=scene_id,
+                finding_type=finding_type,
+                cycle=used,
+                max_cycles=self.max_repair_cycles,
+                routed_to=targets,
+            )
+
+            pre_hash = _hash(
+                ctx
+            )
+
+            diagnostic = _detail(
+                finding
+            )
+
+            if diagnostic:
+                ctx.repair_context.setdefault(
+                    scene_id,
+                    [],
+                ).append(
+                    diagnostic
+                )
+
             attempt_ok = True
+            attempted_targets: list[str] = []
+
+            # ----------------------------------------------------------
+            # Execute the route.
+            # ----------------------------------------------------------
+
             for target_name in targets:
-                target = self._plugins_by_name.get(target_name)
+
+                target = (
+                    self._plugins_by_name.get(
+                        target_name
+                    )
+                )
+
                 if target is None:
                     attempt_ok = False
                     continue
+
+                attempted_targets.append(
+                    target_name
+                )
+
                 try:
-                    if hasattr(target, "revert_scene") and hasattr(target, "regenerate_one"):
-                        target.revert_scene(ctx, scene_id)
-                        target.regenerate_one(ctx, scene_id)
+                    if (
+                        hasattr(
+                            target,
+                            "revert_scene",
+                        )
+                        and hasattr(
+                            target,
+                            "regenerate_one",
+                        )
+                    ):
+                        target.revert_scene(
+                            ctx,
+                            scene_id,
+                        )
+
+                        target.regenerate_one(
+                            ctx,
+                            scene_id,
+                        )
+
                     else:
-                        target.run(ctx)   # generic fallback — no per-scene granularity available
-                except (Exception, SystemExit):
+                        # Generic fallback for plugins that cannot perform
+                        # scene-level repair.
+                        target.run(
+                            ctx
+                        )
+
+                except (
+                    Exception,
+                    SystemExit,
+                ) as exc:
                     attempt_ok = False
 
-            post_hash = _hash(ctx)
-            outcome = "resolved" if attempt_ok else "unresolved"
-            self._log_cycle(scene_id, finding_type, routed_finding.get("mismatch_subtype"),
-                            routed_to=targets, diagnostic_message=finding.get("detail", ""),
-                            pre_hash=pre_hash, post_hash=post_hash, outcome=outcome,
-                            cycles_used=used)
+                    # Keep the failure available to the next cycle rather
+                    # than silently discarding it.
+                    ctx.repair_context.setdefault(
+                        scene_id,
+                        [],
+                    ).append(
+                        (
+                            f"{target_name} repair attempt "
+                            f"{used} failed: {exc}"
+                        )
+                    )
+
+            post_hash = _hash(
+                ctx
+            )
+
+            # IMPORTANT:
+            # "attempted" means the repair operation completed without
+            # crashing. It does NOT mean the finding is semantically fixed.
+            # The runner must re-run the verifier.
+            outcome = (
+                "attempted"
+                if attempt_ok
+                else "unresolved"
+            )
+
+            self._log_cycle(
+                scene_id,
+                finding_type,
+                routed_finding.get(
+                    "mismatch_subtype"
+                ),
+                routed_to=attempted_targets,
+                diagnostic_message=diagnostic,
+                pre_hash=pre_hash,
+                post_hash=post_hash,
+                outcome=outcome,
+                cycles_used=used,
+            )
+
             if attempt_ok:
-                resolved = True
-                break
+                # Mark this finding as resolved provisionally. The runner's
+                # post-repair verifier is the authoritative proof.
+                finding["status"] = "resolved"
 
-        if resolved:
-            # Mark this finding resolved in place — it's the same dict object the runner's
-            # `fails` list references, so the runner's post-emit re-check sees it.
-            finding["status"] = "resolved"
+                self._emit(
+                    "repair.finished",
+                    scene_id=scene_id,
+                    finding_type=finding_type,
+                    cycle=used,
+                    outcome="attempted",
+                )
+
+                return
+
+            self._emit(
+                "repair.finished",
+                scene_id=scene_id,
+                finding_type=finding_type,
+                cycle=used,
+                outcome="unresolved",
+            )
+
+        # --------------------------------------------------------------
+        # Budget exhausted
+        # --------------------------------------------------------------
+
+        self._log_cycle(
+            scene_id,
+            finding_type,
+            routed_finding.get(
+                "mismatch_subtype"
+            ),
+            routed_to=targets,
+            diagnostic_message=_detail(
+                finding
+            ),
+            pre_hash=_hash(ctx),
+            post_hash=_hash(ctx),
+            outcome="gave_up",
+            cycles_used=self._cycles_used.get(
+                cycles_key,
+                0,
+            ),
+        )
+
+        if not source_is_gate:
+            # Soft gate: preserve the defect as an open issue without
+            # allowing it to halt the scene.
+            finding["status"] = (
+                "open_defect"
+            )
+
         else:
-            self._log_cycle(scene_id, finding_type, routed_finding.get("mismatch_subtype"),
-                            routed_to=targets, diagnostic_message=finding.get("detail", ""),
-                            pre_hash=_hash(ctx), post_hash=_hash(ctx), outcome="gave_up",
-                            cycles_used=self._cycles_used.get(cycles_key, 0))
-            if not source_is_gate:
-                # Budget exhausted, soft gate: demote to an open, non-blocking defect rather
-                # than leaving `status: fail` (which would otherwise halt the scene on the
-                # runner's post-emit re-check regardless of is_gate()).
-                finding["status"] = "open_defect"
-            # Hard gate: leave `status: fail` in place so the runner halts the scene.
+            # Hard gate: leave status untouched so the runner can halt.
+            finding["status"] = finding.get(
+                "status",
+                "fail",
+            )
 
-    # -------------------------------------------------------------------------------- log --
+    # ------------------------------------------------------------------
+    # Event emission
+    # ------------------------------------------------------------------
 
-    def _log_cycle(self, scene_id, finding_type, mismatch_subtype, *, routed_to,
-                  diagnostic_message, pre_hash, post_hash, outcome, cycles_used) -> None:
+    def _emit(
+        self,
+        event_name: str,
+        **payload: Any,
+    ) -> None:
+        if self._bus is None:
+            return
+
+        try:
+            self._bus.emit(
+                event_name,
+                **payload,
+            )
+        except Exception:
+            # Repair events must never crash the repair itself.
+            return
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    def _log_cycle(
+        self,
+        scene_id: str,
+        finding_type: str,
+        mismatch_subtype: Any,
+        *,
+        routed_to: list[str],
+        diagnostic_message: str,
+        pre_hash: str,
+        post_hash: str,
+        outcome: str,
+        cycles_used: int,
+    ) -> None:
+        """Persist one auditable repair-cycle record."""
+
         if self._log_path is None:
             return
+
         self._cycle_id += 1
-        record = {
-            "cycle_id": self._cycle_id,
-            "scene_id": scene_id,
-            "finding_type": finding_type,
-            "mismatch_subtype": mismatch_subtype,
-            "routed_to": routed_to,
-            "diagnostic_message": diagnostic_message,
-            "pre_repair_context_hash": pre_hash,
-            "post_repair_context_hash": post_hash,
-            "outcome": outcome,
-            "cycles_used": cycles_used,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
-        self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+
+        from ...logging_ import RepairRecord
+
+        record = RepairRecord(
+            cycle_id=self._cycle_id,
+            scene_id=scene_id,
+            finding_type=finding_type,
+            mismatch_subtype=mismatch_subtype,
+            routed_to=routed_to,
+            diagnostic_message=diagnostic_message,
+            pre_repair_context_hash=pre_hash,
+            post_repair_context_hash=post_hash,
+            outcome=outcome,
+            cycles_used=cycles_used,
+            timestamp=time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(),
+            ),
+        )
+
+        self.history.append(
+            record
+        )
+
+        if self._active_context is not None:
+            self._active_context.repair_records.append(
+                dataclasses.asdict(
+                    record
+                )
+            )
+
+        self._log_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        with self._log_path.open(
+            "a",
+            encoding="utf-8",
+        ) as handle:
+            handle.write(
+                json.dumps(
+                    dataclasses.asdict(
+                        record
+                    ),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
 
-def _hash(ctx: SceneContext) -> str:
+# ---------------------------------------------------------------------------
+# Context hashing
+# ---------------------------------------------------------------------------
+
+def _hash(
+    ctx: SceneContext,
+) -> str:
+    """Return the canonical context hash used by repair provenance."""
+
     from ...logging_ import context_hash
-    return context_hash(ctx)
+
+    return context_hash(
+        ctx
+    )

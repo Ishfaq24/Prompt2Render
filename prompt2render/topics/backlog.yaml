@@ -1,0 +1,35 @@
+# Publishing queue. 2-3 per week, not one per day.
+# status: idea | scripted | animated | assembled | published
+# Track A = growth engine (search demand). Track B = authority (high value, low volume).
+# Interleave them ~3:1 so the channel keeps a coherent audience signal.
+
+- {n: 1,  track: A, slug: booths-algorithm,        title: "Booth's Multiplication Algorithm, Step by Step", status: idea}
+- {n: 2,  track: A, slug: cache-mapping,           title: "Cache Mapping: Direct vs Associative vs Set-Associative", status: idea}
+- {n: 3,  track: A, slug: five-stage-pipeline,     title: "The 5-Stage Pipeline and Where It Stalls", status: idea}
+- {n: 4,  track: A, slug: data-hazards,            title: "Data Hazards and Forwarding", status: idea}
+- {n: 5,  track: B, slug: hash-one-way,            title: "Hash Functions: What One-Way Really Means", status: idea}
+- {n: 6,  track: A, slug: addressing-modes,        title: "Addressing Modes, Visually", status: idea}
+- {n: 7,  track: A, slug: twos-complement,         title: "Two's Complement: Why It Actually Works", status: idea}
+- {n: 8,  track: A, slug: virtual-memory-tlb,      title: "Virtual Memory and the TLB", status: idea}
+- {n: 9,  track: B, slug: diffie-hellman,          title: "Diffie-Hellman, With Colours Then With Maths", status: idea}
+- {n: 10, track: A, slug: keypress-to-pixel,       title: "Keypress to Character on Screen: The Full Path", status: idea}
+- {n: 11, track: A, slug: fetch-decode-execute,    title: "Fetch, Decode, Execute - Animated", status: idea}
+- {n: 12, track: A, slug: risc-vs-cisc,            title: "RISC vs CISC, Honestly", status: idea}
+- {n: 13, track: B, slug: rsa-in-six-minutes,      title: "RSA in Six Minutes", status: idea}
+- {n: 14, track: A, slug: dma-vs-programmed-io,    title: "DMA vs Programmed I/O", status: idea}
+- {n: 15, track: A, slug: ieee-754,                title: "IEEE 754: Why 0.1 + 0.2 Is Not 0.3", status: idea}
+- {n: 16, track: A, slug: branch-prediction,       title: "Branch Prediction", status: idea}
+- {n: 17, track: B, slug: elliptic-curves,         title: "Elliptic Curves: Why That Strange Addition Rule", status: idea}
+- {n: 18, track: A, slug: amdahls-law,             title: "Amdahl's Law and Why More Cores Stop Helping", status: idea}
+- {n: 19, track: B, slug: signatures-vs-encryption, title: "Signatures vs Encryption: The Most Confused Pair in Security", status: idea}
+- {n: 20, track: B, slug: merkle-trees,            title: "Merkle Trees", status: idea}
+- {n: 21, track: B, slug: shor-intuition,          title: "Why Quantum Computers Break RSA", status: idea}
+- {n: 22, track: B, slug: evm-stack-machine,       title: "What a Smart Contract Actually Is: The EVM as a Stack Machine", status: idea}
+- {n: 23, track: B, slug: gas-explained,           title: "Gas: What You Are Really Paying For", status: idea}
+- {n: 24, track: B, slug: zk-cave-to-circuit,      title: "Zero-Knowledge Proofs: Ali Baba's Cave, Then a Real Circuit", status: idea}
+- {n: 25, track: B, slug: snark-vs-stark,          title: "zk-SNARK vs zk-STARK", status: idea}
+- {n: 26, track: B, slug: lattices-and-lwe,        title: "Lattices and LWE, Intuitively", status: idea}
+- {n: 27, track: B, slug: ml-kem-kyber,            title: "ML-KEM (Kyber): The Post-Quantum Replacement", status: idea}
+- {n: 28, track: B, slug: garbled-circuits,        title: "Yao's Garbled Circuits and Secure Multi-Party Computation", status: idea}
+- {n: 29, track: B, slug: pow-vs-pos,              title: "PoW vs PoS Consensus", status: idea}
+- {n: 30, track: B, slug: onchain-attestations,    title: "On-Chain Attestations and Product Provenance", status: idea}

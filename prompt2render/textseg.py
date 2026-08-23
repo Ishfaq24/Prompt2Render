@@ -214,6 +214,10 @@ _LEXICON = {
 
 _ORDINAL_RE = re.compile(r"^(\d+)(st|nd|rd|th)$")
 _PLURAL_NUM_RE = re.compile(r"^(\d+)'?s$")
+# Only tokens that are wholly numeric (optionally ordinal/plural/decimal)
+# may enter _number_to_words(). Mixed algorithm notation such as n-1, O(n),
+# 2D, 1-based, and v2 must remain ordinary comparison tokens.
+_NUMERIC_TOKEN_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?(?:st|nd|rd|th|'?s)?$")
 
 
 def _int_to_words(n: int) -> str:
@@ -281,15 +285,20 @@ def normalise_token(tok: str) -> str:
     if not t:
         return ""
 
-    if (hit := _LEXICON.get(t.strip(".,;:!?()[]{}\"'"))) is not None:
+    stripped = t.strip(".,;:!?()[]{}\"'")
+    if (hit := _LEXICON.get(stripped)) is not None:
         return hit
+
+    # Handle known mathematical prefixes before punctuation normalization.
     for prefix, expansion in _LEXICON.items():
-        if "(" in prefix and t.startswith(prefix):
-            return expansion + " " + normalise_token(t[len(prefix):])
+        if "(" in prefix and stripped.startswith(prefix):
+            remainder = stripped[len(prefix):]
+            return expansion + (" " + normalise_token(remainder) if remainder else "")
 
     # Collapse digit grouping *before* punctuation stripping, or "1,000,000"
     # becomes three separate tokens and reads as "one zero zero".
-    t = re.sub(r"(?<=\d),(?=\d\d\d(?:\D|$))", "", t)
+    # Remove grouping commas from integers such as 1,000 and 1,000,000.
+    t = re.sub(r"(?<=\d),(?=\d{3}(?:,\d{3})*(?:\D|$))", "", t)
 
     for sym, rep in _SYMBOLS.items():
         t = t.replace(sym, rep)
@@ -309,7 +318,7 @@ def normalise_token(tok: str) -> str:
             continue
         if neg:
             piece = "-" + piece
-        if any(c.isdigit() for c in piece):
+        if _NUMERIC_TOKEN_RE.fullmatch(piece):
             out.append(_number_to_words(piece))
         elif piece.isalpha() and len(piece) <= 5 and tok.isupper() and len(tok) > 1:
             # An all-caps token is an initialism; ASR spells it letter by

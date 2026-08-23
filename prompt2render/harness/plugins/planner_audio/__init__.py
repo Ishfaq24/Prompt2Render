@@ -14,7 +14,7 @@ class PlannerAudioPlugin(Plugin):
     name = "planner_audio"
 
     def declare_dependencies(self) -> list[str]:
-        return ["scene_plan"]
+        return ["scene_plan", "alignment_artifact"]
 
     def declare_effects(self) -> list[str]:
         return ["narration"]

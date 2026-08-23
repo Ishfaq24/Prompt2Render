@@ -208,10 +208,10 @@ def rectangle(ax, x, y, w, h, facecolor=ZERO, edgecolor=DIM, lw=2.0, zorder=2):
     ax.add_patch(Rectangle((x - w/2, y - h/2), w, h, facecolor=facecolor, edgecolor=edgecolor, linewidth=lw, zorder=zorder))
 
 def circle(ax, text, x, y, r=0.4, active=False, size=24):
-    ec = "#0000ff" if active else DIM  # JIOHotsatr blue
+    ec = ACCENT if active else DIM
     ax.add_patch(Circle((x, y), r, facecolor=BG, edgecolor=ec, linewidth=3.2 if active else 2.0, zorder=2))
     ax.text(x, y, text, ha="center", va="center", zorder=3,
-            color="#0000ff" if active else FG, fontsize=size, fontfamily=SANS,
+            color=ACCENT if active else FG, fontsize=size, fontfamily=SANS,
             fontweight="bold" if active else "normal")
 
 def arrow(ax, x1, y1, x2, y2, color=ACCENT, lw=3.0, head=0.28):
@@ -418,7 +418,7 @@ def register(ax, value, x, y, n=8, drop_carry=False, box=1.05, size=40,
 
 def array(ax, values, y=5.0, x0=1.0, x1=15.0, lo=None, hi=None, mid=None,
           found=None, dead=None, target=None, size=26, idx=True,
-          bracket=None):
+          bracket=None, alpha=1.0):
     """A sorted array with the pointers a binary search actually maintains.
 
     dead   : indices already eliminated -- drawn hollow, because the point of
@@ -428,6 +428,8 @@ def array(ax, values, y=5.0, x0=1.0, x1=15.0, lo=None, hi=None, mid=None,
     Returns a function index -> x so callers can attach their own annotations.
     """
     n = len(values)
+    if n == 0:
+        raise ValueError("k.array requires at least one value")
     gap = 0.12
     box = min(1.15, (x1 - x0 - (n - 1) * gap) / n)
     step = box + gap
@@ -452,9 +454,17 @@ def array(ax, values, y=5.0, x0=1.0, x1=15.0, lo=None, hi=None, mid=None,
         ax.add_patch(FancyBboxPatch(
             (cx - box / 2, y - box / 2), box, box,
             boxstyle="round,pad=0.02,rounding_size=0.09",
-            facecolor=fc, edgecolor=ec, linewidth=lw, zorder=2))
+            facecolor=fc, edgecolor=ec, linewidth=lw, zorder=2, alpha=alpha))
+        
+        # Manually apply alpha to text color by creating an RGBA tuple if it's a hex string
+        text_color = BG if i in (mid, found) else (LINE if is_dead else FG)
+        if alpha < 1.0:
+            import matplotlib.colors as mcolors
+            rgba = mcolors.to_rgba(text_color, alpha=alpha)
+            text_color = rgba
+            
         ax.text(cx, y, str(v), ha="center", va="center", zorder=3,
-                color=BG if i in (mid, found) else (LINE if is_dead else FG),
+                color=text_color,
                 fontsize=size, fontfamily=MONO,
                 fontweight="bold" if i in (mid, found) else "normal")
         if idx:
@@ -502,6 +512,8 @@ def predicate_strip(ax, flags, y=5.0, x0=2.0, x1=14.0, boundary=True,
                     labels=("no", "yes"), size=26, note=None):
     """false,false,...,true,true -- the shape every binary search really needs."""
     n = len(flags)
+    if n == 0:
+        raise ValueError("k.predicate_strip requires at least one flag")
     gap = 0.12
     box = min(1.3, (x1 - x0 - (n - 1) * gap) / n)
     step = box + gap
@@ -543,12 +555,28 @@ def predicate_strip(ax, flags, y=5.0, x0=2.0, x1=14.0, boundary=True,
 # --------------------------------------------------- algorithms & data structures
 
 def hanoi(ax, state, x=8.0, y=5.0, w=9.0, h=4.0):
-    """Tower of Hanoi state visualization.
-    
-    state: a list of 3 lists, e.g., [[3, 2, 1], [], []], where 3 is the largest disk.
-    x, y: center of the base.
-    w, h: bounding box.
+    """Draw a three-peg Tower of Hanoi state.
+
+    The state is bottom-to-top: ``[[3, 2, 1], [], []]`` is legal, while
+    ``[[1, 2], [], []]`` is physically illegal and should only be used when
+    the scene explicitly labels it as an invalid example. Four-peg input is
+    rejected before any artist is added so a bad model answer cannot crash
+    halfway through a frame.
     """
+    if not isinstance(state, list) or len(state) != 3:
+        raise ValueError("k.hanoi supports exactly three pegs: [left, middle, right]")
+    if any(not isinstance(peg, list) for peg in state):
+        raise ValueError("k.hanoi state must be a list of three peg lists")
+    disks = [disk for peg in state for disk in peg]
+    if any(isinstance(disk, bool) or not isinstance(disk, (int, float)) or disk <= 0
+           for disk in disks):
+        raise ValueError("k.hanoi disk sizes must be positive numbers")
+    if len(set(disks)) != len(disks):
+        raise ValueError("k.hanoi cannot draw duplicate disk sizes")
+    if not disks:
+        raise ValueError("k.hanoi state must contain at least one disk")
+    max_disk = max(disks)
+
     base_y = y - h/2 + 0.2
     peg_y_top = y + h/2 - 0.5
     
@@ -569,7 +597,7 @@ def hanoi(ax, state, x=8.0, y=5.0, w=9.0, h=4.0):
     for peg_idx, disks in enumerate(state):
         px = peg_x[peg_idx]
         for i, disk_size in enumerate(disks):
-            disk_w = max_disk_w * (disk_size / max(3, max((max(p) if p else 0) for p in state)))
+            disk_w = max_disk_w * (disk_size / max(3, max_disk))
             dy = base_y + 0.2 + i * (disk_h + 0.05)
             
             color = colors[(disk_size - 1) % len(colors)]
@@ -634,9 +662,9 @@ def grid(ax, data, x=8.0, y=5.0, cell_w=1.2, cell_h=1.2, highlight=None):
             is_high = (r, c) in highlight
             val = str(data[r][c])
             
-            ax.add_patch(plt.Rectangle(
+            ax.add_patch(Rectangle(
                 (cx - cell_w/2, cy - cell_h/2), cell_w, cell_h,
-                facecolor="#0000ff" if is_high else ZERO, # JIOHotsatr blue for active cells
+                facecolor=ACCENT if is_high else ZERO,
                 edgecolor=DIM, linewidth=2.0, zorder=2))
                 
             ax.text(cx, cy, val, ha="center", va="center",
@@ -645,7 +673,7 @@ def grid(ax, data, x=8.0, y=5.0, cell_w=1.2, cell_h=1.2, highlight=None):
 # --------------------------------------------------- datapath / block diagram
 
 
-def block(ax, text, x, y, w=2.6, h=1.4, active=False, size=24):
+def block(ax, text, x, y, w=2.6, h=1.4, active=False, size=24, alpha=1.0):
     """A labeled functional-unit box -- ALU, register file, cache, control
     unit -- for datapath/block diagrams (pipelining, cache mapping,
     addressing modes, DMA, fetch-decode-execute).
@@ -657,13 +685,20 @@ def block(ax, text, x, y, w=2.6, h=1.4, active=False, size=24):
     instead of a guessed coordinate.
     """
     ec = ACCENT if active else DIM
+    # Depth shadow
+    # Hardcoded shadow color instead of missing Theme class
+    ax.add_patch(FancyBboxPatch(
+        (x - w / 2 + 0.05, y - h / 2 - 0.05), w, h,
+        boxstyle="round,pad=0.03,rounding_size=0.10",
+        facecolor="#05080c", edgecolor="none", zorder=1, alpha=alpha))
+        
     ax.add_patch(FancyBboxPatch(
         (x - w / 2, y - h / 2), w, h,
         boxstyle="round,pad=0.03,rounding_size=0.10",
-        facecolor=BG, edgecolor=ec, linewidth=3.2 if active else 2.0, zorder=2))
+        facecolor=BG, edgecolor=ec, linewidth=3.2 if active else 2.0, zorder=2, alpha=alpha))
     ax.text(x, y, text, ha="center", va="center", zorder=3,
             color=ACCENT if active else FG, fontsize=size, fontfamily=SANS,
-            fontweight="bold" if active else "normal")
+            fontweight="bold" if active else "normal", alpha=alpha)
     return {"left": (x - w / 2, y), "right": (x + w / 2, y),
             "top": (x, y + h / 2), "bottom": (x, y - h / 2),
             "center": (x, y)}
@@ -748,7 +783,15 @@ def table(ax, rows, headers=None, x=8.0, y=5.0, col_w=None, size=27,
     for DP-style grids where the cell being filled (and/or the specific
     cells it depends on) matters, not a whole row.
     """
+    if not rows:
+        raise ValueError("k.table requires at least one row")
     ncol = len(rows[0])
+    if ncol == 0:
+        raise ValueError("k.table rows cannot be empty")
+    if any(len(row) != ncol for row in rows):
+        raise ValueError("k.table rows must all have the same number of columns")
+    if headers is not None and len(headers) != ncol:
+        raise ValueError("k.table headers must match the number of columns")
     col_w = col_w or [3.4] * ncol
     total = sum(col_w)
     rh = 0.78

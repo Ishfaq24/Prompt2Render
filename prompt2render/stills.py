@@ -113,6 +113,16 @@ def render(scene: Path, outdir: Path, max_cue: int | None = None,
         raise SystemExit("states() must return a non-empty list")
 
     outdir.mkdir(parents=True, exist_ok=True)
+
+    # A failed regeneration must never leave the previous successful
+    # manifest/audit looking like a commitment for the new scene. The scene
+    # generator writes into the same directory on retries, so invalidate the
+    # old commitment before drawing the new attempt. PNGs are deliberately
+    # left in place: accepted frames may be overwritten, and render_into()
+    # removes any strays after a successful audit.
+    for marker in ("manifest.json", "audit.json"):
+        (outdir / marker).unlink(missing_ok=True)
+
     manifest: list[dict] = []
     problems: list[str] = []
     # Warnings are kept whatever `strict` says, so the recorded verdict can
@@ -246,7 +256,25 @@ def is_current(scene: Path, outdir: Path) -> bool:
         entries = json.loads(man.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return bool(entries) and all((outdir / e["png"]).exists() for e in entries)
+    if not isinstance(entries, list) or not entries:
+        return False
+
+    # Treat the manifest as the cache contract. A malformed entry or an
+    # unexpected filename must invalidate the cache rather than propagating a
+    # KeyError into a later stage.
+    try:
+        pngs = [e["png"] for e in entries]
+    except (KeyError, TypeError):
+        return False
+
+    if any(not isinstance(name, str) or not name.endswith(".png") for name in pngs):
+        return False
+
+    audit = audit_record(outdir)
+    if not isinstance(audit, dict) or audit.get("stills") != len(entries):
+        return False
+
+    return all((outdir / name).is_file() for name in pngs)
 
 
 def audit_record(outdir: Path) -> dict | None:
