@@ -40,7 +40,7 @@ def test_manim19_normalizer_repairs_common_llm_aliases():
     assert 'UP_LEFT' not in fixed
     assert 'UL' in fixed
 
-def test_verifier_semantic_uses_multimodal_preview_if_present(tmp_path):
+def test_verifier_semantic_uses_multimodal_preview_if_present(tmp_path, monkeypatch):
     from prompt2render.harness.plugins.verifier_semantic import VerifierSemanticPlugin
     from prompt2render.harness.context import SceneContext, ScenePlanEntry, CodeArtifact
     
@@ -58,44 +58,28 @@ def test_verifier_semantic_uses_multimodal_preview_if_present(tmp_path):
     preview_img = preview_dir / "Scene01.png"
     preview_img.write_bytes(b"fake_png_data")
     
-    # We just want to check if the plugin tries to call the OpenAI client with image_url
+    # We want to check the plugin routes the preview image through
+    # llm.complete() — the shared call site with deterministic key/model
+    # rotation — rather than a raw, unprotected client call that has no
+    # retry/fallback on a 429.
     plugin = VerifierSemanticPlugin()
-    
-    # Patch the llm module locally to avoid real API calls
-    import sys
+
     from unittest.mock import MagicMock
     import prompt2render.harness.plugins.verifier_semantic.__init__ as sem
-    
-    mock_client = MagicMock()
-    mock_resp = MagicMock()
-    mock_resp.choices = [MagicMock()]
-    mock_resp.choices[0].message.content = '{"status": "pass"}'
-    mock_client.chat.completions.create.return_value = mock_resp
-    
-    # Temporarily replace llm client behavior
-    sem.llm.keys = lambda: ["fake_key"]
-    sem.llm.client = lambda k: mock_client
-    
-    # Also remove llm.complete if present so it uses the OpenAI client path
-    original_complete = getattr(sem.llm, "complete", None)
-    if original_complete:
-        delattr(sem.llm, "complete")
-        
+
+    monkeypatch.setattr(sem.llm, "keys", lambda: ["fake_key"])
+    monkeypatch.setattr(sem.llm, "client", lambda k: MagicMock())
+
+    mock_complete = MagicMock(return_value='{"status": "pass"}')
+    monkeypatch.setattr(sem.llm, "complete", mock_complete)
+
     plugin.run(ctx)
-    
-    if original_complete:
-        setattr(sem.llm, "complete", original_complete)
-        
-    # Verify the client was called with the image
-    mock_client.chat.completions.create.assert_called_once()
-    kwargs = mock_client.chat.completions.create.call_args.kwargs
-    messages = kwargs["messages"]
-    assert len(messages) == 1
-    content = messages[0]["content"]
-    assert isinstance(content, list)
-    assert len(content) == 2
-    assert content[1]["type"] == "image_url"
-    assert "data:image/png;base64," in content[1]["image_url"]["url"]
+
+    mock_complete.assert_called_once()
+    kwargs = mock_complete.call_args.kwargs
+    assert kwargs["image_base64"] is not None
+    import base64
+    assert base64.b64decode(kwargs["image_base64"]) == b"fake_png_data"
 
 def test_manim_normalize_invalid_escapes():
     from prompt2render.harness.plugins.renderer_manim import _normalize_manim19

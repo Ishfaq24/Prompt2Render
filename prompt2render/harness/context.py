@@ -249,6 +249,8 @@ class SceneContext:
     # Aggregate/static verification marker. This is informational and does
     # not replace individual verifier findings.
     static_code_verified: bool = False
+    pedagogy_verified: bool = False
+    storyboard_verified: bool = False
 
     # ------------------------------------------------------------------
     # Educational planning/review

@@ -5,7 +5,9 @@ This plugin is the boundary between planning and executable scene generation.
 Responsibilities
 ----------------
 1. Consume the verified scene plan and storyboard.
-2. Delegate actual code generation to ``scenes.generate_all`` / ``scenes.generate``.
+2. Delegate actual code generation to ``scenes.generate``, one section at a
+   time, sending each generated scene straight to the harness's own
+   ``verifier_execution`` check before moving on to the next section.
 3. Preserve the existing generator's internal retry/key-rotation behaviour.
 4. Never silently overwrite an existing scene.
 5. Support deterministic per-scene rollback and regeneration.
@@ -21,14 +23,17 @@ from __future__ import annotations
 
 import hashlib
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 from ...context import CodeArtifact, SceneContext
 from ...plugin import Plugin
+from ..verifier_execution import check_scene_artifact
 from ....project import parse_script
-from ....scenes import generate_all
-from ....stills import scene_path
+from ....scenes import default_jobs, generate
+from ....stills import is_current, scene_path, stills_dir
+from .... import cfg
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +41,14 @@ from ....stills import scene_path
 # ---------------------------------------------------------------------------
 
 MAX_REPAIR_FEEDBACK = 6000
+
+#: One initial attempt plus this many local regenerate-and-recheck attempts
+#: before a scene's harness check failure is logged and generation moves on
+#: to the next scene. ``scenes.generate()`` already retries hard against its
+#: own preflight validator; this is only a safety net for defects that only
+#: the harness's own check (e.g. Manim-vs-SceneKit backend detection) would
+#: catch.
+MAX_HARNESS_CHECK_RETRIES = 1
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +296,111 @@ def _repair_feedback(
     return text[-MAX_REPAIR_FEEDBACK:]
 
 
+def _harness_feedback(
+    findings: list[dict[str, Any]],
+) -> str:
+    """Convert harness check findings into LLM-facing repair feedback."""
+
+    messages = [
+        str(finding.get("detail") or finding.get("message") or "").strip()
+        for finding in findings
+        if isinstance(finding, dict)
+    ]
+
+    clean = [message for message in messages if message]
+
+    if not clean:
+        return ""
+
+    text = (
+        "\n\nYour previous answer was rejected by the harness's own "
+        "syntax/quality check. Return the whole corrected module.\n\n"
+        "HARNESS CHECK PROBLEMS:\n"
+        + "\n".join(f"- {message}" for message in clean)
+    )
+
+    return text[-MAX_REPAIR_FEEDBACK:]
+
+
+# ---------------------------------------------------------------------------
+# Per-scene generation + immediate harness check
+# ---------------------------------------------------------------------------
+
+def _generate_and_check_one(
+    context: SceneContext,
+    script,
+    index: int,
+    stem: str,
+    retries: int,
+) -> None:
+    """Generate one scene, then send it to the harness immediately.
+
+    Regenerates the same scene up to ``MAX_HARNESS_CHECK_RETRIES`` extra
+    times when the harness's own check (``verifier_execution``'s
+    deterministic source check) reports a blocking failure. If it still
+    fails after that, the failure is logged to
+    ``context.check_results["generator_code:preflight"]`` and generation
+    proceeds to the next scene — the end-of-batch ``verifier_execution``
+    stage remains the authoritative gate, so this never hard-stops the run.
+    """
+
+    entry = next(
+        (e for e in context.scene_plan if e.stem == stem),
+        None,
+    )
+
+    if entry is None:
+        raise KeyError(f"Unknown scene stem: {stem}")
+
+    extra_feedback = _repair_feedback(context, stem)
+
+    attempt = 0
+
+    while True:
+        generate(
+            context.project_dir,
+            script,
+            index,
+            retries=retries,
+            extra_feedback=extra_feedback,
+        )
+
+        _record_artifact(context, stem)
+
+        findings = check_scene_artifact(context, entry, gate=True)
+        blocking = [
+            f for f in findings
+            if isinstance(f, dict) and str(f.get("status", "")).lower() == "fail"
+        ]
+
+        if not blocking:
+            cfg.say(f"section {stem}: harness check passed")
+            return
+
+        if attempt >= MAX_HARNESS_CHECK_RETRIES:
+            cfg.say(
+                f"section {stem}: harness check failed after "
+                f"{attempt + 1} attempt(s) — logging and continuing"
+            )
+            log = context.check_results.setdefault(
+                "generator_code:preflight", []
+            )
+            log.extend(blocking)
+            return
+
+        attempt += 1
+        first = str(
+            blocking[0].get("detail") or blocking[0].get("message") or ""
+        )[:110]
+        cfg.say(
+            f"section {stem}: harness check failed — {first} — retrying "
+            f"({attempt}/{MAX_HARNESS_CHECK_RETRIES})"
+        )
+        extra_feedback = _repair_feedback(context, stem) + _harness_feedback(
+            blocking
+        )
+
+
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
@@ -412,20 +530,64 @@ class GeneratorCodePlugin(Plugin):
         retries = self._retries()
         jobs = self._jobs()
 
-        # Existing generate_all() remains the actual coder.
-        generate_all(
-            context.project_dir,
-            script,
-            retries=retries,
-            jobs=jobs,
-        )
+        todo = []
+        for section in script.sections:
+            dst = scene_path(context.project_dir, section.stem)
+            # dst.exists() alone isn't "done" — see scenes.generate_all()'s
+            # own comment; is_current() requires the audit-backed manifest.
+            if is_current(dst, stills_dir(context.project_dir, section.stem)):
+                cfg.say(
+                    f"section {section.stem}: scene already written, "
+                    "skipping (delete it to regenerate)"
+                )
+                _record_artifact(context, section.stem)
+                continue
+            todo.append(section)
 
-        # Synchronise artifact state.
-        for entry in context.scene_plan:
-            _record_artifact(
-                context,
-                entry.stem,
-            )
+        if not todo:
+            return context
+
+        continuity = os.environ.get(
+            "P2R_CONTINUITY", "1"
+        ).strip().lower() not in {"0", "false", "off", "no"}
+
+        n = jobs or default_jobs(len(todo))
+        # Continuity means each section's prompt anchors on the previous
+        # section's generated code, so concurrent generation would race —
+        # keep it serial, exactly as generate_all() does today.
+        if continuity:
+            n = 1
+
+        if n <= 1 or len(todo) == 1:
+            for section in todo:
+                _generate_and_check_one(
+                    context,
+                    script,
+                    section.index,
+                    section.stem,
+                    retries,
+                )
+        else:
+            cfg.say(f"storyboarding {len(todo)} sections, {n} at a time")
+            with ThreadPoolExecutor(max_workers=n) as pool:
+                futures = [
+                    pool.submit(
+                        _generate_and_check_one,
+                        context,
+                        script,
+                        section.index,
+                        section.stem,
+                        retries,
+                    )
+                    for section in todo
+                ]
+                try:
+                    for fut in as_completed(futures):
+                        fut.result()
+                except BaseException:
+                    for f in futures:
+                        f.cancel()
+                    raise
 
         return context
 
@@ -509,8 +671,6 @@ class GeneratorCodePlugin(Plugin):
 
         retries = self._retries()
 
-        from ....scenes import generate
-
         generate(
             context.project_dir,
             script,
@@ -538,3 +698,17 @@ class GeneratorCodePlugin(Plugin):
             context,
             stem,
         )
+
+        # Send the repaired scene straight to the harness, same as a
+        # freshly generated one — the repair_router's caller (the runner)
+        # re-runs the originating verifier afterward regardless, but this
+        # gives an immediate, logged signal rather than waiting for that.
+        findings = check_scene_artifact(context, entry, gate=True)
+        if any(
+            isinstance(f, dict) and str(f.get("status", "")).lower() == "fail"
+            for f in findings
+        ):
+            log = context.check_results.setdefault(
+                "generator_code:preflight", []
+            )
+            log.extend(findings)

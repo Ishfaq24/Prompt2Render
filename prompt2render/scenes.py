@@ -400,6 +400,207 @@ def _check_latex_string(text: str, func_name: str, lineno: int) -> list[str]:
     return errors
 
 
+#: Mobject/VMobject instance methods whose real signature takes no **kwargs,
+#: so a keyword-argument mismatch caught via inspect.signature() will match
+#: Manim's own runtime TypeError exactly. Methods that accept **kwargs (e.g.
+#: scale, arrange, rotate) are deliberately excluded — checking them would
+#: never catch anything since **kwargs swallows any name.
+_MANIM_NO_KWARGS_METHODS = (
+    "next_to",
+    "move_to",
+    "to_edge",
+    "align_to",
+    "set_color",
+    "become",
+    "shift",
+)
+
+
+def _manim_module():
+    """Best-effort lazy import of the installed manim package.
+
+    Returns ``None`` when manim is not installed rather than raising, so
+    SceneKit-only installs are unaffected.
+    """
+    try:
+        import manim
+        return manim
+    except Exception:
+        return None
+
+
+def _bound_names(tree: ast.AST) -> set[str]:
+    """Collect every name bound anywhere in the module.
+
+    Deliberately flat (whole-module, not scope-aware): the goal is only to
+    avoid false positives on legitimately-defined names, not to reproduce
+    real Python scoping. Missing a scope violation is fine; flagging a name
+    the code actually defines is not.
+    """
+    bound: set[str] = set()
+
+    def add_target(target: ast.AST) -> None:
+        if isinstance(target, ast.Name):
+            bound.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                add_target(elt)
+        elif isinstance(target, ast.Starred):
+            add_target(target.value)
+
+    def add_args(args: ast.arguments) -> None:
+        for arglist in (args.posonlyargs, args.args, args.kwonlyargs):
+            for arg in arglist:
+                bound.add(arg.arg)
+        if args.vararg:
+            bound.add(args.vararg.arg)
+        if args.kwarg:
+            bound.add(args.kwarg.arg)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import,)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                add_target(target)
+        elif isinstance(node, ast.AnnAssign):
+            add_target(node.target)
+        elif isinstance(node, getattr(ast, "NamedExpr", ())):
+            add_target(node.target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            add_target(node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars:
+                    add_target(item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                bound.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.add(node.name)
+            add_args(node.args)
+        elif isinstance(node, ast.Lambda):
+            add_args(node.args)
+        elif isinstance(node, ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.comprehension):
+            add_target(node.target)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+
+    return bound
+
+
+def _check_undefined_manim_names(tree: ast.AST) -> list[str]:
+    """Flag identifiers that are neither imported, assigned, nor a builtin.
+
+    Generated Manim code routinely hallucinates plausible-looking but
+    nonexistent identifiers (``RED_M``, ``BLUE_L``, ``ease_out_sine``) that
+    only surface as a ``NameError`` mid-render, after minutes of animation
+    have already played. Catching them statically costs nothing and needs
+    no LLM round-trip.
+    """
+    manim = _manim_module()
+    if manim is None:
+        return []
+
+    import builtins as _builtins
+
+    known = set(dir(manim)) | set(dir(_builtins)) | {"__name__", "__file__"}
+    known |= _bound_names(tree)
+
+    errors: list[str] = []
+    seen: set[tuple[str, int]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if node.id in known:
+                continue
+            key = (node.id, node.lineno)
+            if key in seen:
+                continue
+            seen.add(key)
+            errors.append(
+                f"'{node.id}' is not defined (line {node.lineno}); "
+                "this looks like a hallucinated manim/numpy identifier — "
+                "use a real one or define it"
+            )
+
+    return errors
+
+
+def _check_manim_kwarg_signatures(tree: ast.AST) -> list[str]:
+    """Validate keyword arguments against the real installed Manim classes.
+
+    Two shapes are checked, both via ``inspect.signature`` against the
+    actual installed manim package so the result matches Manim's own
+    ``TypeError`` exactly:
+
+    1. Direct construction, ``ClassName(kw=...)``, when ``ClassName``
+       resolves to a manim class whose ``__init__`` has no ``**kwargs``.
+    2. A call to one of ``_MANIM_NO_KWARGS_METHODS`` on any object — nearly
+       every Mobject subclass inherits these methods unmodified, so checking
+       against the base ``Mobject`` implementation is safe without tracking
+       the receiver's inferred type.
+    """
+    manim = _manim_module()
+    if manim is None:
+        return []
+
+    import inspect
+
+    errors: list[str] = []
+
+    mobject_cls = getattr(manim, "Mobject", None)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        keywords = [kw.arg for kw in node.keywords if kw.arg is not None]
+        if not keywords:
+            continue
+
+        target = None
+        label = None
+
+        if isinstance(node.func, ast.Name):
+            candidate = getattr(manim, node.func.id, None)
+            if inspect.isclass(candidate):
+                target = candidate
+                label = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if mobject_cls is not None and node.func.attr in _MANIM_NO_KWARGS_METHODS:
+                target = getattr(mobject_cls, node.func.attr, None)
+                label = node.func.attr
+
+        if target is None:
+            continue
+
+        try:
+            sig = inspect.signature(target)
+        except (TypeError, ValueError):
+            continue
+
+        params = sig.parameters
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            continue
+
+        for kw in keywords:
+            if kw not in params:
+                errors.append(
+                    f"{label}() does not accept '{kw}=' — not a valid "
+                    f"argument in the installed manim {getattr(manim, '__version__', '')} "
+                    f"(line {node.lineno})"
+                )
+
+    return errors
+
+
 def validate_manim_source(code: str) -> list[str]:
     """Validate generated Manim code before rendering.
     
@@ -487,7 +688,7 @@ def validate_manim_source(code: str) -> list[str]:
             # generic "unexpected keyword argument" crashes at runtime.
             if func_name in {"Text", "MathTex", "Tex", "VGroup", "Line", "Arrow", "Circle", "Square", "Rectangle", "Dot"}:
                 for kw in node.keywords:
-                    if kw.arg in {"include_background", "row_height", "col_widths", "corner"}:
+                    if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment"}:
                         errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim 0.19 (line {node.lineno})")
 
             # MathTex/Tex hand the string straight to LaTeX. A raw, unescaped
@@ -520,7 +721,14 @@ def validate_manim_source(code: str) -> list[str]:
     if has_scene_class and not has_wait:
         errors.append("module does not contain any self.wait() calls; you MUST use self.wait() to align animations with narration cues")
 
-    return errors
+    # General, introspection-backed checks against the actually-installed
+    # manim package. These catch hallucinated identifiers and invalid
+    # keyword arguments that the hand-curated checks above don't enumerate,
+    # using the real API surface instead of a fixed blocklist.
+    errors.extend(_check_undefined_manim_names(tree))
+    errors.extend(_check_manim_kwarg_signatures(tree))
+
+    return list(dict.fromkeys(errors))
 
 
 def validate_scene_source(code: str, max_cue: int | None = None) -> list[str]:

@@ -58,11 +58,20 @@ class VerifierStoryboardPlugin(Plugin):
                                        "category": "STORYBOARD", "severity": "BLOCKING",
                                        "stem": entry.stem,
                                        "detail": f"state {position} is missing {key}"})
+        has_blocking = any(
+            isinstance(item, dict)
+            and str(item.get("status", "")).lower() == "fail"
+            and str(item.get("severity", "")) == "BLOCKING"
+            for item in issues
+        )
         if not issues:
             issues = [{"status": "pass", "finding_type": "storyboard_verified",
                        "category": "STORYBOARD", "severity": "INFO",
                        "detail": "storyboard states, cues, and transitions are structurally valid"}]
         context.check_results[self.name] = issues
+        # Gate field consumed by generator_code — must be set even though
+        # check_results already records the same verdict for the runner's gate.
+        context.storyboard_verified = not has_blocking
         return context
 
     def _default_gate(self) -> bool:

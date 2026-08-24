@@ -38,6 +38,7 @@ from typing import Any
 
 from ...context import CodeArtifact, RenderArtifact, SceneContext
 from ...plugin import Plugin
+from ..verifier_execution import check_scene_artifact
 from ....project import parse_script
 from ....visuals import manim_scene
 
@@ -95,6 +96,11 @@ DEFAULT_MODEL = "gemini-3.7-flash"
 DEFAULT_DURATION = 5.0
 
 MAX_REPAIR_FEEDBACK = 6000
+
+#: One initial attempt plus this many local regenerate-and-recheck attempts
+#: before a scene's harness check failure is logged and generation moves on
+#: to the next scene. See ``generator_code``'s identical constant/pattern.
+MAX_HARNESS_CHECK_RETRIES = 1
 
 
 # ---------------------------------------------------------------------------
@@ -1259,6 +1265,82 @@ REQUIREMENTS:
                 stem,
             )
 
+    def _generate_and_check_one(
+        self,
+        context: SceneContext,
+        section,
+    ) -> None:
+        """Generate one Manim scene, then send it to the harness immediately.
+
+        ``_generate_one`` alone leaves the file completely unverified until
+        the batch ``verifier_execution`` stage runs later in the pipeline —
+        which meant a scene with a plain syntax error could sit unrewound
+        long enough for ``renderer_manim`` to try (and crash on) it. This
+        checks the file the instant it's written, retries once locally by
+        feeding the harness's own diagnostics back as repair feedback, and
+        otherwise logs the failure and moves on — the real
+        ``verifier_execution`` pipeline stage remains the actual gate.
+        """
+
+        from .... import cfg
+
+        stem = section.stem
+
+        entry = next(
+            (e for e in context.scene_plan if e.stem == stem),
+            None,
+        )
+
+        attempt = 0
+
+        while True:
+            self._generate_one(context, section)
+
+            artifact = context.code_artifacts.get(stem)
+            if entry is None or artifact is None or artifact.path is None:
+                # Generation itself already failed and logged a warning;
+                # there is nothing on disk to send to the harness.
+                return
+
+            findings = check_scene_artifact(context, entry, gate=True)
+            blocking = [
+                f for f in findings
+                if isinstance(f, dict) and str(f.get("status", "")).lower() == "fail"
+            ]
+
+            if not blocking:
+                cfg.say(f"section {stem}: harness check passed")
+                return
+
+            if attempt >= MAX_HARNESS_CHECK_RETRIES:
+                cfg.say(
+                    f"section {stem}: harness check failed after "
+                    f"{attempt + 1} attempt(s) — logging and continuing"
+                )
+                log = context.check_results.setdefault(
+                    "generator_manim:preflight", []
+                )
+                log.extend(blocking)
+                return
+
+            attempt += 1
+            first = str(
+                blocking[0].get("detail") or blocking[0].get("message") or ""
+            )[:110]
+            cfg.say(
+                f"section {stem}: harness check failed — {first} — retrying "
+                f"({attempt}/{MAX_HARNESS_CHECK_RETRIES})"
+            )
+
+            diagnostics = [
+                str(f.get("detail") or f.get("message") or "").strip()
+                for f in blocking
+                if isinstance(f, dict)
+            ]
+            context.repair_context.setdefault(stem, []).extend(
+                d for d in diagnostics if d
+            )
+
     def run(
         self,
         context: SceneContext,
@@ -1390,7 +1472,7 @@ REQUIREMENTS:
                         missing_ok=True
                     )
 
-            self._generate_one(
+            self._generate_and_check_one(
                 context,
                 section,
             )
@@ -1478,7 +1560,7 @@ REQUIREMENTS:
         section.anim = entry.anim
 
         # Generate only this section.
-        self._generate_one(
+        self._generate_and_check_one(
             context,
             section,
         )

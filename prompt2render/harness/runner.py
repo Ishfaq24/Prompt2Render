@@ -125,6 +125,7 @@ class HarnessRunner:
                 plugin,
                 ctx,
                 halt_on_gate_failure=halt_on_gate_failure,
+                plugin_index=i,
             )
 
             after_repair_stems = set(ctx.repair_context.keys())
@@ -161,18 +162,7 @@ class HarnessRunner:
                 #   verifier_execution -> renderer_manim -> verifier_temporal
                 #   -> verifier_semantic -> feedback_hitl
                 # Rewinding to the generator would duplicate the LLM call.
-                rewind_idx = i
-                for j, p in enumerate(self.plugins[:i]):
-                    deps = p.declare_dependencies() or []
-                    if "code_artifacts" in deps or "render_artifacts" in deps:
-                        rewind_idx = min(rewind_idx, j)
-                # Fallback: if no consumer was found (e.g. stripped Manim
-                # config), rewind to the earliest code producer.
-                if rewind_idx == i:
-                    for j, p in enumerate(self.plugins[:i]):
-                        eff = p.declare_effects() or []
-                        if "code_artifacts" in eff or p.name in ("generator_manim", "generator_code"):
-                            rewind_idx = min(rewind_idx, j)
+                rewind_idx = self._rewind_target_index(i)
 
                 if rewind_idx < i:
                     key = (rewind_idx, frozenset(sorted(trigger)))
@@ -214,6 +204,39 @@ class HarnessRunner:
         return ctx
 
     # ------------------------------------------------------------------
+    # Rewind targeting
+    # ------------------------------------------------------------------
+
+    def _rewind_target_index(self, plugin_index: int) -> int:
+        """Return the earliest index before ``plugin_index`` worth replaying.
+
+        A rewind target is a plugin that either consumes ``code_artifacts``/
+        ``render_artifacts`` or produces ``code_artifacts`` (the canonical
+        generator stages). When none exists before ``plugin_index`` — e.g. a
+        repair to an upstream planning/verification stage like
+        ``verifier_storyboard``, which sits before any code generator even
+        appears in the pipeline — this returns ``plugin_index`` unchanged,
+        signalling "no rewind is possible here".
+        """
+
+        rewind_idx = plugin_index
+
+        for j, p in enumerate(self.plugins[:plugin_index]):
+            deps = p.declare_dependencies() or []
+            if "code_artifacts" in deps or "render_artifacts" in deps:
+                rewind_idx = min(rewind_idx, j)
+
+        # Fallback: if no consumer was found (e.g. stripped Manim config),
+        # rewind to the earliest code producer.
+        if rewind_idx == plugin_index:
+            for j, p in enumerate(self.plugins[:plugin_index]):
+                eff = p.declare_effects() or []
+                if "code_artifacts" in eff or p.name in ("generator_manim", "generator_code"):
+                    rewind_idx = min(rewind_idx, j)
+
+        return rewind_idx
+
+    # ------------------------------------------------------------------
     # Single stage
     # ------------------------------------------------------------------
 
@@ -223,6 +246,7 @@ class HarnessRunner:
         ctx: SceneContext,
         *,
         halt_on_gate_failure: bool,
+        plugin_index: int,
     ) -> SceneContext:
         """Execute, optionally repair, and re-verify one plugin."""
 
@@ -385,14 +409,41 @@ class HarnessRunner:
                 or repair_happened
             ):
                 break
-                
+
+            new_records = ctx.repair_records[before_repairs:]
+
+            # The router has already exhausted its own repair budget for
+            # this finding (outcome "gave_up"). The finding's status is left
+            # untouched in that case (still "fail" for a hard gate), so
+            # reverifying here would just re-observe the identical failure
+            # and burn through max_reverify_attempts producing more useless
+            # "gave_up" cycles before the gate check below finally fires.
+            if any(r.get("outcome") == "gave_up" for r in new_records):
+                break
+
             # If the repair was routed to an earlier stage (like generator_code),
             # we must break out of this plugin's internal re-verification loop
             # and let the outer pipeline loop rewind. We can detect this by checking
             # if the router added new scenes to repair_context.
-            if any(r.get("routed_to") for r in ctx.repair_records[before_repairs:]):
-                # We only break if it was routed to a different stage.
-                # Actually, any repair means we should let the pipeline rewind.
+            #
+            # This is only safe when the outer loop actually HAS a rewind
+            # target to replay back to. A repair routed to a stage upstream
+            # of any code/render-artifact producer (e.g. verifier_storyboard
+            # repairing via planner_llm, long before generator_code even
+            # appears in the pipeline) has no such target — _rewind_target_index
+            # would return plugin_index unchanged and the outer loop's `if
+            # rewind_idx < i` never fires. Breaking here anyway would let a
+            # router's optimistic "resolved" mutation stand as this plugin's
+            # final verdict without ever re-running plugin.run() to confirm
+            # it, so context fields the plugin itself sets (like
+            # storyboard_verified) stay stale even though check_results
+            # claims success. Falling through to the reverify-in-place path
+            # below is the only way to get an authoritative result in that
+            # case.
+            if (
+                any(r.get("routed_to") for r in new_records)
+                and self._rewind_target_index(plugin_index) < plugin_index
+            ):
                 break
 
             if (

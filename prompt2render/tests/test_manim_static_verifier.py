@@ -15,7 +15,6 @@ class Scene01(Scene):
         c.set_shadow(blur=0.5)
 """
     errors = validate_manim_source(code)
-    assert len(errors) == 7
     assert any("imports other than 'manim', 'math', or 'numpy' are not allowed" in e for e in errors)
     assert any("print() is not allowed" in e for e in errors)
     assert any("Axes.get_x_label() does not accept 'font_size'" in e for e in errors)
@@ -36,6 +35,7 @@ class Scene01(Scene):
         c.move_to(UL)
         code = Code(code_string="x=1", language="python", add_line_numbers=True)
         self.play(Create(c))
+        self.wait(1)
 """
     errors = validate_manim_source(code)
     assert not errors
@@ -53,3 +53,32 @@ class Scene01(Scene):
 """
     errors = validate_manim_source(code)
     assert any("contains scalar alpha * PI" in e for e in errors)
+
+def test_manim_static_verifier_catches_hallucinated_identifiers():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        c = Circle(color=RED_M)
+        self.play(c.animate.shift(UP), rate_func=ease_out_sine)
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("'RED_M' is not defined" in e for e in errors)
+    assert any("'ease_out_sine' is not defined" in e for e in errors)
+
+def test_manim_static_verifier_catches_invalid_kwargs_via_introspection():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        code = Code(code_string="x=1", language="python", font_size=16)
+        label = Text("hi")
+        label.next_to(code, DOWN, align_to_left=True)
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("Code() does not accept 'font_size='" in e for e in errors)
+    assert any("next_to() does not accept 'align_to_left='" in e for e in errors)

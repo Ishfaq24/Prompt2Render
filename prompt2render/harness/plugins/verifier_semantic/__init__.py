@@ -469,36 +469,6 @@ def _regenerate_preview(
     )
 
 
-def _preview_message(
-    preview: Path | None,
-) -> list[dict[str, Any]]:
-    """Create the multimodal message content."""
-
-    if (
-        preview is None
-        or not preview.exists()
-    ):
-        return []
-
-    data = base64.b64encode(
-        preview.read_bytes()
-    ).decode(
-        "ascii"
-    )
-
-    return [
-        {
-            "type": "image_url",
-            "image_url": {
-                "url": (
-                    "data:image/png;base64,"
-                    f"{data}"
-                )
-            },
-        }
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Finding
 # ---------------------------------------------------------------------------
@@ -610,7 +580,11 @@ class VerifierSemanticPlugin(Plugin):
         model = _model_name()
 
         try:
-            client = _client(
+            # Sanity-check that a client is even constructible before
+            # spending time on any scene. The actual per-call client is
+            # created internally by llm.complete() for whichever key/model
+            # it ends up rotating to.
+            _client(
                 keys[0]
             )
         except Exception as exc:
@@ -738,72 +712,38 @@ class VerifierSemanticPlugin(Plugin):
                 has_preview=has_preview,
             )
 
-            user_content: list[
-                dict[str, Any]
-            ] = [
-                {
-                    "type": "text",
-                    "text": prompt,
-                }
-            ]
-
-            if has_preview:
-                user_content.extend(
-                    _preview_message(
-                        preview
-                    )
-                )
-
-            messages = [
-                {
-                    "role": "user",
-                    "content": (
-                        user_content
-                        if has_preview
-                        else prompt
-                    ),
-                }
-            ]
+            image_base64 = (
+                base64.b64encode(
+                    preview.read_bytes()
+                ).decode("ascii")
+                if has_preview
+                else None
+            )
 
             # ----------------------------------------------------------
             # LLM call
             # ----------------------------------------------------------
+            #
+            # Always route through llm.complete(), preview or not. It owns
+            # the deterministic key/model rotation (retry on 429, fall back
+            # to the next model once every key is quota-exhausted) that
+            # every other harness LLM call site already relies on. The old
+            # raw client.chat.completions.create() fallback used whenever a
+            # preview image was attached had none of that: a single 429
+            # (even a transient one) went straight to `except Exception`
+            # below and became a hard BLOCKING semantic_mismatch finding,
+            # gating the whole pipeline on what was actually a quota hiccup.
 
             try:
-                if (
-                    hasattr(
-                        llm,
-                        "complete",
-                    )
-                    and not has_preview
-                ):
-                    content = llm.complete(
-                        prompt,
-                        max_tokens=1400,
-                        model_env="P2R_SCENE_MODEL",
-                        default_model=model,
-                        label="semantic",
-                    )
-
-                else:
-                    response = (
-                        client.chat.completions.create(
-                            model=model,
-                            messages=messages,
-                            response_format={
-                                "type": "json_object"
-                            },
-                        )
-                    )
-
-                    content = (
-                        response
-                        .choices[0]
-                        .message
-                        .content
-                        if response.choices
-                        else ""
-                    )
+                content = llm.complete(
+                    prompt,
+                    max_tokens=1400,
+                    model_env="P2R_SCENE_MODEL",
+                    default_model=model,
+                    label="semantic",
+                    image_base64=image_base64,
+                    json_object=True,
+                )
 
                 result = _normalize_result(
                     _extract_json(

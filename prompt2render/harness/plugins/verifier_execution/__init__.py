@@ -180,6 +180,254 @@ def _safe_narration_cue(
 # Plugin
 # ---------------------------------------------------------------------------
 
+def check_scene_artifact(
+    context: SceneContext,
+    entry: Any,
+    *,
+    gate: bool,
+) -> list[dict[str, Any]]:
+    """Run the deterministic pre-render execution/source check on one scene.
+
+    This is the same logic ``VerifierExecutionPlugin.run()`` applies to every
+    entry in ``context.scene_plan``, extracted so ``generator_code`` can send
+    a scene straight to the harness the instant its file is written, rather
+    than waiting for the batch verifier stage to run over every scene at once.
+    """
+
+    findings: list[dict[str, Any]] = []
+
+    artifact = context.code_artifacts.get(entry.stem)
+
+    # ----------------------------------------------------------
+    # Missing generated artifact
+    # ----------------------------------------------------------
+
+    if (
+        artifact is None
+        or artifact.path is None
+        or not artifact.path.exists()
+    ):
+        findings.append(
+            _finding(
+                scene_id=entry.stem,
+                message=(
+                    "PRE-FLIGHT EXECUTION CHECK: "
+                    "generated scene artifact is missing."
+                ),
+                finding_type="execution_failure",
+                gate=gate,
+            )
+        )
+
+        return findings
+
+    artifact_path = artifact.path
+
+    # ----------------------------------------------------------
+    # Read source
+    # ----------------------------------------------------------
+
+    try:
+        source = artifact_path.read_text(
+            encoding="utf-8"
+        )
+        # Strip BOM / zero-width that PowerShell or LLM may inject
+        # (U+FEFF) which makes ast.parse raise SyntaxError and
+        # forces a false SceneKit path that then fails trace.
+        if source and source[0] == "\ufeff":
+            source = source.lstrip("\ufeff").lstrip()
+            # persist clean file so next run doesn't re-hit
+            try:
+                artifact_path.write_text(source, encoding="utf-8")
+            except Exception:
+                pass
+    except Exception as exc:
+        findings.append(
+            _finding(
+                scene_id=entry.stem,
+                message=(
+                    "PRE-FLIGHT EXECUTION CHECK: "
+                    f"could not read generated source: {exc}"
+                ),
+                finding_type="execution_failure",
+                gate=gate,
+            )
+        )
+
+        return findings
+
+    if not source.strip():
+        findings.append(
+            _finding(
+                scene_id=entry.stem,
+                message=(
+                    "PRE-FLIGHT EXECUTION CHECK: "
+                    "generated source file is empty."
+                ),
+                finding_type="execution_failure",
+                gate=gate,
+            )
+        )
+
+        return findings
+
+    # ----------------------------------------------------------
+    # Backend detection
+    # ----------------------------------------------------------
+
+    is_manim = _is_manim_source(
+        source
+    )
+
+    # ----------------------------------------------------------
+    # Manim validation
+    # ----------------------------------------------------------
+
+    if is_manim:
+
+        try:
+            from ....scenes import (
+                validate_manim_source,
+            )
+
+            errors = list(
+                validate_manim_source(
+                    source
+                )
+                or []
+            )
+
+        except Exception as exc:
+            errors = [
+                (
+                    "Manim source validator failed: "
+                    f"{exc}"
+                )
+            ]
+
+        for message in errors:
+            findings.append(
+                _finding(
+                    scene_id=entry.stem,
+                    message=(
+                        "PRE-FLIGHT EXECUTION CHECK: "
+                        f"{message}"
+                    ),
+                    finding_type=(
+                        "execution_failure"
+                    ),
+                    gate=gate,
+                )
+            )
+
+        # Manim source is intentionally not sent through the
+        # SceneKit primitive tracer.
+        return findings
+
+    # ----------------------------------------------------------
+    # SceneKit validation
+    # ----------------------------------------------------------
+
+    max_cue = _safe_narration_cue(
+        context,
+        entry.stem,
+    )
+
+    try:
+        errors = list(
+            validate_scene_source(
+                source,
+                max_cue=max_cue,
+            )
+            or []
+        )
+    except Exception as exc:
+        errors = [
+            (
+                "SceneKit source validator failed: "
+                f"{exc}"
+            )
+        ]
+
+    for message in errors:
+        findings.append(
+            _finding(
+                scene_id=entry.stem,
+                message=(
+                    "PRE-FLIGHT EXECUTION CHECK: "
+                    f"{message}"
+                ),
+                finding_type=(
+                    "execution_failure"
+                ),
+                gate=gate,
+            )
+        )
+
+    # ----------------------------------------------------------
+    # Deterministic SceneKit trace
+    # ----------------------------------------------------------
+
+    try:
+        trace = trace_scene_source(
+            source
+        )
+
+        if not isinstance(
+            trace,
+            dict,
+        ):
+            raise TypeError(
+                "trace_scene_source() "
+                "did not return a dictionary."
+            )
+
+        trace["stem"] = (
+            entry.stem
+        )
+        trace["source"] = str(
+            artifact_path
+        )
+        trace["valid"] = not bool(
+            errors
+        )
+        trace["backend"] = (
+            "scenekit"
+        )
+
+        trace_path = _trace_path(
+            artifact_path
+        )
+
+        trace_path.write_text(
+            json.dumps(
+                trace,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    except Exception as exc:
+        findings.append(
+            _finding(
+                scene_id=entry.stem,
+                message=(
+                    "PRE-FLIGHT EXECUTION CHECK: "
+                    "could not write deterministic "
+                    f"SceneKit trace: {exc}"
+                ),
+                finding_type=(
+                    "execution_trace_failure"
+                ),
+                gate=gate,
+            )
+        )
+
+    return findings
+
+
 class VerifierExecutionPlugin(Plugin):
     """Deterministic pre-render execution/source verifier."""
 
@@ -206,239 +454,13 @@ class VerifierExecutionPlugin(Plugin):
         gate = self.is_gate()
 
         for entry in context.scene_plan:
-
-            artifact = (
-                context.code_artifacts.get(
-                    entry.stem
+            findings.extend(
+                check_scene_artifact(
+                    context,
+                    entry,
+                    gate=gate,
                 )
             )
-
-            # ----------------------------------------------------------
-            # Missing generated artifact
-            # ----------------------------------------------------------
-
-            if (
-                artifact is None
-                or artifact.path is None
-                or not artifact.path.exists()
-            ):
-                findings.append(
-                    _finding(
-                        scene_id=entry.stem,
-                        message=(
-                            "PRE-FLIGHT EXECUTION CHECK: "
-                            "generated scene artifact is missing."
-                        ),
-                        finding_type="execution_failure",
-                        gate=gate,
-                    )
-                )
-
-                continue
-
-            artifact_path = artifact.path
-
-            # ----------------------------------------------------------
-            # Read source
-            # ----------------------------------------------------------
-
-            try:
-                source = artifact_path.read_text(
-                    encoding="utf-8"
-                )
-                # Strip BOM / zero-width that PowerShell or LLM may inject
-                # (U+FEFF) which makes ast.parse raise SyntaxError and
-                # forces a false SceneKit path that then fails trace.
-                if source and source[0] == "\ufeff":
-                    source = source.lstrip("\ufeff").lstrip()
-                    # persist clean file so next run doesn't re-hit
-                    try:
-                        artifact_path.write_text(source, encoding="utf-8")
-                    except Exception:
-                        pass
-            except Exception as exc:
-                findings.append(
-                    _finding(
-                        scene_id=entry.stem,
-                        message=(
-                            "PRE-FLIGHT EXECUTION CHECK: "
-                            f"could not read generated source: {exc}"
-                        ),
-                        finding_type="execution_failure",
-                        gate=gate,
-                    )
-                )
-
-                continue
-
-            if not source.strip():
-                findings.append(
-                    _finding(
-                        scene_id=entry.stem,
-                        message=(
-                            "PRE-FLIGHT EXECUTION CHECK: "
-                            "generated source file is empty."
-                        ),
-                        finding_type="execution_failure",
-                        gate=gate,
-                    )
-                )
-
-                continue
-
-            # ----------------------------------------------------------
-            # Backend detection
-            # ----------------------------------------------------------
-
-            is_manim = _is_manim_source(
-                source
-            )
-
-            # ----------------------------------------------------------
-            # Manim validation
-            # ----------------------------------------------------------
-
-            if is_manim:
-
-                try:
-                    from ....scenes import (
-                        validate_manim_source,
-                    )
-
-                    errors = list(
-                        validate_manim_source(
-                            source
-                        )
-                        or []
-                    )
-
-                except Exception as exc:
-                    errors = [
-                        (
-                            "Manim source validator failed: "
-                            f"{exc}"
-                        )
-                    ]
-
-                for message in errors:
-                    findings.append(
-                        _finding(
-                            scene_id=entry.stem,
-                            message=(
-                                "PRE-FLIGHT EXECUTION CHECK: "
-                                f"{message}"
-                            ),
-                            finding_type=(
-                                "execution_failure"
-                            ),
-                            gate=gate,
-                        )
-                    )
-
-                # Manim source is intentionally not sent through the
-                # SceneKit primitive tracer.
-                continue
-
-            # ----------------------------------------------------------
-            # SceneKit validation
-            # ----------------------------------------------------------
-
-            max_cue = _safe_narration_cue(
-                context,
-                entry.stem,
-            )
-
-            try:
-                errors = list(
-                    validate_scene_source(
-                        source,
-                        max_cue=max_cue,
-                    )
-                    or []
-                )
-            except Exception as exc:
-                errors = [
-                    (
-                        "SceneKit source validator failed: "
-                        f"{exc}"
-                    )
-                ]
-
-            for message in errors:
-                findings.append(
-                    _finding(
-                        scene_id=entry.stem,
-                        message=(
-                            "PRE-FLIGHT EXECUTION CHECK: "
-                            f"{message}"
-                        ),
-                        finding_type=(
-                            "execution_failure"
-                        ),
-                        gate=gate,
-                    )
-                )
-
-            # ----------------------------------------------------------
-            # Deterministic SceneKit trace
-            # ----------------------------------------------------------
-
-            try:
-                trace = trace_scene_source(
-                    source
-                )
-
-                if not isinstance(
-                    trace,
-                    dict,
-                ):
-                    raise TypeError(
-                        "trace_scene_source() "
-                        "did not return a dictionary."
-                    )
-
-                trace["stem"] = (
-                    entry.stem
-                )
-                trace["source"] = str(
-                    artifact_path
-                )
-                trace["valid"] = not bool(
-                    errors
-                )
-                trace["backend"] = (
-                    "scenekit"
-                )
-
-                trace_path = _trace_path(
-                    artifact_path
-                )
-
-                trace_path.write_text(
-                    json.dumps(
-                        trace,
-                        indent=2,
-                        sort_keys=True,
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-
-            except Exception as exc:
-                findings.append(
-                    _finding(
-                        scene_id=entry.stem,
-                        message=(
-                            "PRE-FLIGHT EXECUTION CHECK: "
-                            "could not write deterministic "
-                            f"SceneKit trace: {exc}"
-                        ),
-                        finding_type=(
-                            "execution_trace_failure"
-                        ),
-                        gate=gate,
-                    )
-                )
 
         # --------------------------------------------------------------
         # Publish result
