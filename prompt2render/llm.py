@@ -28,12 +28,14 @@ ENDPOINT = (
 )
 
 
-# Strongest -> cheapest fallback.
+# Strongest -> cheapest fallback. Every full model (and all of its keys) must
+# be exhausted before a "-lite" model is tried at all — lite models trade
+# quality for cost/quota and are a last resort, not an early fallback.
 CANONICAL_MODELS = [
     "gemini-3.7-flash",
-    "gemini-3.7-flash-lite",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
+    "gemini-3.7-flash-lite",
     "gemini-3.5-flash-lite",
 ]
 
@@ -244,17 +246,35 @@ def _completion(
     model: str,
     prompt: str,
     max_tokens: int,
+    image_base64: str | None = None,
+    json_object: bool = False,
 ):
+    content: str | list[dict[str, Any]] = prompt
+
+    if image_base64:
+        content = [
+            {"type": "text", "text": prompt},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{image_base64}"
+                },
+            },
+        ]
+
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": [
             {
                 "role": "user",
-                "content": prompt,
+                "content": content,
             }
         ],
         "max_tokens": max_tokens,
     }
+
+    if json_object:
+        kwargs["response_format"] = {"type": "json_object"}
 
     reasoning = os.environ.get(
         "P2R_REASONING",
@@ -295,6 +315,8 @@ def complete(
     model_env: str = "P2R_SCENE_MODEL",
     default_model: str = "gemini-3.7-flash",
     label: str = "request",
+    image_base64: str | None = None,
+    json_object: bool = False,
 ) -> str:
     """Perform one completion using deterministic model/key rotation."""
 
@@ -349,6 +371,8 @@ def complete(
                     model,
                     prompt,
                     max_tokens,
+                    image_base64=image_base64,
+                    json_object=json_object,
                 )
 
             except Exception as error:

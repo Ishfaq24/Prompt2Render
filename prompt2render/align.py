@@ -38,6 +38,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -55,6 +56,37 @@ CONF_FLOOR = 0.60              # below this, discard the ASR entirely
 
 TS = re.compile(r"(\d\d):(\d\d):(\d\d)[,.](\d\d\d)\s*-->\s*"
                 r"(\d\d):(\d\d):(\d\d)[,.](\d\d\d)")
+
+
+# ------------------------------------------------------------- file writes ---
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write UTF-8 text atomically beside the destination file.
+
+    Alignment runs can be interrupted by a cancelled ASR process or a closed
+    terminal. Writing through a same-directory temporary file prevents a
+    partially-written JSON/SRT cache from being mistaken for a valid result on
+    the next run.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_name = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_name.replace(path)
+    finally:
+        if tmp_name is not None:
+            tmp_name.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------- srt parse ---

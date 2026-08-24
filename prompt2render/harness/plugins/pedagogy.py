@@ -327,11 +327,11 @@ class ReviserScriptPlugin(Plugin):
         return ["scene_plan", "pedagogy_review"]
 
     def declare_effects(self) -> list[str]:
-        return [
-            "script_artifact",
-            "scene_plan",
-            "pedagogy_review",
-        ]
+        # The reviser mutates the canonical script, scene plan, and review in
+        # place. Publish a separate boundary marker rather than claiming those
+        # fields as effects; the loader intentionally rejects read/write
+        # overlaps and duplicate artifact ownership.
+        return ["script_revision"]
 
     def _max_revisions(self) -> int:
         try:
@@ -366,6 +366,7 @@ class ReviserScriptPlugin(Plugin):
         if _review_passed(review):
             _refresh_plan(context)
             context.pedagogy_review = review
+            context.script_revision += 1
             _save_history(context.project_dir, history)
             return context
 
@@ -530,6 +531,7 @@ class ReviserScriptPlugin(Plugin):
         _refresh_plan(context)
 
         context.pedagogy_review = review
+        context.script_revision += 1
 
         _save_history(
             context.project_dir,
@@ -552,6 +554,7 @@ class VerifierPedagogyPlugin(Plugin):
         return [
             "scene_plan",
             "pedagogy_review",
+            "script_revision",
         ]
 
     def declare_effects(self) -> list[str]:

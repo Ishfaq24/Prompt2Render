@@ -199,6 +199,24 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
         )
 
     dst = proj / "sections" / f"{index:02d}.mp4"
+    # When the harness is the caller, the raw Manim clip must already be
+    # cue-synced; forcing the section to the narration length with a large
+    # tpad would hide a temporal bug (sections 01/07 stale-assembly case).
+    # Measure raw duration first and warn if the generator missed the target
+    # by more than the verifier tolerance — the verifier will block assembly,
+    # but this early warning makes the mismatch visible in logs.
+    if seconds is not None:
+        try:
+            raw_dur = cfg.duration(made[-1])
+            gap = abs(raw_dur - seconds)
+            if gap > 1.6:
+                cfg.warn(
+                    f"Manim raw clip for section {index:02d} is {raw_dur:.2f}s "
+                    f"but narration is {seconds:.2f}s (gap {gap:.2f}s) — "
+                    "generator did not hit exact cue timing; temporal verifier should flag this."
+                )
+        except Exception:
+            pass
     normalise(made[-1], dst, seconds)
 
     # Extract the final frame as a preview image for visual layout auditing.

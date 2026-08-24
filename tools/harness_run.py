@@ -16,11 +16,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from prompt2render import cfg
-from prompt2render.harness.context import SceneContext
-from prompt2render.harness.events import EventBus
-from prompt2render.harness.loader import build_plugins, build_repair_router
-from prompt2render.harness.logging_ import StructuredLogger
-from prompt2render.harness.runner import GateFailure, HarnessRunner
+from prompt2render.harness_old.context import SceneContext
+from prompt2render.harness_old.events import EventBus
+from prompt2render.harness_old.loader import build_plugins, build_repair_router
+from prompt2render.harness_old.logging_ import StructuredLogger
+from prompt2render.harness_old.runner import GateFailure, HarnessRunner
 
 
 def main() -> None:

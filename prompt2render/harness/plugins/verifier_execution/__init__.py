@@ -48,12 +48,26 @@ def _is_manim_source(
 ) -> bool:
     """Detect Manim source using syntax-aware checks where possible."""
 
+    if source and source[0] == "\ufeff":
+        source = source.lstrip("\ufeff")
+    # Fast string fallback: if source clearly imports manim and defines
+    # a Scene class, treat as Manim even if ast.parse fails due to a
+    # transient syntax error (e.g. missing colon). This ensures the
+    # validator reports a proper Manim syntax error instead of falling
+    # through to the SceneKit trace path which then obscures the cause
+    # as "invalid syntax line 4" trace failure.
+    lower = source.lower()
+    has_manim_import = "from manim import" in lower or "import manim" in lower
+    has_scene = "class scene" in lower
     try:
         tree = ast.parse(
             source
         )
     except SyntaxError:
-        # Let the normal validator report the syntax error.
+        # If it looks like Manim, claim Manim so validate_manim_source
+        # reports the syntax error directly.
+        if has_manim_import and has_scene:
+            return True
         return False
 
     imports_manim = False
@@ -232,6 +246,16 @@ class VerifierExecutionPlugin(Plugin):
                 source = artifact_path.read_text(
                     encoding="utf-8"
                 )
+                # Strip BOM / zero-width that PowerShell or LLM may inject
+                # (U+FEFF) which makes ast.parse raise SyntaxError and
+                # forces a false SceneKit path that then fails trace.
+                if source and source[0] == "\ufeff":
+                    source = source.lstrip("\ufeff").lstrip()
+                    # persist clean file so next run doesn't re-hit
+                    try:
+                        artifact_path.write_text(source, encoding="utf-8")
+                    except Exception:
+                        pass
             except Exception as exc:
                 findings.append(
                     _finding(

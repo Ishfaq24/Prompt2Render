@@ -351,6 +351,55 @@ def _has_intent_marker(fn: ast.FunctionDef | None) -> bool:
     return any(marker in text for marker in markers)
 
 
+#: Environments where a bare '&' is a legitimate column/alignment separator
+#: rather than a LaTeX special character that needs escaping.
+_LATEX_AMPERSAND_ENVIRONMENTS = (
+    "align", "align*", "alignat", "alignat*", "eqnarray", "eqnarray*",
+    "matrix", "pmatrix", "bmatrix", "vmatrix", "Vmatrix", "array",
+    "tabular", "cases", "aligned",
+)
+
+
+def _check_latex_string(text: str, func_name: str, lineno: int) -> list[str]:
+    """Flag raw LaTeX special characters that reliably crash the compiler.
+
+    This is deliberately narrow: it only flags '&', '%', and '#' when they
+    appear unescaped outside an environment that legitimately uses '&' as a
+    separator, plus unbalanced (unescaped) braces. It does not attempt to
+    validate LaTeX syntax in general.
+    """
+    errors: list[str] = []
+
+    has_tabular_env = any(
+        f"begin{{{env}}}" in text for env in _LATEX_AMPERSAND_ENVIRONMENTS
+    )
+
+    for match in re.finditer(r"(\\*)([&%#])", text):
+        backslashes, char = match.groups()
+        if len(backslashes) % 2 == 1:
+            # An odd number of backslashes means this occurrence is escaped
+            # (e.g. r"\&"); an even number (including zero) means the
+            # backslashes themselves are literal and the special character
+            # that follows is still raw.
+            continue
+        if char == "&" and has_tabular_env:
+            continue
+        errors.append(
+            f"{func_name}() contains an unescaped '{char}' (line {lineno}); "
+            f"use '\\{char}' or LaTeX will fail to compile"
+        )
+
+    # Brace balance, ignoring escaped braces (\{ \}), which are literal glyphs.
+    unescaped = re.sub(r"\\[{}]", "", text)
+    if unescaped.count("{") != unescaped.count("}"):
+        errors.append(
+            f"{func_name}() has unbalanced braces (line {lineno}); "
+            "LaTeX will fail to compile"
+        )
+
+    return errors
+
+
 def validate_manim_source(code: str) -> list[str]:
     """Validate generated Manim code before rendering.
     
@@ -404,9 +453,23 @@ def validate_manim_source(code: str) -> list[str]:
                         errors.append(f"Code() does not accept 'theme=' in Manim 0.19 (line {node.lineno})")
                     if kw.arg == "insert_line_numbers":
                         errors.append(f"Code() expects 'add_line_numbers=', not 'insert_line_numbers=' (line {node.lineno})")
+                        
+            if func_name in {"MobjectTable", "Table", "IntegerTable", "DecimalTable", "MathTable"}:
+                for kw in node.keywords:
+                    if kw.arg in {"row_height", "col_widths", "include_background"}:
+                        errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim 0.19 (line {node.lineno})")
 
             if func_name == "set_shadow":
                 errors.append(f"set_shadow() is deprecated and causes rendering errors (line {node.lineno})")
+                
+            if func_name in {"SurroundingRectangle", "BackgroundRectangle", "always_redraw"}:
+                for arg in node.args:
+                    # Catch common coordinate generators like n2p, number_to_point, c2p, coords_to_point, get_center
+                    for child in ast.walk(arg):
+                        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+                            if child.func.attr in {"n2p", "number_to_point", "c2p", "coords_to_point", "get_center"}:
+                                errors.append(f"{func_name}() requires a Mobject, but was passed coordinates from {child.func.attr}() (line {node.lineno})")
+                                break
                 
             # Prevent scalar interpolation in put_start_and_end_on / move_to inside lambda/UpdateFromAlphaFunc.
             # Manim requires 3D coordinate arrays, not a single float. Search recursively because
@@ -419,9 +482,43 @@ def validate_manim_source(code: str) -> list[str]:
                                 and isinstance(child.right, ast.Name) and child.right.id == "PI"):
                             errors.append(f"{func_name}() contains scalar alpha * PI where a 3D coordinate array is required (line {node.lineno})")
                             break
-                
+            
+            # Catch known invalid kwargs across all Mobject constructors to prevent 
+            # generic "unexpected keyword argument" crashes at runtime.
+            if func_name in {"Text", "MathTex", "Tex", "VGroup", "Line", "Arrow", "Circle", "Square", "Rectangle", "Dot"}:
+                for kw in node.keywords:
+                    if kw.arg in {"include_background", "row_height", "col_widths", "corner"}:
+                        errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim 0.19 (line {node.lineno})")
+
+            # MathTex/Tex hand the string straight to LaTeX. A raw, unescaped
+            # '&', '%', or '#' outside a tabular/align environment is a
+            # column separator / comment / macro-parameter character to
+            # LaTeX, not a literal glyph, and reliably crashes the compiler
+            # (this is exactly what took down section 06's j-invariant label:
+            # r"\text{Modular identities & } j\text{-invariant...}"). Catch
+            # it statically instead of paying for a failed Manim subprocess.
+            if func_name in {"MathTex", "Tex"}:
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        errors.extend(
+                            _check_latex_string(arg.value, func_name, node.lineno)
+                        )
+
     if not has_scene_class:
         errors.append("module must define a Scene class")
+        
+    # We want to encourage the LLM to use self.wait() to align animations with cues.
+    # We can't statically prove the exact duration sum without a complex interpreter, 
+    # but we can at least ensure they didn't completely ignore the wait instruction.
+    has_wait = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "wait":
+                has_wait = True
+                break
+                
+    if has_scene_class and not has_wait:
+        errors.append("module does not contain any self.wait() calls; you MUST use self.wait() to align animations with narration cues")
 
     return errors
 

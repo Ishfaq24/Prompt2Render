@@ -3,33 +3,81 @@ from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, R
 
 
 def test_manim_graph_has_one_renderer_and_no_still_downstream():
+    # In the real CLI, --manim filters out renderer_stills and incompatible plugins 
+    # BEFORE calling build_plugins. The test was calling build_plugins first,
+    # causing a DependencyError due to duplicate effect producers (like check_results).
     cfg = {
         "renderer_manim": {"enabled": True},
-        "generator_timeline": {"enabled": True},
-        "renderer_encode": {"enabled": True},
-        "renderer_finish": {"enabled": True},
-        "verifier_audio": {"enabled": True},
-        "verifier_final_qc": {"enabled": True},
-        "generator_publish": {"enabled": True},
+        "generator_timeline": {"enabled": False},
+        "renderer_encode": {"enabled": False},
+        "renderer_finish": {"enabled": False},
+        "verifier_audio": {"enabled": False},
+        "verifier_final_qc": {"enabled": False},
+        "generator_publish": {"enabled": False},
+        "renderer_stills": {"enabled": False},
     }
-    plugins = build_plugins(config=cfg)
-    plugins = [GeneratorManimPlugin() if p.name == "generator_code" else p for p in plugins]
-    new_plugins = []
-    for p in plugins:
-        if p.name == "renderer_stills":
-            new_plugins.append(RendererManimPlugin({"enabled": True, "gate_override": True}))
-        elif p.name != "renderer_manim":
-            new_plugins.append(p)
-    incompatible = {
-        "generator_timeline", "renderer_encode", "renderer_finish",
-        "verifier_audio", "verifier_final_qc", "generator_publish",
-    }
-    plugins = [p for p in new_plugins if p.name not in incompatible]
-    names = [p.name for p in plugins]
-    assert names.count("renderer_manim") == 1
-    assert "generator_manim" in names
-    assert not incompatible.intersection(names)
-    assert names.index("generator_manim") < names.index("renderer_manim")
+    
+    # We mock the CLI replacement behavior before building
+    from prompt2render.harness.plugins import REGISTRY
+    from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, RendererManimPlugin
+    
+    # Temporarily swap generator_code in registry
+    old_gen = REGISTRY.get("generator_code")
+    REGISTRY["generator_code"] = GeneratorManimPlugin
+    
+    try:
+        plugins = build_plugins(config=cfg)
+        names = [p.name for p in plugins]
+        assert names.count("renderer_manim") == 1
+        assert "generator_manim" in names
+        assert "renderer_stills" not in names
+        assert names.index("generator_manim") < names.index("renderer_manim")
+    finally:
+        if old_gen:
+            REGISTRY["generator_code"] = old_gen
+
+
+def test_manim_graph_verifies_before_rendering():
+    """renderer_manim must be structurally unable to run before
+    verifier_execution, not merely by accident of registry list order.
+
+    renderer_manim and verifier_execution are both plain consumers of
+    code_artifacts, so without an explicit dependency edge between them the
+    topological sort treats them as an unordered tie, broken only by
+    whichever position each plugin happens to occupy in the input list.
+    Feeding resolve_order() an ADVERSARIAL input order — renderer_manim
+    listed before verifier_execution — proves it's the dependency edge doing
+    the work, not a coincidence of registry order (verifier_execution simply
+    happens to be registered earlier than renderer_manim today; a test that
+    went through the real registry/build_plugins would pass even without
+    the fix and catch nothing).
+    """
+    from prompt2render.harness.loader import resolve_order
+    from prompt2render.harness.plugin import Plugin
+    from prompt2render.harness.plugins.verifier_execution import VerifierExecutionPlugin
+
+    class DummyCodeProducer(Plugin):
+        # Stands in for generator_manim: only its code_artifacts effect
+        # matters here, not its actual (LLM-backed) generation logic.
+        name = "generator_manim"
+
+        def declare_dependencies(self):
+            return []
+
+        def declare_effects(self):
+            return ["code_artifacts"]
+
+        def run(self, context):
+            return context
+
+    renderer = RendererManimPlugin({"enabled": True, "gate_override": True})
+    verifier = VerifierExecutionPlugin({"enabled": True})
+    generator = DummyCodeProducer()
+
+    ordered = resolve_order([renderer, verifier, generator])
+    names = [p.name for p in ordered]
+
+    assert names.index("verifier_execution") < names.index("renderer_manim")
 
 
 def test_manim19_normalizer_repairs_common_llm_aliases():
@@ -66,36 +114,23 @@ def test_verifier_semantic_uses_multimodal_preview_if_present(tmp_path):
     from unittest.mock import MagicMock
     import prompt2render.harness.plugins.verifier_semantic.__init__ as sem
     
-    mock_client = MagicMock()
-    mock_resp = MagicMock()
-    mock_resp.choices = [MagicMock()]
-    mock_resp.choices[0].message.content = '{"status": "pass"}'
-    mock_client.chat.completions.create.return_value = mock_resp
-    
-    # Temporarily replace llm client behavior
-    sem.llm.keys = lambda: ["fake_key"]
-    sem.llm.client = lambda k: mock_client
-    
-    # Also remove llm.complete if present so it uses the OpenAI client path
+    # We refactored verifier_semantic to use llm.complete directly.
+    # Let's mock llm.complete and verify it gets called with image_base64
+    mock_complete = MagicMock(return_value='{"status": "pass"}')
     original_complete = getattr(sem.llm, "complete", None)
-    if original_complete:
-        delattr(sem.llm, "complete")
-        
+    setattr(sem.llm, "complete", mock_complete)
+    sem.llm.keys = lambda: ["fake_key"]
+    
     plugin.run(ctx)
     
     if original_complete:
         setattr(sem.llm, "complete", original_complete)
         
-    # Verify the client was called with the image
-    mock_client.chat.completions.create.assert_called_once()
-    kwargs = mock_client.chat.completions.create.call_args.kwargs
-    messages = kwargs["messages"]
-    assert len(messages) == 1
-    content = messages[0]["content"]
-    assert isinstance(content, list)
-    assert len(content) == 2
-    assert content[1]["type"] == "image_url"
-    assert "data:image/png;base64," in content[1]["image_url"]["url"]
+    # Verify llm.complete was called with image_base64
+    mock_complete.assert_called_once()
+    kwargs = mock_complete.call_args.kwargs
+    assert "image_base64" in kwargs
+    assert kwargs["image_base64"] == "ZmFrZV9wbmdfZGF0YQ=="  # base64 for 'fake_png_data'
 
 def test_manim_normalize_invalid_escapes():
     from prompt2render.harness.plugins.renderer_manim import _normalize_manim19

@@ -1,0 +1,89 @@
+{
+  "project": "unknown",
+  "final_pass": false,
+  "iterations": 4,
+  "detected_issues": [
+    {
+      "status": "pass",
+      "finding_type": "stage_success",
+      "category": "TECHNICAL",
+      "severity": "INFO",
+      "detail": "stage completed successfully"
+    },
+    {
+      "status": "fail",
+      "finding_type": "spatial_conflict",
+      "stem": "01",
+      "detail": "collision at (1,2)"
+    }
+  ],
+  "repairs": [
+    {
+      "cycle_id": 1,
+      "scene_id": "01",
+      "finding_type": "spatial_conflict",
+      "mismatch_subtype": null,
+      "routed_to": [
+        "generator_code"
+      ],
+      "diagnostic_message": "collision at (1,2)",
+      "pre_repair_context_hash": "1256bf745659a161",
+      "post_repair_context_hash": "60b83c8a347fac56",
+      "outcome": "unresolved",
+      "cycles_used": 1,
+      "timestamp": "2026-08-24T02:58:47Z"
+    },
+    {
+      "cycle_id": 2,
+      "scene_id": "01",
+      "finding_type": "spatial_conflict",
+      "mismatch_subtype": null,
+      "routed_to": [
+        "generator_code"
+      ],
+      "diagnostic_message": "collision at (1,2)",
+      "pre_repair_context_hash": "7a4b152a86732087",
+      "post_repair_context_hash": "de27ab3cfbc464b2",
+      "outcome": "unresolved",
+      "cycles_used": 2,
+      "timestamp": "2026-08-24T02:58:47Z"
+    },
+    {
+      "cycle_id": 3,
+      "scene_id": "01",
+      "finding_type": "spatial_conflict",
+      "mismatch_subtype": null,
+      "routed_to": [
+        "generator_code"
+      ],
+      "diagnostic_message": "collision at (1,2)",
+      "pre_repair_context_hash": "4ed743b7e06b5a16",
+      "post_repair_context_hash": "4ed743b7e06b5a16",
+      "outcome": "gave_up",
+      "cycles_used": 2,
+      "timestamp": "2026-08-24T02:58:47Z"
+    }
+  ],
+  "verification_results": {
+    "generator_code": [
+      {
+        "status": "pass",
+        "finding_type": "stage_success",
+        "category": "TECHNICAL",
+        "severity": "INFO",
+        "detail": "stage completed successfully"
+      }
+    ],
+    "dummy_verifier": [
+      {
+        "status": "fail",
+        "finding_type": "spatial_conflict",
+        "stem": "01",
+        "detail": "collision at (1,2)"
+      }
+    ]
+  },
+  "findings_by_category": {
+    "TECHNICAL": 2
+  }
+}

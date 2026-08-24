@@ -465,6 +465,35 @@ class StructuredLogger:
                     "\n"
                 )
 
+    def info(
+        self,
+        message: str,
+    ) -> None:
+        """Append one free-text diagnostic record (e.g. runner rewind notes)."""
+
+        record = {
+            "event": "runner.info",
+            "message": str(message),
+            "timestamp": _utc_timestamp(),
+            "pid": os.getpid(),
+            "thread": threading.current_thread().name,
+        }
+
+        line = json.dumps(
+            record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+        with self._lock:
+            with self.path.open(
+                "a",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(line)
+                handle.write("\n")
+
     def log_repair(
         self,
         record: RepairRecord,

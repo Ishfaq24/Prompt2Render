@@ -37,6 +37,11 @@ DEFAULT_CONFIG_PATH = (
 #
 # Keep this set semantic: a field is pre-seeded only when a plugin may safely
 # consume its initial value without another stage producing it first.
+# These fields are append/update sinks shared by multiple verifier stages.
+# They are intentionally not single-owner DAG artifacts.
+MERGEABLE_EFFECTS = frozenset({"check_results"})
+
+
 PRESEEDED_FIELDS = frozenset(
     {
         "prompt",
@@ -208,6 +213,9 @@ def resolve_order(
             previous = producers.get(
                 effect
             )
+
+            if effect in MERGEABLE_EFFECTS:
+                continue
 
             if (
                 previous is not None

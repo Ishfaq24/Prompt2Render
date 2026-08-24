@@ -595,9 +595,15 @@ class RepairRouterPlugin(Plugin):
             ),
         )
 
-        if not source_is_gate:
-            # Soft gate: preserve the defect as an open issue without
-            # allowing it to halt the scene.
+        # A finding explicitly marked "cosmetic" (e.g. verifier_semantic's
+        # layout-only nits, as opposed to a domain/correctness failure) must
+        # not carry hard-gate weight just because its source plugin is a
+        # hard gate overall. Repair was already attempted up to the budget;
+        # if it never resolved, ship the video with the known imperfection
+        # rather than aborting the entire multi-scene pipeline over it.
+        if not source_is_gate or bool(finding.get("cosmetic")):
+            # Soft gate (or a cosmetic-only hard-gate finding): preserve the
+            # defect as an open issue without allowing it to halt the scene.
             finding["status"] = (
                 "open_defect"
             )

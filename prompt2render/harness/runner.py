@@ -85,14 +85,131 @@ class HarnessRunner:
         ctx: SceneContext,
         halt_on_gate_failure: bool = True,
     ) -> SceneContext:
-        """Run all resolved plugins in order."""
+        """Run all resolved plugins in order.
 
-        for plugin in self.plugins:
+        If a repair cycle mutates earlier artifacts (e.g. generator_code /
+        generator_manim), the pipeline MUST rewind to the earliest producer of
+        ``code_artifacts`` and re-execute the full chain:
+
+            generator -> verifier_execution -> renderer -> verifier_temporal
+            -> verifier_semantic -> feedback_hitl (and any other gates)
+
+        The previous heuristic scanned only consumers of ``code_artifacts`` /
+        ``render_artifacts``.  ``generator_manim`` declares dependencies on
+        ``scene_plan``/``narration`` and therefore was never found, so a HITL
+        regeneration of sections 01/07 would mark the finding "resolved" but
+        never re-render or re-verify before assembly.  This implementation
+        searches for *producers* of ``code_artifacts`` (including the canonical
+        names ``generator_manim``/``generator_code``) and falls back to the
+        earliest ``scene_plan`` producer, guaranteeing stale assembly is
+        impossible.
+        """
+
+        i = 0
+        # Prevent infinite rewind loops but allow HITL to trigger the same
+        # stems again when hitl_feedback.json still lists them as reject
+        # (user explicitly said same file should cause regeneration again).
+        # Each distinct (plugin_index, frozenset) may rewind up to 3 times.
+        seen_rewinds: dict[tuple[int, frozenset[str]], int] = {}
+        MAX_SAME_REWINDS = 3
+        total_rewinds = 0
+        MAX_TOTAL_REWINDS = 10
+
+        while i < len(self.plugins):
+            plugin = self.plugins[i]
+
+            before_repair_stems = set(ctx.repair_context.keys())
+            before_render_keys = set(ctx.render_artifacts.keys())
+
             ctx = self._run_one(
                 plugin,
                 ctx,
                 halt_on_gate_failure=halt_on_gate_failure,
             )
+
+            after_repair_stems = set(ctx.repair_context.keys())
+            new_repairs = after_repair_stems - before_repair_stems
+            # A revert_scene() pops the stale render artifact when a repair
+            # is routed to a code generator. IMPORTANT: this must NOT be
+            # gated on ``s in after_repair_stems`` (repair_context
+            # membership). The success path of ``_run_one`` — via
+            # ``_clear_verified_repair_context`` — pops a stem's
+            # repair_context entry as soon as the *current* plugin
+            # re-verifies clean, which happens before we get back here. For
+            # a repair surfaced by a verifier that runs *after*
+            # renderer_manim (verifier_semantic/_lifecycle/_spatial/_temporal,
+            # feedback_hitl) and whose own re-check then passes, that pop
+            # erased the only signal this loop used to have, so the rewind
+            # back to renderer_manim never fired and a freshly regenerated
+            # scene kept its stale, pre-fix render. Comparing render_artifacts
+            # key sets directly is immune to that: it only fires when a
+            # render that existed before this stage genuinely no longer does.
+            stale_renders = before_render_keys - set(ctx.render_artifacts.keys())
+            # Also trigger if a pending stem has no manifest (render not yet redone)
+            missing_renders = {
+                s for s in after_repair_stems
+                if s not in ctx.render_artifacts
+                or not getattr(ctx.render_artifacts.get(s, None), "manifest", None)
+            }
+            trigger = new_repairs | stale_renders | missing_renders
+
+            if trigger:
+                # Rewind to the earliest *consumer* of code/render artifacts
+                # that has already executed.  The repair_router has already
+                # produced fresh code via revert+regenerate, so we need to
+                # re-run the downstream chain:
+                #   verifier_execution -> renderer_manim -> verifier_temporal
+                #   -> verifier_semantic -> feedback_hitl
+                # Rewinding to the generator would duplicate the LLM call.
+                rewind_idx = i
+                for j, p in enumerate(self.plugins[:i]):
+                    deps = p.declare_dependencies() or []
+                    if "code_artifacts" in deps or "render_artifacts" in deps:
+                        rewind_idx = min(rewind_idx, j)
+                # Fallback: if no consumer was found (e.g. stripped Manim
+                # config), rewind to the earliest code producer.
+                if rewind_idx == i:
+                    for j, p in enumerate(self.plugins[:i]):
+                        eff = p.declare_effects() or []
+                        if "code_artifacts" in eff or p.name in ("generator_manim", "generator_code"):
+                            rewind_idx = min(rewind_idx, j)
+
+                if rewind_idx < i:
+                    key = (rewind_idx, frozenset(sorted(trigger)))
+                    cnt = seen_rewinds.get(key, 0)
+                    if cnt >= MAX_SAME_REWINDS or total_rewinds >= MAX_TOTAL_REWINDS:
+                        self.logger.info(
+                            f"Rewind loop detected for {sorted(trigger)} at {self.plugins[rewind_idx].name} "
+                            f"(cnt={cnt}, total={total_rewinds}); not rewinding again — surfacing gate failure."
+                        )
+                    else:
+                        seen_rewinds[key] = cnt + 1
+                        total_rewinds += 1
+                        # Invalidate downstream check_results for the affected
+                        # stems so verifiers cannot pass on stale cached
+                        # findings.  Only the stale stems are cleared; other
+                        # stems keep their passing evidence.
+                        for pname in [q.name for q in self.plugins[rewind_idx:]]:
+                            if pname in ctx.check_results:
+                                remaining = [
+                                    r for r in ctx.check_results[pname]
+                                    if not isinstance(r, dict) or str(r.get("stem") or r.get("scene_id") or "") not in trigger
+                                ]
+                                # If the only findings were for the stale stems,
+                                # remove the entry entirely so the verifier re-runs.
+                                if len(remaining) != len(ctx.check_results[pname]):
+                                    if remaining:
+                                        ctx.check_results[pname] = remaining
+                                    else:
+                                        ctx.check_results.pop(pname, None)
+                        self.logger.info(
+                            f"Rewinding pipeline from {plugin.name} to {self.plugins[rewind_idx].name} "
+                            f"to re-process repaired scenes: {sorted(trigger)} (rewind #{total_rewinds})"
+                        )
+                        i = rewind_idx
+                        continue
+
+            i += 1
 
         return ctx
 
@@ -268,6 +385,15 @@ class HarnessRunner:
                 or repair_happened
             ):
                 break
+                
+            # If the repair was routed to an earlier stage (like generator_code),
+            # we must break out of this plugin's internal re-verification loop
+            # and let the outer pipeline loop rewind. We can detect this by checking
+            # if the router added new scenes to repair_context.
+            if any(r.get("routed_to") for r in ctx.repair_records[before_repairs:]):
+                # We only break if it was routed to a different stage.
+                # Actually, any repair means we should let the pipeline rewind.
+                break
 
             if (
                 reverify_attempts
@@ -379,6 +505,10 @@ class HarnessRunner:
         # Final gate decision
         # --------------------------------------------------------------
 
+        # Re-evaluate fails because if we broke out of the loop early to rewind,
+        # the original fails list might contain findings that were provisionally marked 'resolved'
+        fails = self._failures(ctx, plugin)
+        
         if fails:
             ok = False
 

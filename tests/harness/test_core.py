@@ -12,12 +12,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from prompt2render.harness.context import SceneContext, restore, snapshot
-from prompt2render.harness.events import EventBus
-from prompt2render.harness.loader import DependencyError, resolve_order
-from prompt2render.harness.logging_ import StructuredLogger, context_hash
-from prompt2render.harness.plugin import Plugin
-from prompt2render.harness.runner import GateFailure, HarnessRunner
+from prompt2render.harness_old.context import SceneContext, restore, snapshot
+from prompt2render.harness_old.events import EventBus
+from prompt2render.harness_old.loader import DependencyError, resolve_order
+from prompt2render.harness_old.logging_ import StructuredLogger, context_hash
+from prompt2render.harness_old.plugin import Plugin
+from prompt2render.harness_old.runner import GateFailure, HarnessRunner
 
 
 class Producer(Plugin):

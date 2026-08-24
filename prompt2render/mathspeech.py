@@ -274,15 +274,16 @@ def speech_text(text: str) -> str:
         out = equation_to_speech(out)
 
     # Expand common abbreviations so TTS speaks them naturally.
+    # Note: the keys are regex patterns.
     abbreviations = {
-        r"\bi\.e\.\b": "that is",
-        r"\be\.g\.\b": "for example",
-        r"\betc\.\b": "etcetera",
-        r"\bvs\.\b": "versus",
-        r"\bDr\.\b": "Doctor",
-        r"\bMr\.\b": "Mister",
-        r"\bMrs\.\b": "Missus",
-        r"\bProf\.\b": "Professor",
+        r"\bi\.e\.": "that is",
+        r"\be\.g\.": "for example",
+        r"\betc\.": "etcetera",
+        r"\bvs\.": "versus",
+        r"\bDr\.": "Doctor",
+        r"\bMr\.": "Mister",
+        r"\bMrs\.": "Missus",
+        r"\bProf\.": "Professor",
 
         # Technical abbreviations.
         r"\bAPI\b": "A P I",

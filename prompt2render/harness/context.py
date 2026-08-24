@@ -258,6 +258,12 @@ class SceneContext:
         default_factory=dict
     )
 
+    # Explicit ordering marker emitted after the reviser has reconciled the
+    # canonical script, scene plan, and pedagogy review. It is intentionally
+    # separate from those mutable fields so the dependency DAG can represent
+    # the revision boundary without declaring an in-place read/write conflict.
+    script_revision: int = 0
+
     storyboard_plan: dict[str, Any] = field(
         default_factory=dict
     )

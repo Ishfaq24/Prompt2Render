@@ -31,12 +31,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from prompt2render import cfg
-from prompt2render.harness.context import SceneContext
-from prompt2render.harness.events import EventBus
-from prompt2render.harness.loader import DEFAULT_CONFIG_PATH, load_config, resolve_order
-from prompt2render.harness.logging_ import StructuredLogger
-from prompt2render.harness.plugins import NON_PIPELINE, REGISTRY
-from prompt2render.harness.runner import GateFailure, HarnessRunner
+from prompt2render.harness_old.context import SceneContext
+from prompt2render.harness_old.events import EventBus
+from prompt2render.harness_old.loader import DEFAULT_CONFIG_PATH, load_config, resolve_order
+from prompt2render.harness_old.logging_ import StructuredLogger
+from prompt2render.harness_old.plugins import NON_PIPELINE, REGISTRY
+from prompt2render.harness_old.runner import GateFailure, HarnessRunner
 
 CONDITIONS = [
     {"spatial": False, "lifecycle": False},

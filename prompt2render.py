@@ -253,7 +253,11 @@ def cmd_harness(a):
         cfg_dict.setdefault("renderer_manim", {})["enabled"] = False
     else:
         # Manim produces opaque section clips, not still manifests.
-        # It is fundamentally incompatible with the timeline/encode/finish stages.
+        # Disable the still renderer before build_plugins() resolves the DAG;
+        # otherwise both renderer_stills and renderer_manim claim the shared
+        # render_artifacts field and the loader correctly rejects the graph.
+        cfg_dict.setdefault("renderer_stills", {})["enabled"] = False
+        cfg_dict.setdefault("renderer_manim", {})["enabled"] = True
         cfg_dict.setdefault("generator_timeline", {})["enabled"] = False
         cfg_dict.setdefault("renderer_encode", {})["enabled"] = False
         cfg_dict.setdefault("renderer_finish", {})["enabled"] = False
@@ -270,15 +274,27 @@ def cmd_harness(a):
         from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, RendererManimPlugin
         # Replace generator_code with generator_manim
         plugins = [GeneratorManimPlugin() if p.name == "generator_code" else p for p in plugins]
-        # Replace renderer_stills with exactly one renderer_manim instance.
+        # Keep an already-enabled renderer_manim, or replace renderer_stills
+        # when an older configuration supplied only the still renderer.
         new_plugins = []
+        manim_renderer_seen = False
         for p in plugins:
             if p.name == "renderer_stills":
-                new_plugins.append(
-                    RendererManimPlugin({"enabled": True, "gate_override": True})
-                )
-            elif p.name != "renderer_manim":
+                if not manim_renderer_seen:
+                    new_plugins.append(
+                        RendererManimPlugin({"enabled": True, "gate_override": True})
+                    )
+                    manim_renderer_seen = True
+            elif p.name == "renderer_manim":
                 new_plugins.append(p)
+                manim_renderer_seen = True
+            else:
+                new_plugins.append(p)
+
+        if not manim_renderer_seen:
+            new_plugins.append(
+                RendererManimPlugin({"enabled": True, "gate_override": True})
+            )
                 
         # Ensure verifier_temporal is enabled in Manim mode and runs after the renderer
         if not any(p.name == "verifier_temporal" for p in new_plugins):
@@ -336,6 +352,140 @@ def cmd_harness(a):
     # expensive independent caption-drift transcription. The final-QC plugin
     # has already recorded the authoritative result in the harness log.
     if getattr(a, "manim", False):
+        # --- Hard assembly gate: no stale assembly after HITL regeneration ---
+        # Blocking conditions (any one aborts assembly):
+        #  1. Any BLOCKING fail in any check_results (including non-gate plugins
+        #     that emitted BLOCKING for the repaired stems).
+        #  2. Non-empty repair_context — a regenerated stem has not yet been
+        #     re-rendered and re-verified through execution + temporal + semantic.
+        #  3. Stale or missing clip for any repaired/HITL stem (render artifact
+        #     absent or older than its code artifact).
+        #  4. Missing PASS from execution/temporal/semantic for a repaired stem
+        #     (a verifier that only emitted "skip" is not proof of correctness).
+        import json as _json
+        blocking: list[str] = []
+        for plugin_name, findings in ctx.check_results.items():
+            for f in (findings or []):
+                if not isinstance(f, dict):
+                    continue
+                if str(f.get("status", "")).lower() == "fail" and str(f.get("severity", "")) == "BLOCKING":
+                    stem = f.get("stem") or f.get("scene_id") or "?"
+                    blocking.append(f"{plugin_name}:{stem}:{f.get('finding_type','?')}:{f.get('detail') or f.get('message','')[:120]}")
+        if blocking:
+            sys.exit("[prompt2render] aborting assembly: unresolved BLOCKING findings:\n  " + "\n  ".join(blocking))
+
+        # HITL rejects still on disk are authoritative even if the in-memory
+        # repair_context was deduplicated this pass.  While any reject
+        # remains, assembly must not run — the user explicitly asked for
+        # regeneration of those sections (same hitl.json → generate again).
+        hitl_rejects: set[str] = set()
+        hitl_file = d / "hitl_feedback.json"
+        if hitl_file.exists():
+            try:
+                data = _json.loads(hitl_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        if isinstance(v, dict) and v.get("status") == "reject":
+                            hitl_rejects.add(str(k))
+            except Exception:
+                pass
+        if hitl_rejects:
+            # Do NOT allow assembly while HITL still lists rejects, even if
+            # clips look fresh and verifiers pass — the fresh render is the
+            # *result* of the reject, but the reject itself must be cleared
+            # by the user to signal acceptance.  This prevents the stale-
+            # assembly bug where 01/07 were regenerated but immediately
+            # assembled without a blocking gate.
+            sys.exit(
+                "[prompt2render] aborting assembly: HITL rejects remain for "
+                f"{sorted(hitl_rejects)} in {hitl_file}. "
+                "Regenerated sections have fresh clips but assembly is blocked "
+                "until you remove those entries from hitl_feedback.json or set "
+                'them to {"status":"accept"}.'
+            )
+
+        pending_stems: set[str] = set(ctx.repair_context.keys()) | hitl_rejects
+
+        # Stems that were repaired but whose render artifact is stale/missing
+        # must block assembly — otherwise sections/01.mp4 would still be the
+        # old clip padded to the narration length.
+        stale: list[str] = []
+        missing_pass: list[str] = []
+        for stem in sorted(pending_stems):
+            art = ctx.code_artifacts.get(stem)
+            rend = ctx.render_artifacts.get(stem)
+            # A pending stem must have a fresh render artifact with a non-empty manifest
+            if not rend or not getattr(rend, "manifest", None):
+                stale.append(f"{stem}: missing render artifact (regenerated code has not been re-rendered)")
+                continue
+            # Prefer clip manifest entry, fall back to sections/XX.mp4 mtime
+            try:
+                code_mtime = art.path.stat().st_mtime if art and art.path and art.path.exists() else 0
+            except Exception:
+                code_mtime = 0
+            clip_path = None
+            try:
+                # renderer_manim stores sections/XX.mp4 in manifest[0].mp4
+                if rend.manifest and isinstance(rend.manifest[0], dict):
+                    cand = rend.manifest[0].get("mp4")
+                    if cand:
+                        from pathlib import Path as _P
+                        cand_p = _P(cand)
+                        if cand_p.exists():
+                            clip_path = cand_p
+                if clip_path is None:
+                    # Fallback to on-disk section clip
+                    cand2 = d / "sections" / f"{stem}.mp4"
+                    if cand2.exists():
+                        clip_path = cand2
+                    else:
+                        cand3 = d / "build" / "manim" / "videos" / f"scene_{stem}" / "1080p30" / f"Scene{stem}.mp4"
+                        if cand3.exists():
+                            clip_path = cand3
+            except Exception:
+                clip_path = None
+            if clip_path is None or not clip_path.exists():
+                stale.append(f"{stem}: clip file missing on disk")
+                continue
+            try:
+                clip_mtime = clip_path.stat().st_mtime
+            except Exception:
+                clip_mtime = 0
+            # Allow 1s clock granularity; fresh clip must be >= code mtime
+            if code_mtime and clip_mtime + 0.5 < code_mtime:
+                stale.append(f"{stem}: stale clip (clip {clip_mtime:.0f} < code {code_mtime:.0f} at {clip_path})")
+                continue
+            if clip_path.stat().st_size < 1024:
+                stale.append(f"{stem}: clip truncated (<1k) at {clip_path}")
+                continue
+
+            # Execution / temporal / semantic must have an explicit PASS for this stem,
+            # not merely an absent failure (skip is not a pass).
+            for verifier in ("verifier_execution", "verifier_temporal", "verifier_semantic"):
+                results = ctx.check_results.get(verifier, [])
+                stem_results = [r for r in results if isinstance(r, dict) and str(r.get("stem") or r.get("scene_id") or "") == str(stem)]
+                has_pass = any(str(r.get("status", "")).lower() == "pass" for r in stem_results)
+                has_blocking_fail = any(str(r.get("status", "")).lower() == "fail" and str(r.get("severity","")) == "BLOCKING" for r in stem_results)
+                if has_blocking_fail:
+                    missing_pass.append(f"{stem}: {verifier} still BLOCKING")
+                elif not has_pass:
+                    # Temporal verifier emits "skip" when clip missing — that is not verification.
+                    # For a repaired stem we require a real pass.
+                    missing_pass.append(f"{stem}: {verifier} has no PASS (results={stem_results[:1]})")
+        if stale or missing_pass:
+            msgs = []
+            if stale:
+                msgs.append("stale/missing clips: " + "; ".join(stale))
+            if missing_pass:
+                msgs.append("unverified repaired stems: " + "; ".join(missing_pass))
+            if pending_stems:
+                msgs.append(f"pending repair_context/hitl stems: {sorted(pending_stems)}")
+            sys.exit("[prompt2render] aborting assembly: regenerated sections have not completed fresh render + execution/temporal/semantic gates:\n  " + "\n  ".join(msgs))
+
+        # Also block if *any* repair_context remains for non-HITL stems
+        if ctx.repair_context:
+            sys.exit(f"[prompt2render] aborting assembly: non-empty repair_context remains: {sorted(ctx.repair_context.keys())}")
+
         from prompt2render import assemble
         cfg.say("harness: assembling Manim section clips...")
         assemble.assemble(d, s, burn_captions=getattr(a, "burn", False))

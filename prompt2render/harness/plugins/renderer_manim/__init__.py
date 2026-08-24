@@ -42,6 +42,46 @@ from ....project import parse_script
 from ....visuals import manim_scene
 
 
+def hitl_status_sets(project_dir: Path | None) -> tuple[set[str], set[str]]:
+    """Read ``hitl_feedback.json`` and split stems by status.
+
+    Returns ``(rejected, locked)``. A "reject" entry forces a fresh
+    regenerate+rerender. An "accept" entry is a hard LOCK: once the user is
+    satisfied with a section, it must never be swept into an unrelated
+    regeneration pass again — e.g. the align-mtime staleness heuristic
+    below, which otherwise cannot tell "this scene's code is stale" apart
+    from "some other scene's narration was re-synced, bumping every align
+    file's mtime". Without an explicit lock, that kind of incidental
+    trigger silently re-runs the (non-deterministic) LLM on a scene the
+    user already approved, and it can come back worse.
+    """
+
+    rejected: set[str] = set()
+    locked: set[str] = set()
+
+    try:
+        import json as _json
+
+        path = project_dir / "hitl_feedback.json" if project_dir else None
+
+        if path and path.exists():
+            data = _json.loads(path.read_text(encoding="utf-8") or "{}")
+
+            if isinstance(data, dict):
+                for stem, entry in data.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    status = entry.get("status")
+                    if status == "reject":
+                        rejected.add(str(stem))
+                    elif status == "accept":
+                        locked.add(str(stem))
+    except Exception:
+        return set(), set()
+
+    return rejected, locked
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -73,6 +113,10 @@ def _normalize_manim19(code: str) -> str:
     if not isinstance(code, str):
         return ""
 
+    # Strip BOM / zero-width that LLM or PowerShell may inject at start
+    if code and code[0] == "\ufeff":
+        code = code.lstrip("\ufeff")
+
     # Known Code keyword alias.
     code = re.sub(
         r"\binsert_line_numbers\s*=",
@@ -97,6 +141,23 @@ def _normalize_manim19(code: str) -> str:
     code = re.sub(
         r"\\([&%_$#{}~^])",
         r"\\\\\1",
+        code,
+    )
+
+    # Manim 0.19: Scene.wait(0) is a ValueError (duration must be >0).
+    # The cue map may legitimately have gap 0.00 for back-to-back
+    # sentences; LLMs sometimes emit self.wait(0.0) literally, which
+    # crashes rendering. Strip those no-ops deterministically.
+    # Keep waits >= 0.05s (manim's practical minimum is >0).
+    code = re.sub(
+        r"^\s*self\.wait\s*\(\s*0+(?:\.0+)?\s*\)\s*(?:\n|$)",
+        "",
+        code,
+        flags=re.M,
+    )
+    code = re.sub(
+        r"self\.wait\s*\(\s*0+(?:\.0+)?\s*\)",
+        "self.wait(0.1)",
         code,
     )
 
@@ -367,8 +428,15 @@ def _repair_feedback(
 def _load_timing(
     context: SceneContext,
     stem: str,
-) -> tuple[float, str]:
-    """Load sentence timing when available."""
+) -> tuple[float, str, list[dict[str, float]]]:
+    """Load sentence timing when available.
+
+    Returns (total_duration, timing_table_text, sentences_list).
+    The raw sentences list is kept so the prompt can compute exact
+    per-sentence wait deltas (when they are necessary to keep cue
+    alignment).  Callers that only need the table can ignore the third
+    value.
+    """
 
     try:
         from .... import align
@@ -383,25 +451,71 @@ def _load_timing(
             [],
         )
 
-        duration = sum(
-            float(sentence["dur"])
-            for sentence in sentences
-        )
+        if isinstance(sentences, list) and sentences:
+            # Support both old (dur) and new (start/end) align formats.
+            def _dur(s: dict) -> float:
+                if "dur" in s and s.get("dur") is not None:
+                    try:
+                        return float(s["dur"])
+                    except Exception:
+                        pass
+                try:
+                    return float(s.get("end", 0)) - float(s.get("start", 0))
+                except Exception:
+                    return 0.0
 
-        timing_lines = [
-            (
-                f"[{float(sentence['start']):.1f}s - "
-                f"{float(sentence['end']):.1f}s] "
-                f"{sentence['text']}"
+            duration = sum(
+                _dur(s) for s in sentences if isinstance(s, dict)
             )
-            for sentence in sentences
-        ]
+            # fallback to audio_dur if sentences sum is broken (e.g. missing end)
+            if duration <= 0.01:
+                try:
+                    duration = float(data.get("audio_dur", 0))
+                except Exception:
+                    pass
 
-        if duration > 0:
-            return (
-                duration,
-                "\n".join(timing_lines),
-            )
+            timing_lines = []
+            for s in sentences:
+                if not isinstance(s, dict):
+                    continue
+                try:
+                    st = float(s.get("start", 0))
+                    en_raw = s.get("end")
+                    if en_raw is None:
+                        en_raw = st + float(s.get("dur", 0))
+                    en = float(en_raw)
+                except Exception:
+                    continue
+                txt = str(s.get("text", "")).strip()
+                timing_lines.append(f"[{st:.2f}s - {en:.2f}s] {txt}")
+
+            if duration > 0 and timing_lines:
+                # Normalise sentences to a safe list of dicts with floats
+                safe: list[dict[str, float]] = []
+                for s in sentences:
+                    if not isinstance(s, dict):
+                        continue
+                    try:
+                        st = float(s.get("start", 0))
+                        en_raw = s.get("end")
+                        if en_raw is None:
+                            en_raw = st + float(s.get("dur", 0))
+                        en = float(en_raw)
+                        dur = float(s.get("dur", en - st))
+                        if dur <= 0:
+                            dur = max(0.0, en - st)
+                        safe.append({
+                            "start": float(st),
+                            "end": float(en),
+                            "dur": float(dur),
+                        })
+                    except Exception:
+                        continue
+                return (
+                    duration,
+                    "\n".join(timing_lines),
+                    safe,
+                )
 
     except Exception:
         pass
@@ -410,6 +524,7 @@ def _load_timing(
         DEFAULT_DURATION,
         "[0.0s - 5.0s] "
         "(No timing data available)",
+        [],
     )
 
 
@@ -433,6 +548,15 @@ class RendererManimPlugin(Plugin):
     def declare_dependencies(self) -> list[str]:
         return [
             "code_artifacts",
+            # Without this, renderer_manim and verifier_execution are mere
+            # sibling consumers of code_artifacts with no ordering between
+            # them, so "verify before render" held only by accident of
+            # registry list order. Depending on the field verifier_execution
+            # actually publishes makes the topological sort put it first
+            # unconditionally, so a scene can never reach the Manim CLI
+            # before its generated code has passed (or been repaired past)
+            # the pre-flight static check.
+            "static_code_verified",
         ]
 
     def declare_effects(self) -> list[str]:
@@ -620,12 +744,15 @@ class RendererManimPlugin(Plugin):
             return context
 
         # Preserve successful renders unless this scene is explicitly
-        # being repaired.
+        # being repaired.  HITL rejects are treated as repairs so the
+        # sections listed in hitl_feedback.json are always re-rendered to
+        # a fresh clip before any assembly decision.
         repair_context = getattr(
             context,
             "repair_context",
             {},
         )
+        hitl_rejects_r, locked_r = hitl_status_sets(context.project_dir)
 
         for stem, artifact in list(
             context.code_artifacts.items()
@@ -651,10 +778,20 @@ class RendererManimPlugin(Plugin):
                 stem
             )
 
+            # A locked (hitl "accept") stem with an existing render is done —
+            # skip unconditionally, even if a stray repair_context/reject
+            # entry would otherwise force a re-render. Its code never
+            # changes once locked (see the generator's own lock check), so
+            # the only thing a forced re-render could do here is burn time
+            # reproducing the same clip.
+            if existing and existing.manifest and stem in locked_r:
+                continue
+
             if (
                 existing
                 and existing.manifest
                 and stem not in repair_context
+                and stem not in hitl_rejects_r
             ):
                 continue
 
@@ -796,8 +933,51 @@ class GeneratorManimPlugin(Plugin):
         timing_table: str,
         duration: float,
         extra_feedback: str,
+        sentences: list[dict[str, float]] | None = None,
     ) -> str:
         """Construct the deterministic Manim generation contract."""
+
+        # Build exact per-sentence cue deltas so the LLM can emit precise
+        # self.wait() values.  When necessary (i.e. when the narration has
+        # >1 sentence) the animation for sentence N must start exactly at
+        # sentences[N].start — the gap to the next cue is the source of
+        # truth, not an estimated run_time.
+        cue_block = ""
+        if sentences and len(sentences) > 1:
+            lines = []
+            for idx, s in enumerate(sentences):
+                st = float(s.get("start", 0))
+                en = float(s.get("end", st + float(s.get("dur", 0))))
+                dur = float(s.get("dur", en - st))
+                nxt = float(sentences[idx + 1].get("start", en)) if idx + 1 < len(sentences) else duration
+                gap = max(0.0, nxt - en)
+                # Only emit a wait cue when the narration actually has a gap;
+                # when sentences are back-to-back the gap is ~0 and no extra
+                # wait is necessary. Emitting wait(0.0) crashes Manim
+                # (ValueError: duration <=0), so suppress it.
+                if idx + 1 < len(sentences):
+                    if gap > 0.05:
+                        lines.append(
+                            f"  - After sentence {idx+1} ends at {en:.2f}s, wait {gap:.2f}s "
+                            f"(until {nxt:.2f}s) before starting sentence {idx+2}'s animation."
+                        )
+                    else:
+                        lines.append(
+                            f"  - After sentence {idx+1} ends at {en:.2f}s, next sentence starts immediately at {nxt:.2f}s (gap ≈0, no wait needed)."
+                        )
+                # Highlight duration budget for this sentence's animation
+                lines.append(
+                    f"  - Sentence {idx+1} window: start {st:.2f}s, duration budget {dur:.2f}s "
+                    f"(do not overrun {en:.2f}s)."
+                )
+            cue_block = "\n".join(lines)
+        elif sentences and len(sentences) == 1:
+            s = sentences[0]
+            cue_block = (
+                f"  - Single-sentence section: animation window is "
+                f"{float(s.get('start',0)):.2f}s → {float(s.get('end', duration)):.2f}s "
+                f"(budget {float(s.get('dur', duration)):.2f}s)."
+            )
 
         prompt = f"""
 Write a Manim Community Edition {MANIM_VERSION} script for this educational
@@ -814,26 +994,44 @@ NARRATION WITH EXACT TIMING:
 
 TOTAL DURATION:
 {duration:.1f} seconds
+"""
+        if cue_block:
+            prompt += f"""
+EXACT CUE MAP (use these waits when they are necessary to keep sync):
+{cue_block}
+"""
 
+        prompt += f"""
 REQUIREMENTS:
 
 1. Use Manim Community Edition v{MANIM_VERSION}.
    Use:
-       from manim import *
+        from manim import *
 
    Do not use APIs introduced after v{MANIM_VERSION}.
 
 2. Define exactly one class:
-       Scene{section.stem}
+        Scene{section.stem}
 
    It must inherit from Scene.
 
-3. EXACT SYNCHRONIZATION:
-   Use self.play(..., run_time=...) and self.wait(...) so visual changes
-   correspond to the narration timestamps.
-
+3. EXACT SYNCHRONIZATION (CRITICAL — when they are necessary):
+   You MUST use the exact start times from the NARRATION table and CUE MAP above.
+   - Do NOT start an animation before its corresponding narration sentence begins.
+    - Between sentences, use `self.wait(gap)` where gap is the exact value from the CUE MAP.
+      When sentences are back-to-back (gap ≤0.05), do NOT insert any self.wait at all — Manim
+      rejects wait(0) with ValueError. Let the next animation start immediately, but still
+      ensure the previous animation's run_time did not overrun its window. NEVER emit
+      self.wait(0) or self.wait(0.0).
+    - Set each `self.play(..., run_time=...)` so the animation fits inside its sentence's
+      duration budget.  Prefer `run_time = min(budget*0.85, natural_duration)` and then
+      `self.wait(remaining)` to fill to the exact cue (remaining must be >0).
+    - For example, if sentence 2 starts at 4.50s and sentence 1 ends at 4.20s, insert
+      `self.wait(0.30)` after sentence 1's animation before starting sentence 2's. If the gap
+      is 0.00, insert no wait.
+   
    The total animation duration MUST equal:
-       {duration:.1f} seconds
+        {duration:.1f} seconds
 
 4. LAYOUT:
    - Title: UP * 3.5
@@ -849,23 +1047,19 @@ REQUIREMENTS:
    - Prefer concise labels over paragraphs.
 
 6. MANIM 0.19 API SAFETY:
-   - Do not pass font_size or direction to Axes.get_x_label/get_y_label.
-   - Create Text labels and position them with next_to.
-   - Do not pass corner= to move_to.
-   - Use move_to(point) or align_to.
-   - Do not pass theme= to Code.
-   - Use Code(code_string=..., language=...).
+   - Do not pass font_size or direction to Axes.get_x_label/get_y_label. Create Text labels and position them with next_to.
+   - Do not pass corner= to move_to. Use move_to(point) or align_to.
+   - Do not pass theme= to Code. Use Code(code_string=..., language=...).
+   - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
+   - Do not pass include_background= to Text, MathTex, or Tex.
+   - For Code line numbers use add_line_numbers=True. Never use insert_line_numbers.
+   - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
 
-7. CODE:
-   - For Code line numbers use add_line_numbers=True.
-   - Never use insert_line_numbers.
-   - Use UL/UR/DL/DR.
-   - Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
-
-8. VECTOR SAFETY:
+7. VECTOR SAFETY & SHAPES:
    - move_to() requires a coordinate vector.
    - put_start_and_end_on() requires coordinate vectors.
    - Never pass a scalar where a 3D coordinate is required.
+   - SurroundingRectangle, BackgroundRectangle, and always_redraw require a Mobject (like a Text or Circle), NOT a coordinate array. Never pass number_to_point(), get_center(), or c2p() directly to them.
 
 9. Do not use:
    - undocumented keyword arguments
@@ -877,10 +1071,13 @@ REQUIREMENTS:
 10. Preserve all numerical values and relationships from the visual plan.
 
 11. Implement the storyboard progressively.
-    Do not display unrelated major visual elements simultaneously.
+     Do not display unrelated major visual elements simultaneously.
+     When a new sentence's visual builds on the previous, keep prior mobjects on screen
+     and animate the delta — do not clear the scene between cues unless the brief
+     explicitly demands it.
 
 12. The visual plan is authoritative.
-    Do not reinterpret or replace its core visual claim.
+     Do not reinterpret or replace its core visual claim.
 
 13. Output ONLY valid Python code.
     No Markdown fences.
@@ -995,7 +1192,7 @@ REQUIREMENTS:
             / f"scene_{stem}.py"
         )
 
-        duration, timing_table = (
+        duration, timing_table, sentences = (
             _load_timing(
                 context,
                 stem,
@@ -1014,6 +1211,7 @@ REQUIREMENTS:
             timing_table,
             duration,
             extra_feedback,
+            sentences,
         )
 
         try:
@@ -1099,6 +1297,22 @@ REQUIREMENTS:
             "repair_context",
             {},
         )
+        # HITL file is authoritative: if a stem is still listed as reject,
+        # it must be regenerated even if repair_context is empty at the
+        # start of a fresh harness invocation (the previous rewind fix was
+        # not reliably re-rendering before assembly).  Read once per run.
+        hitl_rejects: set[str] = set()
+        try:
+            import json as _json
+            _hf = context.project_dir / "hitl_feedback.json" if context.project_dir else None
+            if _hf and _hf.exists():
+                _data = _json.loads(_hf.read_text(encoding="utf-8") or "{}")
+                if isinstance(_data, dict):
+                    for _k, _v in _data.items():
+                        if isinstance(_v, dict) and _v.get("status") == "reject":
+                            hitl_rejects.add(str(_k))
+        except Exception:
+            hitl_rejects = set()
 
         for section in script.sections:
 
@@ -1110,8 +1324,21 @@ REQUIREMENTS:
             )
 
             is_repair = (
-                stem in repair_context
+                stem in repair_context or stem in hitl_rejects
             )
+            # If alignment was re-done (e.g. after voice re-synthesis,
+            # narration 39s vs cached 5s code), the cached code is stale
+            # even though hitl and repair_context are empty. Detect via
+            # file mtimes: align JSON newer than code => must regenerate.
+            if not is_repair and py_file.exists():
+                try:
+                    from .... import align as _align_mod
+                    align_path = _align_mod.path_for(context.project_dir, stem)
+                    if align_path.exists():
+                        if align_path.stat().st_mtime > py_file.stat().st_mtime + 1.0:
+                            is_repair = True
+                except Exception:
+                    pass
 
             # ----------------------------------------------------------
             # Cache handling

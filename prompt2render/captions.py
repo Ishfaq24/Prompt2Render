@@ -407,7 +407,8 @@ def cards_for(
                         "start": start,
                         "end": end,
                         "text": "\n".join(
-                            line_groups
+                            textseg.caption_text(group)
+                            for group in line_groups
                         ),
                         "words": [],
                     }
@@ -472,7 +473,10 @@ def cards_for(
                             + float(group[-1]["e"])
                         ),
                         "text": (
-                            "\n".join(lines)
+                            "\n".join(
+                                textseg.caption_text(group)
+                                for group in lines
+                            )
                             if lines
                             else text
                         ),

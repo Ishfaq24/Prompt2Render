@@ -16,38 +16,56 @@ class FeedbackHitlPlugin(Plugin):
     name = "feedback_hitl"
 
     def declare_dependencies(self) -> list[str]:
-        return ["render_artifacts", "check_results"]
+        return ["render_artifacts"]
 
     def declare_effects(self) -> list[str]:
-        return ["hitl_annotations", "check_results"]
+        # Findings are recorded in the aggregate check_results map, but that
+        # mutable map is not an owned DAG artifact. The owned output here is
+        # the human annotation collection.
+        return ["hitl_annotations"]
 
     def run(self, context: SceneContext) -> SceneContext:
-        findings = []
+        findings: list[dict] = []
         hitl_file = context.project_dir / "hitl_feedback.json" if context.project_dir else None
-        
+
         if hitl_file and hitl_file.exists():
             try:
-                feedback_data = json.loads(hitl_file.read_text(encoding="utf-8"))
-                for stem, feedback in feedback_data.items():
-                    if feedback.get("status") == "reject":
-                        reason = feedback.get("reason", "Manually rejected by human reviewer.")
-                        f = Finding(
-                            finding_id=next_finding_id("hitl"),
-                            scene_id=stem,
-                            category=Category.SEMANTIC,
-                            severity=Severity.BLOCKING if self.is_gate() else Severity.WARNING,
-                            message=f"Human Reviewer Feedback: {reason}"
-                        )
-                        findings.append(f.as_check_result())
-                        
-                        # Store annotation
-                        context.hitl_annotations.append({
-                            "stem": stem,
-                            "reason": reason
-                        })
+                raw = hitl_file.read_text(encoding="utf-8")
+                feedback_data = json.loads(raw) if raw.strip() else {}
+                if not isinstance(feedback_data, dict):
+                    feedback_data = {}
+                # Never auto-mutate hitl_feedback.json based on in-memory
+                # render_artifacts staleness.  The previous heuristic
+                # ``stem in repair_context and stem in render_artifacts`` was
+                # true for *stale* clips (old MP4 still present in the map) and
+                # would delete the user rejection before a fresh clip had been
+                # rendered and re-verified, causing the exact stale-assembly
+                # bug reported for sections 01/07.  Clearing is now delegated
+                # to the runner's ``_clear_verified_repair_context`` (which
+                # tracks passing verifiers) and to explicit user action; the
+                # plugin only emits findings.
+                for stem, feedback in list(feedback_data.items()):
+                    if not isinstance(feedback, dict):
+                        continue
+                    if feedback.get("status") != "reject":
+                        continue
+                    reason = feedback.get("reason", "Manually rejected by human reviewer.")
+                    result = Finding(
+                        finding_id=next_finding_id("hitl"),
+                        scene_id=str(stem),
+                        category=Category.SEMANTIC,
+                        severity=Severity.BLOCKING,
+                        message=f"Human Reviewer Feedback: {reason}",
+                    ).as_check_result()
+                    result["finding_type"] = "feedback_hitl"
+                    findings.append(result)
+                    context.hitl_annotations.append({"stem": str(stem), "reason": str(reason)})
+
             except Exception:
+                # Malformed JSON must not crash the harness; surface as a
+                # skip so the pipeline can still report other verdicts.
                 pass
-                
+
         context.check_results[self.name] = findings
         return context
 

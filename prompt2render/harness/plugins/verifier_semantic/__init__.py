@@ -1,179 +1,881 @@
-"""Real semantic-correctness checker for prompt2render.
-Verifies that the generated Python scene module actually fulfills the intent 
-described in the scene_plan's `anim` brief and narration text.
+"""LLM-assisted semantic correctness verifier for Prompt2Render.
+
+This verifier evaluates whether generated scene code actually fulfills the
+scene's educational intent. It combines deterministic prerequisites with an
+LLM critic:
+
+    scene plan + narration + generated code + fresh preview
+        ↓
+    semantic critic
+        ↓
+    structured finding
+        ↓
+    repair_router
+
+Important boundaries
+--------------------
+* This is a semantic reviewer, not the deterministic execution verifier.
+* It does not silently accept malformed LLM output.
+* It never treats a missing preview as a successful visual audit.
+* It does not mutate scene code.
+* It keeps generated-code acceptance separate from verification.
+* During repair, it regenerates the preview for the affected scene only.
 """
+
 from __future__ import annotations
 
+import base64
+import json
 import os
+import re
 from pathlib import Path
+from typing import Any
 
 from ...context import SceneContext
+from ...finding import (
+    Category,
+    Finding,
+    Severity,
+    next_finding_id,
+)
 from ...plugin import Plugin
-from ...finding import Finding, Category, Severity, next_finding_id
-from .... import llm
-from .... import cfg
+from .... import cfg, llm
 
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_MODEL = "gemini-3.7-flash"
+MAX_CODE_CHARS = 24000
+MAX_PROMPT_CHARS = 50000
+
+
+# ---------------------------------------------------------------------------
+# LLM helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_keys() -> list[str]:
+    """Resolve Gemini keys without terminating the harness."""
+
+    try:
+        if hasattr(llm, "keys"):
+            keys = llm.keys()
+        else:
+            primary = os.environ.get(
+                "GEMINI_API_KEY",
+                "",
+            ).strip()
+
+            keys = (
+                [primary]
+                if primary
+                else []
+            )
+
+    except (
+        SystemExit,
+        Exception,
+    ):
+        keys = []
+
+    return [
+        str(key).strip()
+        for key in keys
+        if str(key).strip()
+    ]
+
+
+def _model_name() -> str:
+    """Resolve the configured semantic-review model."""
+
+    if hasattr(
+        llm,
+        "model_chain",
+    ):
+        try:
+            models = llm.model_chain(
+                "P2R_SCENE_MODEL",
+                DEFAULT_MODEL,
+            )
+
+            if models:
+                return str(
+                    models[0]
+                )
+        except Exception:
+            pass
+
+    return os.environ.get(
+        "P2R_SCENE_MODEL",
+        DEFAULT_MODEL,
+    )
+
+
+def _client(
+    key: str,
+):
+    """Build a client using the project's LLM abstraction when available."""
+
+    if hasattr(
+        llm,
+        "client",
+    ):
+        return llm.client(
+            key
+        )
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            "openai is not installed; "
+            "the semantic verifier requires an "
+            "OpenAI-compatible client."
+        ) from exc
+
+    return OpenAI(
+        api_key=key,
+        base_url=(
+            "https://generativelanguage."
+            "googleapis.com/v1beta/openai/"
+        ),
+        timeout=300.0,
+        max_retries=2,
+    )
+
+
+# ---------------------------------------------------------------------------
+# JSON parsing
+# ---------------------------------------------------------------------------
+
+def _extract_json(
+    content: str,
+) -> dict[str, Any] | None:
+    """Extract a JSON object from normal or fenced LLM output.
+
+    No heuristic fallback to ``status=pass`` is allowed. If the critic cannot
+    produce valid structured output, verification must fail closed.
+    """
+
+    if not isinstance(
+        content,
+        str,
+    ):
+        return None
+
+    text = content.strip()
+
+    if text.startswith(
+        "```"
+    ):
+        text = re.sub(
+            r"^```(?:json)?\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r"\s*```$",
+            "",
+            text,
+        ).strip()
+
+    # First attempt: entire response.
+    try:
+        value = json.loads(
+            text,
+            strict=False,
+        )
+
+        return (
+            value
+            if isinstance(
+                value,
+                dict,
+            )
+            else None
+        )
+
+    except json.JSONDecodeError:
+        pass
+
+    # Second attempt: extract the outermost object.
+    start = text.find(
+        "{"
+    )
+    end = text.rfind(
+        "}"
+    )
+
+    if (
+        start < 0
+        or end <= start
+    ):
+        return None
+
+    try:
+        value = json.loads(
+            text[
+                start:end + 1
+            ],
+            strict=False,
+        )
+
+        return (
+            value
+            if isinstance(
+                value,
+                dict,
+            )
+            else None
+        )
+
+    except json.JSONDecodeError:
+        return None
+
+
+def _normalize_result(
+    result: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Validate and normalize critic output."""
+
+    if not isinstance(
+        result,
+        dict,
+    ):
+        return None
+
+    status = str(
+        result.get(
+            "status",
+            "",
+        )
+    ).strip().lower()
+
+    if status not in {
+        "pass",
+        "fail",
+    }:
+        return None
+
+    reason = str(
+        result.get(
+            "reason",
+            "",
+        )
+    ).strip()
+
+    normalized = {
+        "status": status,
+        "reason": reason,
+    }
+
+    # Preserve optional structured reviewer fields if supplied.
+    for key in (
+        "violations",
+        "evidence",
+        "severity",
+        "confidence",
+        "fix",
+    ):
+        if key in result:
+            normalized[key] = result[key]
+
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Prompt construction
+# ---------------------------------------------------------------------------
+
+def _build_prompt(
+    entry,
+    code: str,
+    *,
+    has_preview: bool,
+) -> str:
+    """Build a strict semantic-review prompt."""
+
+    visual_instruction = (
+        "A preview frame is attached. Evaluate it as evidence for layout "
+        "and visual-state correctness."
+        if has_preview
+        else
+        "No preview frame is available. Do NOT claim that layout or rendered "
+        "appearance was visually verified. Restrict your judgement to code, "
+        "brief, and narration."
+    )
+
+    prompt = f"""
+You are a strict educational-video reviewer and computer-science expert.
+
+Your task is to determine whether ONE generated scene faithfully implements
+the educational intent supplied below.
+
+SCENE:
+{entry.stem}
+
+TITLE:
+{entry.title}
+
+ANIMATION / VISUAL BRIEF:
+{entry.anim}
+
+NARRATION:
+{entry.narration_text}
+
+GENERATED CODE:
+```python
+{code}
+```
+
+{visual_instruction}
+
+Evaluate all of the following:
+
+1. DATA CONSISTENCY
+   - Preserve exact values explicitly required by the visual brief/narration.
+   - Do not invent, silently drop, reorder, or alter important values.
+
+2. DOMAIN INVARIANTS
+   - Check mathematical/computational rules that are directly relevant.
+   - Examples:
+     * Tower of Hanoi: a larger disk must not rest on a smaller disk in a
+       legal state.
+     * Sorting: a state labelled sorted must actually be sorted.
+     * Trees/graphs: parent-child/edge relationships must match the claim.
+   - Do not invent an invariant unrelated to the supplied topic.
+
+3. ILLEGAL-RULE DEMONSTRATIONS
+   - If the narration intentionally demonstrates an illegal state, the visual
+     must physically depict the illegal state.
+   - It must also clearly mark that state as illegal.
+   - Merely writing "ILLEGAL" beside a legal state is insufficient.
+
+4. PEDAGOGICAL CONSISTENCY
+   - The visual state must not contradict what the speaker says.
+   - Transitions must preserve established values unless the narration
+     explains the change.
+
+5. VISUAL INTENT
+   - Determine whether the generated code actually implements the major
+     visual claim in the animation brief.
+   - Do not reward code merely because it contains similarly named objects.
+
+6. LAYOUT
+   - Only evaluate actual rendered layout when a preview is attached.
+   - Check for overlap, clipping, unreadably small text, or visibly broken
+     composition.
+
+IMPORTANT:
+- Be conservative.
+- Do not reject a scene merely because you would design it differently.
+- Reject only an actual contradiction, missing required visual state, invalid
+  domain invariant, or clearly broken layout.
+- If evidence is insufficient, say so in the reason rather than inventing a
+  failure.
+
+Return ONLY this JSON object:
+
+{{
+  "status": "pass" | "fail",
+  "reason": "specific evidence-based explanation",
+  "violations": [
+    "optional concise violation"
+  ],
+  "evidence": [
+    "optional code/visual evidence"
+  ],
+  "fix": "optional concrete correction"
+}}
+
+Do not return Markdown outside the JSON object.
+""".strip()
+
+    return prompt[
+        :MAX_PROMPT_CHARS
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Preview handling
+# ---------------------------------------------------------------------------
+
+def _preview_path(
+    context: SceneContext,
+    stem: str,
+) -> Path:
+    return (
+        context.project_dir
+        / "build"
+        / "manim"
+        / "previews"
+        / f"Scene{stem}.png"
+    )
+
+
+def _regenerate_preview(
+    context: SceneContext,
+    entry,
+) -> Path | None:
+    """Regenerate one Manim preview during repair.
+
+    This helper is deliberately limited to the affected scene. For SceneKit,
+    normal renderers remain responsible for producing their preview artifacts.
+    """
+
+    preview = _preview_path(
+        context,
+        entry.stem,
+    )
+
+    scene_file = (
+        context.project_dir
+        / "build"
+        / "manim"
+        / f"scene_{entry.stem}.py"
+    )
+
+    if not scene_file.exists():
+        return None
+
+    try:
+        from ....visuals import manim_scene
+
+        preview.unlink(
+            missing_ok=True
+        )
+
+        manim_scene(
+            context.project_dir,
+            scene_file,
+            f"Scene{entry.stem}",
+            entry.index,
+        )
+
+    except (
+        SystemExit,
+        Exception,
+    ) as exc:
+        raise RuntimeError(
+            f"repaired Manim scene failed to render: {exc}"
+        ) from exc
+
+    return (
+        preview
+        if preview.exists()
+        else None
+    )
+
+
+def _preview_message(
+    preview: Path | None,
+) -> list[dict[str, Any]]:
+    """Create the multimodal message content."""
+
+    if (
+        preview is None
+        or not preview.exists()
+    ):
+        return []
+
+    data = base64.b64encode(
+        preview.read_bytes()
+    ).decode(
+        "ascii"
+    )
+
+    return [
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": (
+                    "data:image/png;base64,"
+                    f"{data}"
+                )
+            },
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Finding
+# ---------------------------------------------------------------------------
+
+def _make_finding(
+    *,
+    stem: str,
+    result: dict[str, Any],
+    gate: bool,
+) -> dict[str, Any]:
+    """Convert semantic-review output into a harness finding."""
+
+    reason = result.get(
+        "reason",
+        "Semantic mismatch detected by LLM critic.",
+    )
+
+    finding = Finding(
+        finding_id=next_finding_id(
+            "sem"
+        ),
+        scene_id=stem,
+        category=Category.SEMANTIC,
+        severity=(
+            Severity.BLOCKING
+            if gate
+            else Severity.WARNING
+        ),
+        message=str(
+            reason
+        ),
+    ).as_check_result()
+
+    finding["finding_type"] = (
+        "semantic_mismatch"
+    )
+
+    finding["mismatch_subtype"] = (
+        "semantic_mismatch"
+    )
+
+    for key in (
+        "violations",
+        "evidence",
+        "confidence",
+        "fix",
+    ):
+        if key in result:
+            finding[key] = result[key]
+
+    return finding
+
+
+# ---------------------------------------------------------------------------
+# Plugin
+# ---------------------------------------------------------------------------
 
 class VerifierSemanticPlugin(Plugin):
+    """LLM-based semantic correctness reviewer."""
+
     name = "verifier_semantic"
 
     def declare_dependencies(self) -> list[str]:
-        return ["code_artifacts", "scene_plan", "render_artifacts"]
+        return [
+            "code_artifacts",
+            "scene_plan",
+            "render_artifacts",
+        ]
 
     def declare_effects(self) -> list[str]:
-        return ["check_results"]
+        return [
+            "check_results",
+        ]
 
-    def run(self, context: SceneContext) -> SceneContext:
-        findings = []
-        
-        try:
-            if hasattr(llm, "keys"):
-                keys = llm.keys()
-            else:
-                # Fallback for older llm.py that doesn't have keys()
-                key = os.environ.get("GEMINI_API_KEY", "")
-                keys = [key] if key else []
-        except SystemExit:
-            keys = []
-            
+    def run(
+        self,
+        context: SceneContext,
+    ) -> SceneContext:
+
+        findings: list[
+            dict[str, Any]
+        ] = []
+
+        keys = _ensure_keys()
+
         if not keys:
-            cfg.warn("No GEMINI_API_KEY found, skipping semantic verification.")
-            context.check_results[self.name] = []
-            return context
-            
-        # Fallbacks for older llm.py
-        if hasattr(llm, "model_chain"):
-            models = llm.model_chain("P2R_SCENE_MODEL", "gemini-3.7-flash")
-            model = models[0]
-        else:
-            model = os.environ.get("P2R_SCENE_MODEL", "gemini-3.7-flash")
-            
-        if hasattr(llm, "client"):
-            client = llm.client(keys[0])
-        else:
-            try:
-                from openai import OpenAI
-            except ImportError:
-                import sys
-                sys.exit("[prompt2render] openai not installed — pip install -r requirements.txt")
-            client = OpenAI(
-                api_key=keys[0], 
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/", 
-                timeout=300.0, 
-                max_retries=2
+            cfg.warn(
+                "No GEMINI_API_KEY found; "
+                "semantic verification skipped."
             )
+
+            context.check_results[
+                self.name
+            ] = [
+                {
+                    "status": "skip",
+                    "finding_type": (
+                        "semantic_verification_unavailable"
+                    ),
+                    "detail": (
+                        "No LLM API key is available "
+                        "for semantic verification."
+                    ),
+                }
+            ]
+
+            return context
+
+        model = _model_name()
+
+        try:
+            client = _client(
+                keys[0]
+            )
+        except Exception as exc:
+            cfg.warn(
+                f"Semantic verifier unavailable: {exc}"
+            )
+
+            context.check_results[
+                self.name
+            ] = [
+                {
+                    "status": "skip",
+                    "finding_type": (
+                        "semantic_verification_unavailable"
+                    ),
+                    "detail": str(exc),
+                }
+            ]
+
+            return context
+
+        repair_context = getattr(
+            context,
+            "repair_context",
+            {},
+        )
+
+        if not isinstance(
+            repair_context,
+            dict,
+        ):
+            repair_context = {}
+
+        gate = self.is_gate()
 
         for entry in context.scene_plan:
-            artifact = context.code_artifacts.get(entry.stem)
-            if not artifact or not artifact.path or not artifact.path.exists():
+
+            artifact = (
+                context.code_artifacts.get(
+                    entry.stem
+                )
+            )
+
+            if (
+                artifact is None
+                or artifact.path is None
+                or not artifact.path.exists()
+            ):
                 continue
 
-            # If we are in a repair loop, the code was regenerated but not re-rendered yet.
-            # We must re-render to get the fresh preview image for the visual audit.
-            preview_img = context.project_dir / "build" / "manim" / "previews" / f"Scene{entry.stem}.png"
-            if entry.stem in context.repair_context and hasattr(artifact, "path") and artifact.path:
-                from ....visuals import manim_scene
+            try:
+                code = artifact.path.read_text(
+                    encoding="utf-8"
+                )
+            except Exception as exc:
+                findings.append(
+                    _make_finding(
+                        stem=entry.stem,
+                        gate=gate,
+                        result={
+                            "status": "fail",
+                            "reason": (
+                                "Could not read generated "
+                                f"scene source: {exc}"
+                            ),
+                        },
+                    )
+                )
+
+                continue
+
+            if len(code) > MAX_CODE_CHARS:
+                code = code[
+                    :MAX_CODE_CHARS
+                ] + (
+                    "\n\n# [CODE TRUNCATED FOR REVIEW]\n"
+                )
+
+            # ----------------------------------------------------------
+            # Fresh preview during repair
+            # ----------------------------------------------------------
+
+            preview = _preview_path(
+                context,
+                entry.stem,
+            )
+
+            if entry.stem in repair_context:
                 try:
-                    # Remove stale preview so we don't accidentally audit the old one if render fails
-                    if preview_img.exists():
-                        preview_img.unlink()
-                    manim_scene(context.project_dir, context.project_dir / "build" / "manim" / f"scene_{entry.stem}.py", f"Scene{entry.stem}", entry.index)
-                except Exception as e:
-                    # If the repair code crashes Manim, record it as a semantic failure so the loop continues
-                    from ...finding import Finding, Category, Severity, next_finding_id
-                    findings.append(Finding(
-                        finding_id=next_finding_id("sem"),
-                        scene_id=entry.stem,
-                        category=Category.RENDER,
-                        severity=Severity.BLOCKING if self.is_gate() else Severity.WARNING,
-                        message=f"Repaired Manim code failed to render: {e}"
-                    ).as_check_result())
+                    regenerated = (
+                        _regenerate_preview(
+                            context,
+                            entry,
+                        )
+                    )
+
+                    if regenerated is not None:
+                        preview = regenerated
+
+                except Exception as exc:
+                    findings.append(
+                        _make_finding(
+                            stem=entry.stem,
+                            gate=gate,
+                            result={
+                                "status": "fail",
+                                "reason": str(exc),
+                            },
+                        )
+                    )
+
                     continue
 
-            code = artifact.path.read_text(encoding="utf-8")
-            
-            prompt = (
-                f"You are a strict educational video reviewer and computer science expert. "
-                f"Your job is to verify if the generated Python drawing code violates any pedagogical invariants or domain logic.\n\n"
-                f"INTENT (Brief): {entry.anim}\n"
-                f"NARRATION (What the speaker says): {entry.narration_text}\n\n"
-                f"CODE (What is actually drawn):\n```python\n{code}\n```\n\n"
-                f"You MUST evaluate the code and the provided final preview frame for fatal domain logic errors and obvious layout failures. Use your general knowledge of computer science and mathematics.\n"
-                f"1. **Data Consistency**: Does the code use the exact numbers/data mentioned in the brief? If it invents new numbers or drops elements, reject it.\n"
-                f"2. **Domain Invariants**: Are the visual states mathematically/logically sound for the topic? (e.g., in Tower of Hanoi, a larger disk cannot sit on a smaller disk; in a sorting algorithm, an array claimed to be sorted must actually be sorted).\n"
-                f"3. **Intentional Rule Demonstration**: If the narration explicitly explains an ILLEGAL move or anti-pattern, the code MUST physically draw that illegal state AND clearly mark it as illegal (e.g., with a red 'X'). If it just draws a legal state and slaps an 'ILLEGAL' label on it, reject it.\n"
-                f"4. **Pedagogical Mismatch**: Does the visual state contradict the spoken explanation?\n"
-                f"5. **Layout Safety**: Look at the preview frame. Are there any overlapping text elements or graphics? Is any text cut off by the edge of the screen? Is the text too small to read? If so, reject it and explain which coordinates to adjust.\n\n"
-                f"Output ONLY a JSON object: {{\"status\": \"pass\" | \"fail\", \"reason\": \"Detailed explanation if failed. Include the exact code snippet that is wrong and explain how to fix it.\"}}"
+            # ----------------------------------------------------------
+            # Build prompt
+            # ----------------------------------------------------------
+
+            has_preview = (
+                preview.exists()
             )
-            
-            # The preview_img path is defined earlier.
-            messages = [{"role": "user", "content": prompt}]
-            
-            if preview_img.exists():
-                import base64
-                img_data = base64.b64encode(preview_img.read_bytes()).decode("utf-8")
-                messages = [{
+
+            prompt = _build_prompt(
+                entry,
+                code,
+                has_preview=has_preview,
+            )
+
+            user_content: list[
+                dict[str, Any]
+            ] = [
+                {
+                    "type": "text",
+                    "text": prompt,
+                }
+            ]
+
+            if has_preview:
+                user_content.extend(
+                    _preview_message(
+                        preview
+                    )
+                )
+
+            messages = [
+                {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_data}"}}
-                    ]
-                }]
-            
+                    "content": (
+                        user_content
+                        if has_preview
+                        else prompt
+                    ),
+                }
+            ]
+
+            # ----------------------------------------------------------
+            # LLM call
+            # ----------------------------------------------------------
+
             try:
-                if hasattr(llm, "complete") and not preview_img.exists():
-                    content = llm.complete(prompt, max_tokens=1000)
+                if (
+                    hasattr(
+                        llm,
+                        "complete",
+                    )
+                    and not has_preview
+                ):
+                    content = llm.complete(
+                        prompt,
+                        max_tokens=1400,
+                        model_env="P2R_SCENE_MODEL",
+                        default_model=model,
+                        label="semantic",
+                    )
+
                 else:
-                    resp = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        response_format={"type": "json_object"}
+                    response = (
+                        client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            response_format={
+                                "type": "json_object"
+                            },
+                        )
                     )
-                    content = resp.choices[0].message.content if resp.choices else "{}"
-                    
-                import json
-                # Handle cases where llm.complete() returns markdown json blocks
-                import re
-                if content.startswith("```json"):
-                    content = content[7:]
-                if content.endswith("```"):
-                    content = content[:-3]
-                
-                content = content.strip()
-                try:
-                    result = json.loads(content, strict=False)
-                except json.JSONDecodeError:
-                    # Fallback for invalid escapes or malformed JSON
-                    # Replace invalid backslashes before quotes
-                    content = content.replace('\\"', '"').replace('\\', '\\\\')
-                    try:
-                        result = json.loads(content, strict=False)
-                    except json.JSONDecodeError:
-                        # Final fallback: regex extraction
-                        status_match = re.search(r'"status"\s*:\s*"([^"]+)"', content)
-                        reason_match = re.search(r'"reason"\s*:\s*"([^"]+)"', content)
-                        result = {
-                            "status": status_match.group(1) if status_match else "pass",
-                            "reason": reason_match.group(1) if reason_match else ""
-                        }
-                
-                if result.get("status", "").lower() == "fail":
-                    f = Finding(
-                        finding_id=next_finding_id("sem"),
-                        scene_id=entry.stem,
-                        category=Category.SEMANTIC,
-                        severity=Severity.BLOCKING if self.is_gate() else Severity.WARNING,
-                        message=result.get("reason", "Semantic mismatch detected by LLM critic.")
+
+                    content = (
+                        response
+                        .choices[0]
+                        .message
+                        .content
+                        if response.choices
+                        else ""
                     )
-                    findings.append(f.as_check_result())
-            except Exception as e:
-                cfg.warn(f"Semantic verification failed for {entry.stem}: {e}")
-                
-        context.check_results[self.name] = findings
+
+                result = _normalize_result(
+                    _extract_json(
+                        str(
+                            content or ""
+                        )
+                    )
+                )
+
+                # ------------------------------------------------------
+                # Fail closed on malformed critic output.
+                # ------------------------------------------------------
+
+                if result is None:
+                    findings.append(
+                        _make_finding(
+                            stem=entry.stem,
+                            gate=gate,
+                            result={
+                                "status": "fail",
+                                "reason": (
+                                    "Semantic critic returned "
+                                    "invalid structured output; "
+                                    "verification could not establish "
+                                    "semantic correctness."
+                                ),
+                            },
+                        )
+                    )
+
+                    continue
+
+                if result[
+                    "status"
+                ] == "fail":
+                    findings.append(
+                        _make_finding(
+                            stem=entry.stem,
+                            gate=gate,
+                            result=result,
+                        )
+                    )
+
+            except Exception as exc:
+                # A semantic verifier that crashes should not silently turn
+                # into PASS. It is recorded as a verification failure.
+                cfg.warn(
+                    f"Semantic verification failed "
+                    f"for {entry.stem}: {exc}"
+                )
+
+                findings.append(
+                    _make_finding(
+                        stem=entry.stem,
+                        gate=gate,
+                        result={
+                            "status": "fail",
+                            "reason": (
+                                "Semantic verification "
+                                f"failed: {exc}"
+                            ),
+                        },
+                    )
+                )
+
+        context.check_results[
+            self.name
+        ] = findings
+
         return context
 
     def _default_gate(self) -> bool:
-        # Default to True so that pedagogical failures (like illegal Hanoi moves)
-        # hard-block the pipeline if the repair router cannot fix them.
+        """Semantic correctness is a hard gate by default."""
+
         return True

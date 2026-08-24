@@ -63,6 +63,7 @@ class StaticTableRoutingPolicy(RoutingPolicy):
         "stills_render_failure": ["generator_code"],
         "pedagogy_review": ["reviser_script"],
         "storyboard_failure": ["planner_llm"],
+        "feedback_hitl": ["generator_code"],
     }
 
     #: Post-render VLM findings are routed back to the verifier that owns
