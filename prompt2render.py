@@ -333,6 +333,15 @@ def cmd_harness(a):
         # never raises, so this can't mask the real GateFailure below.
         from prompt2render.harness.quality_report import write_quality_report
         write_quality_report(ctx.check_results, ctx.project_dir)
+        # Tier 3 Phase 15: same reasoning -- repair_records is complete
+        # regardless of the final gate outcome, and a hard-failed run's
+        # repair episodes are exactly the ones worth remembering for next
+        # time. Never raises.
+        from prompt2render.harness.experience import (
+            append_experience,
+            from_repair_records,
+        )
+        append_experience(ctx.project_dir, from_repair_records(ctx.repair_records))
         sys.exit(f"[prompt2render] harness hard gate failed: {e}")
     finally:
         if progress:
@@ -340,6 +349,16 @@ def cmd_harness(a):
 
     from prompt2render.harness.quality_report import write_quality_report
     write_quality_report(ctx.check_results, ctx.project_dir)
+
+    # Tier 3 Phase 15: durable, cross-run experience memory -- see
+    # harness/experience.py's module docstring for the gap this closes
+    # (repair_context is deleted on success; self_correction_report.json is
+    # overwritten every run; nothing previously survived across builds).
+    from prompt2render.harness.experience import (
+        append_experience,
+        from_repair_records,
+    )
+    append_experience(ctx.project_dir, from_repair_records(ctx.repair_records))
 
     # The default harness now runs timeline -> encode -> finish -> final QC ->
     # publish natively. Do not run qc.check a second time; it would repeat the
