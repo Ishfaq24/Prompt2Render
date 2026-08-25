@@ -309,18 +309,27 @@ def cmd_harness(a):
         
     ctx = SceneContext(prompt=script_path, project_dir=d)
     runner = HarnessRunner(plugins, logger, bus)
-    
+
     cfg.say(f"running harness over {a.slug}: " + " -> ".join(p.name for p in plugins))
     try:
         ctx = runner.run(ctx)
     except GateFailure as e:
         if progress:
             progress.stop()
+        # Tier 3 Phase 10: written on both outcomes -- check_results is only
+        # known-complete once the runner has finished, and the report is
+        # arguably most useful exactly when the run failed. write_quality_report
+        # never raises, so this can't mask the real GateFailure below.
+        from prompt2render.harness.quality_report import write_quality_report
+        write_quality_report(ctx.check_results, ctx.project_dir)
         sys.exit(f"[prompt2render] harness hard gate failed: {e}")
     finally:
         if progress:
             progress.stop()
-        
+
+    from prompt2render.harness.quality_report import write_quality_report
+    write_quality_report(ctx.check_results, ctx.project_dir)
+
     # The default harness now runs timeline -> encode -> finish -> final QC ->
     # publish natively. Do not run qc.check a second time; it would repeat the
     # expensive independent caption-drift transcription. The final-QC plugin

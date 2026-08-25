@@ -511,6 +511,28 @@ DOCUMENT → CHECKPOINT.
 - **Tier 3 (Phases 10-15)** — unified multi-verifier; **closed-loop visual grounding** (F3,
   deterministic CV first, VLM only for semantic judgments); motion traces; reproducible weighted
   quality scoring; verifier-driven repair with regression detection; experience memory.
+  - **Phase 10** (unified multi-verifier) — **Done, aggregation layer only** (per explicit user
+    scoping — closing the SS6-flagged test-coverage gap for `verifier_semantic`/
+    `verifier_spatial`/`verifier_lifecycle`/`verifier_audio`/`verifier_final_qc`/
+    `feedback_hitl`/`qc.py` was considered and deliberately deferred). New
+    `harness/quality_report.py`: a pure aggregation over every verifier's already-produced
+    `check_results`, classified into the target architecture's own 6 quality dimensions (§16:
+    semantic/temporal/spatial/motion/continuity/pedagogical) via `VERIFIER_DIMENSIONS`. `motion`
+    always reports zero findings today — no verifier covers it yet, a real gap this report makes
+    visible rather than hides (Phase 12, "motion traces," is presumably where that gets filled
+    in). `overall_score` is an explicitly **provisional** placeholder (fraction of dimensions
+    with zero blocking findings) — Phase 13 ("reproducible weighted quality scoring") is where
+    the real formula gets designed; Phase 10's job was unification, not final scoring.
+    Deliberately **not** a DAG-tracked plugin: `check_results` is the one `MERGEABLE_EFFECTS`
+    field multiple plugins write concurrently, and the loader's topological sort only guarantees
+    "runs after the *first* producer," not "after *every* producer" — there's no dependency
+    declaration that correctly expresses "after all verifiers." Instead,
+    `write_quality_report(ctx.check_results, ctx.project_dir)` is called directly by
+    `prompt2render.py`'s `cmd_harness` right after `HarnessRunner.run()` completes (both the
+    success path and the `GateFailure` path — the report is arguably most useful exactly when a
+    run failed), matching the existing precedent of `logging_.write_self_correction_report`
+    (also called directly post-run, not plugin-wired). Never raises — a bug in report generation
+    must not mask the real success/failure of a harness run.
 - **Tier 4 (HITL)** — three modes (`AUTONOMOUS`/`HUMAN_ON_FAILURE`/`HUMAN_APPROVAL`) **extending
   the existing `hitl_feedback.json` contract, never a second system**; versioned artifacts;
   every human action a provenance record.
