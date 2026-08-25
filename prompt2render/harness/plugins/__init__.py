@@ -24,6 +24,9 @@ from .pedagogy import (
 from .verifier_storyboard import (
     VerifierStoryboardPlugin,
 )
+from .verifier_animation_ir import (
+    VerifierAnimationIrPlugin,
+)
 from .planner_audio import PlannerAudioPlugin
 from .retriever_manim_rag import (
     RetrieverManimRagPlugin,
@@ -84,6 +87,7 @@ REGISTRY: dict[str, type] = {
 
     "planner_llm": PlannerLlmPlugin,
     "verifier_storyboard": VerifierStoryboardPlugin,
+    "verifier_animation_ir": VerifierAnimationIrPlugin,
 
     "planner_visual": PlannerVisualPlugin,
     "planner_audio": PlannerAudioPlugin,

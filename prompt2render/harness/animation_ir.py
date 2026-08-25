@@ -42,6 +42,31 @@ from .motion import MOTION_OPS, validate_motion_ops
 IR_SCHEMA_VERSION = "1.0"
 
 
+class AnimationIRValidationError(ValueError):
+    """``from_storyboard_plan`` failed to convert one section/state.
+
+    A plain ``ValueError`` (kept as the base class so existing
+    ``pytest.raises(ValueError, ...)`` callers are unaffected) plus the
+    ``index``/``stem``/``state_no`` that were in scope when the error was
+    raised, so a caller building a ``Finding`` (e.g. a future
+    ``verifier_animation_ir`` plugin) can scope it correctly without parsing
+    the message string.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        index: int | None = None,
+        stem: str = "",
+        state_no: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.index = index
+        self.stem = stem
+        self.state_no = state_no
+
+
 @dataclass
 class MotionOpIR:
     """One motion primitive applied to one or more symbolic targets.
@@ -201,13 +226,15 @@ def from_storyboard_plan(storyboard_plan: dict[str, Any]) -> AnimationIR:
     raw_sections = storyboard_plan.get("sections")
 
     if not isinstance(raw_sections, list):
-        raise ValueError("storyboard_plan.sections must be a list.")
+        raise AnimationIRValidationError("storyboard_plan.sections must be a list.")
 
     sections: list[SectionIR] = []
 
     for raw_section in raw_sections:
         if not isinstance(raw_section, dict):
-            raise ValueError("storyboard_plan.sections entries must be objects.")
+            raise AnimationIRValidationError(
+                "storyboard_plan.sections entries must be objects."
+            )
 
         index = raw_section.get("index")
         stem = str(raw_section.get("stem") or "")
@@ -215,22 +242,32 @@ def from_storyboard_plan(storyboard_plan: dict[str, Any]) -> AnimationIR:
         raw_states = raw_section.get("states")
 
         if not isinstance(raw_states, list):
-            raise ValueError(f"Section {index}: states must be a list.")
+            raise AnimationIRValidationError(
+                f"Section {index}: states must be a list.",
+                index=index,
+                stem=stem,
+            )
 
         states: list[StateIR] = []
 
         for state_no, raw_state in enumerate(raw_states):
             if not isinstance(raw_state, dict):
-                raise ValueError(
-                    f"Section {index}, state {state_no}: state must be an object."
+                raise AnimationIRValidationError(
+                    f"Section {index}, state {state_no}: state must be an object.",
+                    index=index,
+                    stem=stem,
+                    state_no=state_no,
                 )
 
             motion = raw_state.get("motion") or []
             errors = validate_motion_ops(motion)
 
             if errors:
-                raise ValueError(
-                    f"Section {index}, state {state_no}: " + " ".join(errors)
+                raise AnimationIRValidationError(
+                    f"Section {index}, state {state_no}: " + " ".join(errors),
+                    index=index,
+                    stem=stem,
+                    state_no=state_no,
                 )
 
             ops = [

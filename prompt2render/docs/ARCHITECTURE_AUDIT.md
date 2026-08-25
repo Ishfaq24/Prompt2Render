@@ -351,7 +351,20 @@ DOCUMENT → CHECKPOINT.
 - **Phase 0.5** — fix the live defects F2, F5, F6, F7, F8, F9, F10, F11. **Done**, committed
   `61ab693`.
 - **Tier 1 (Phases 1-3)** — AnimationIR; storyboard→IR bridge + validation gate; semantic
-  animation planner. *A richer op vocabulary is the specific fix for the sparse-scene failure
+  animation planner.
+  - **Phase 1** (AnimationIR: typed, renderer-neutral, versioned, hashed) — **Done**, committed
+    `bc5a84c`.
+  - **Phase 2** (storyboard→IR bridge + validation gate) — **Done.** New plugin
+    `verifier_animation_ir` (`harness/plugins/verifier_animation_ir.py`) sits between
+    `verifier_storyboard` and `generator_code` in the DAG, builds `SceneContext.animation_ir`
+    from `storyboard_plan` via `animation_ir.from_storyboard_plan()`, and turns any conversion
+    failure into a `Finding` reusing the existing `storyboard_failure` finding_type/routing-table
+    entry (→ `planner_llm`) rather than a new one — the repair action is identical either way.
+    `generator_code` now also hard-gates on `animation_ir` being set, not just
+    `storyboard_verified`.
+  - **Phase 3** (semantic animation planner, richer motion-op vocabulary) — not started.
+
+  *A richer op vocabulary is the specific fix for the sparse-scene failure
   that motivated the deterministic motion compiler (F1) — 7 ops with `MIN_STATES=2` was too
   thin. Correction from Phase 1 research: F1 was never wired in and then reverted — `git log -p`
   on `renderer_manim/__init__.py` shows the compiler (`_compile_construct_method`,

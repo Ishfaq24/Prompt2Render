@@ -41,6 +41,10 @@ verifier_storyboard:
   enabled: true
   gate_override: true
 
+verifier_animation_ir:
+  enabled: true
+  gate_override: true
+
 planner_llm:
   enabled: true           # one video-level LLM storyboard call
   gate_override: true

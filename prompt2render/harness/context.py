@@ -24,7 +24,10 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .animation_ir import AnimationIR
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +272,12 @@ class SceneContext:
     storyboard_plan: dict[str, Any] = field(
         default_factory=dict
     )
+
+    # Typed, versioned, hashed counterpart to storyboard_plan, built by
+    # verifier_animation_ir. None until that plugin has run successfully;
+    # AnimationIR is only imported under TYPE_CHECKING below to avoid a
+    # circular import (animation_ir -> motion -> context).
+    animation_ir: "AnimationIR | None" = None
 
     # Deterministic local retrieval context. Kept separate from authored
     # ScenePlanEntry.anim so retrieved snippets cannot silently rewrite the
