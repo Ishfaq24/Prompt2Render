@@ -348,10 +348,17 @@ Staged, each phase gated by INSPECT → DESIGN → IMPLEMENT → TEST → REGRES
 DOCUMENT → CHECKPOINT.
 
 - **Phase 0 (this document)** — audit + baseline.
-- **Phase 0.5** — fix the live defects F2, F5, F6, F7, F8, F9, F10, F11.
+- **Phase 0.5** — fix the live defects F2, F5, F6, F7, F8, F9, F10, F11. **Done**, committed
+  `61ab693`.
 - **Tier 1 (Phases 1-3)** — AnimationIR; storyboard→IR bridge + validation gate; semantic
   animation planner. *A richer op vocabulary is the specific fix for the sparse-scene failure
-  that caused the compiler to be reverted — 7 ops with `MIN_STATES=2` was too thin.*
+  that motivated the deterministic motion compiler (F1) — 7 ops with `MIN_STATES=2` was too
+  thin. Correction from Phase 1 research: F1 was never wired in and then reverted — `git log -p`
+  on `renderer_manim/__init__.py` shows the compiler (`_compile_construct_method`,
+  `_splice_construct_method`, `_build_setup_prompt`, 29 tests) was added complete but already
+  disconnected in a single commit (`e30043e`); `_generate_one` was never touched by that commit
+  and has never called any compiler entry point. In the same commit the actually-used freehand
+  prompt (`_build_prompt`) was hardened with prose-based layout/caption instructions instead.*
 - **Tier 2 (Phases 4-9)** — motion compiler (re-wire F1 **behind a config flag, default off**);
   TemporalIR; Manim-as-compiler; pattern RAG (replacing F14); renderer capability profiles +
   router + hybrid, which must also resolve F12 and F13.
