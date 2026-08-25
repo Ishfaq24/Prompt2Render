@@ -154,8 +154,11 @@ def test_generator_code_prerequisites_pass_once_animation_ir_is_set():
     ctx.storyboard_verified = True
     ctx.pedagogy_verified = True
     from prompt2render.harness.context import ScenePlanEntry
+    from prompt2render.harness.semantic_plan import default_semantic_plan
 
     ctx.scene_plan = [ScenePlanEntry(index=1, stem="01", title="T")]
+    # Phase 3: generator_code also requires semantic_ir now.
+    ctx.semantic_ir = default_semantic_plan(ctx.animation_ir)
 
     # Must not raise.
     GeneratorCodePlugin()._assert_prerequisites(ctx)

@@ -141,8 +141,12 @@ def test_fallback_includes_stem_matching_normalise_section_schema():
 
 
 def test_motion_ops_vocabulary_is_the_expected_fixed_set():
+    # Phase 3 (docs/ARCHITECTURE_AUDIT.md SS17) added NextTo/Circumscribe/
+    # GrowArrow/Uncreate/Rotate to the original 7-op set.
     assert set(MOTION_OPS) == {
         "Create", "Write", "FadeIn", "FadeOut", "Transform", "MoveTo", "Highlight",
+        "NextTo", "Circumscribe", "GrowArrow", "Uncreate", "Rotate",
     }
     assert MOTION_OPS["Transform"] == frozenset({"target", "into"})
     assert MOTION_OPS["MoveTo"] == frozenset({"target", "anchor"})
+    assert MOTION_OPS["NextTo"] == frozenset({"target", "anchor"})

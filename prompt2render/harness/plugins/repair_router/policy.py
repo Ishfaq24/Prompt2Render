@@ -64,6 +64,12 @@ class StaticTableRoutingPolicy(RoutingPolicy):
         "pedagogy_review": ["reviser_script"],
         "storyboard_failure": ["planner_llm"],
         "feedback_hitl": ["generator_code"],
+        # Phase 3 (docs/ARCHITECTURE_AUDIT.md SS17): distinct from
+        # storyboard_failure -- planner_llm doesn't know about CONTEXT/
+        # ANTICIPATION/ACTION/CONSEQUENCE/HOLD phase tagging, so a semantic
+        # plan failure must route to the plugin that actually owns that
+        # repair action.
+        "semantic_plan_failure": ["planner_semantic"],
     }
 
     #: Post-render VLM findings are routed back to the verifier that owns

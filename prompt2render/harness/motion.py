@@ -20,7 +20,16 @@ from .context import SceneContext
 #: Fixed vocabulary of motion primitives a storyboard state may declare.
 #: Maps op name -> the set of required string keys on that op's dict.
 #: Timing is never part of this vocabulary — it is computed deterministically
-#: downstream from the narration cue map, not authored here.
+#: downstream from the narration cue map, not authored here. Magnitude
+#: (rotation angle, etc.) is likewise never authored here, for the same
+#: reason: the renderer/compiler owns "how much", this vocabulary owns "what".
+#:
+#: Phase 3 (docs/ARCHITECTURE_AUDIT.md SS17) added the last 5 entries
+#: (NextTo, Circumscribe, GrowArrow, Uncreate, Rotate) to close gaps between
+#: what renderer_manim's own prompt already teaches in prose (relative
+#: positioning via .next_to(), a non-destructive emphasis primitive, etc.)
+#: and what the structured vocabulary could express -- the "sparse-scene"
+#: complaint the original 7-op set left unaddressed.
 MOTION_OPS: dict[str, frozenset[str]] = {
     "Create": frozenset({"target"}),
     "Write": frozenset({"target"}),
@@ -29,6 +38,11 @@ MOTION_OPS: dict[str, frozenset[str]] = {
     "Transform": frozenset({"target", "into"}),
     "MoveTo": frozenset({"target", "anchor"}),
     "Highlight": frozenset({"target"}),
+    "NextTo": frozenset({"target", "anchor"}),
+    "Circumscribe": frozenset({"target"}),
+    "GrowArrow": frozenset({"target"}),
+    "Uncreate": frozenset({"target"}),
+    "Rotate": frozenset({"target"}),
 }
 
 

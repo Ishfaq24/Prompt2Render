@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .animation_ir import AnimationIR
+    from .semantic_plan import SemanticAnimationIR
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +279,11 @@ class SceneContext:
     # AnimationIR is only imported under TYPE_CHECKING below to avoid a
     # circular import (animation_ir -> motion -> context).
     animation_ir: "AnimationIR | None" = None
+
+    # Downstream pedagogical phase model (CONTEXT/ANTICIPATION/ACTION/
+    # CONSEQUENCE/HOLD) built on top of animation_ir by planner_semantic.
+    # None until that plugin has run successfully.
+    semantic_ir: "SemanticAnimationIR | None" = None
 
     # Deterministic local retrieval context. Kept separate from authored
     # ScenePlanEntry.anim so retrieved snippets cannot silently rewrite the

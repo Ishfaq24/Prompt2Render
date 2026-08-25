@@ -447,6 +447,7 @@ class GeneratorCodePlugin(Plugin):
             "narration",
             "storyboard_verified",
             "animation_ir",
+            "semantic_ir",
         ]
 
     def declare_effects(self) -> list[str]:
@@ -488,6 +489,16 @@ class GeneratorCodePlugin(Plugin):
             raise RuntimeError(
                 "GeneratorCodePlugin requires "
                 "animation_ir to be set."
+            )
+
+        if getattr(
+            context,
+            "semantic_ir",
+            None,
+        ) is None:
+            raise RuntimeError(
+                "GeneratorCodePlugin requires "
+                "semantic_ir to be set."
             )
 
         if not context.scene_plan:

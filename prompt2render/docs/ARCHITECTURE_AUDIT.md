@@ -362,7 +362,25 @@ DOCUMENT → CHECKPOINT.
     entry (→ `planner_llm`) rather than a new one — the repair action is identical either way.
     `generator_code` now also hard-gates on `animation_ir` being set, not just
     `storyboard_verified`.
-  - **Phase 3** (semantic animation planner, richer motion-op vocabulary) — not started.
+  - **Phase 3** (semantic animation planner, richer motion-op vocabulary) — **Done.** The
+    5-stage model this doc names but never defines (`CONTEXT→ANTICIPATION→ACTION→CONSEQUENCE→
+    HOLD`) is given a concrete meaning in `harness/semantic_plan.py`: CONTEXT/ANTICIPATION/
+    CONSEQUENCE are optional per-op phase tags, every non-hold state needs ≥1 ACTION beat, HOLD
+    is a per-state flag (not an op) meaning "add nothing new here." `harness/motion.py`'s
+    `MOTION_OPS` grew from 7 to 12 (`NextTo`, `Circumscribe`, `GrowArrow`, `Uncreate`, `Rotate`),
+    which reached `planner_llm`'s existing storyboard prompt with zero code changes there (it
+    already dynamically interpolates the vocabulary from `MOTION_OPS`). New plugin
+    `planner_semantic` (`harness/plugins/planner_semantic/`) sits between `verifier_animation_ir`
+    and `generator_code`, makes one LLM request per video to organize each state's ops into
+    beats (optionally proposing new ops on already-known identifiers to enrich thin states,
+    never inventing new objects), and falls back to `semantic_plan.default_semantic_plan()`
+    (every existing op tagged ACTION) when the LLM is unavailable — but, unlike `planner_llm`,
+    raises a blocking `semantic_plan_failure` Finding (new routing-table entry →
+    `planner_semantic`) when the LLM responds with invalid content, since a repair-with-feedback
+    retry can produce a genuinely enriched result instead of silently discarding the attempt.
+    `generator_code` now also hard-gates on `semantic_ir` being set. Like Phases 1-2, this
+    changes no rendered output yet — `renderer_manim`'s actually-used prompt path never reads
+    structured motion data; only the still-dead compiler does, and re-wiring it is Tier 2's job.
 
   *A richer op vocabulary is the specific fix for the sparse-scene failure
   that motivated the deterministic motion compiler (F1) — 7 ops with `MIN_STATES=2` was too
