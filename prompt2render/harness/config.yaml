@@ -47,7 +47,10 @@ verifier_animation_ir:
 
 planner_semantic:
   enabled: true
-  gate_override: true
+  gate_override: false   # advisory -- see planner_semantic/__init__.py's docstring
+                          # (fixed after a production run showed a hard gate here
+                          # could halt the default stills path over unenriched-only
+                          # semantic content nothing on that path even reads)
 
 planner_temporal:
   enabled: true

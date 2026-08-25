@@ -8,22 +8,36 @@ asks the model to organize each state's existing motion ops into the
 pedagogical beat structure defined in ``harness.semantic_plan``, optionally
 proposing additional ops on already-known identifiers to enrich thin states.
 
-Two distinct failure modes get two distinct responses, deliberately unlike
-``planner_llm``'s uniform "always fall back silently" policy:
+Both failure modes end with ``context.semantic_ir`` populated -- either the
+LLM's validated content, or ``semantic_plan.default_semantic_plan()`` as a
+fallback:
 
 - The LLM is unavailable (no API keys) or the request itself raised: falls
-  back to ``semantic_plan.default_semantic_plan()`` silently, exactly like
-  ``planner_llm`` does for the same condition. Retrying wouldn't help, so
-  there is nothing productive a blocking Finding + repair cycle could do.
+  back silently, exactly like ``planner_llm`` does for the same condition.
 - The LLM responded, but its content fails ``semantic_plan.annotate()``'s
   validation (a fixable mistake -- wrong phase name, missing ACTION beat,
-  an invented identifier): raises a BLOCKING ``semantic_plan_failure``
-  Finding instead of silently discarding the attempt. Unlike
-  ``storyboard_plan`` (foundational -- the pipeline cannot proceed without
-  some storyboard, so ``planner_llm`` must always produce *something*),
-  ``semantic_ir`` is a refinement layer with no other consumer yet; there is
-  no urgency to keep moving through bad content when a retry-with-feedback
-  cycle can produce a real, enriched result instead.
+  an invented identifier): a BLOCKING ``semantic_plan_failure`` Finding is
+  still recorded (so ``repair_router`` gets a chance at a targeted,
+  feedback-driven fix via ``regenerate_one``, which really can produce a
+  better, more enriched result), but ``context.semantic_ir`` is ALSO
+  immediately set to the deterministic fallback, and the gate is advisory
+  (``_default_gate() -> False``) -- so a repair budget exhausted without
+  success degrades to unenriched-but-valid content rather than leaving
+  ``semantic_ir`` unset and hard-blocking the entire pipeline.
+
+  **Correction from production use**: the original version of this plugin
+  left ``semantic_ir`` as ``None`` on validation failure and used a hard
+  gate, reasoning "semantic_ir is a refinement layer with no other consumer
+  yet, no urgency to move through bad content." That reasoning didn't
+  account for ``generator_code`` hard-requiring ``semantic_ir`` being *set*
+  (Phase 3's own wiring) regardless of whether its *content* is ever
+  consumed -- so a single rejected beat (observed live: the LLM proposing a
+  supporting object, e.g. a background grid, that wasn't among a section's
+  known identifiers) could halt an ordinary run on the default stills path,
+  which reads nothing from ``semantic_ir``'s content at all. Fixed by always
+  populating a valid fallback and making the gate advisory, matching
+  ``planner_temporal``'s already-established reasoning for the same class
+  of problem.
 """
 
 from __future__ import annotations
@@ -326,7 +340,11 @@ class PlannerSemanticPlugin(Plugin):
                 finding_type="semantic_plan_failure",
             )
             context.check_results[self.name] = [finding.as_check_result()]
-            return context
+            # Still record the finding (repair_router gets a shot at a
+            # targeted fix via regenerate_one), but never leave semantic_ir
+            # unset -- generator_code hard-requires it regardless of
+            # whether its content is ever consumed. See module docstring.
+            context.semantic_ir = default_semantic_plan(animation_ir)
 
         self._persist(context)
         return context
@@ -409,4 +427,7 @@ class PlannerSemanticPlugin(Plugin):
         self._persist(context)
 
     def _default_gate(self) -> bool:
-        return True
+        # Advisory: context.semantic_ir is always populated by run() (real
+        # content or the deterministic fallback), so an unresolved finding
+        # here must never halt the pipeline -- see module docstring.
+        return False

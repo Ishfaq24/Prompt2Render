@@ -175,7 +175,15 @@ def test_invalid_llm_response_raises_blocking_finding(monkeypatch):
 
     ps.PlannerSemanticPlugin().run(ctx)
 
-    assert ctx.semantic_ir is None
+    # semantic_ir is still populated -- the deterministic fallback --
+    # because generator_code hard-requires it regardless of whether its
+    # content was ever consumed; only the finding records that enrichment
+    # failed. The gate itself is advisory (see PlannerSemanticPlugin.
+    # _default_gate), so this finding alone can't halt the pipeline.
+    assert ctx.semantic_ir is not None
+    for section in ctx.semantic_ir.sections:
+        for state in section.states:
+            assert all(beat.phase == "ACTION" for beat in state.beats)
     results = ctx.check_results["planner_semantic"]
     assert len(results) == 1
     finding = results[0]
@@ -210,6 +218,14 @@ def test_finding_routes_to_planner_semantic_via_new_table_entry(monkeypatch):
     finding = ctx.check_results["planner_semantic"][0]
 
     assert StaticTableRoutingPolicy().decide(finding) == ["planner_semantic"]
+
+
+def test_gate_is_advisory_by_default():
+    """Fixed after a production run: a hard gate here could halt the
+    default stills path over content nothing on that path even reads. See
+    the plugin's module docstring."""
+
+    assert ps.PlannerSemanticPlugin()._default_gate() is False
 
 
 # ------------------------------------------------------------ DAG order ----

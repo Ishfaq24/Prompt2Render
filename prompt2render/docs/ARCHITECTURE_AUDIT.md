@@ -382,6 +382,16 @@ DOCUMENT → CHECKPOINT.
     changes no rendered output yet — `renderer_manim`'s actually-used prompt path never reads
     structured motion data; only the still-dead compiler does, and re-wiring it is Tier 2's job.
 
+    **Correction from production use** (post Phase 5): a real run showed the hard gate above
+    could halt an ordinary build on the default stills path — the LLM proposed a supporting
+    object (a background grid) that wasn't among a section's known identifiers,
+    `semantic_plan.annotate()` correctly rejected it, repair exhausted its budget, and the
+    pipeline halted over `semantic_ir` content that the default path never even reads. Fixed:
+    `PlannerSemanticPlugin.run()` now always populates `context.semantic_ir` (real content or
+    the deterministic fallback) even on validation failure, and `_default_gate()` is `False`
+    (advisory, matching `planner_temporal`'s reasoning) — the BLOCKING finding is still recorded
+    and still repair-routable, it just can no longer halt the runner.
+
   *A richer op vocabulary is the specific fix for the sparse-scene failure
   that motivated the deterministic motion compiler (F1) — 7 ops with `MIN_STATES=2` was too
   thin. Correction from Phase 1 research: F1 was never wired in and then reverted — `git log -p`
