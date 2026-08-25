@@ -69,7 +69,10 @@ planner_audio:
   gate_override: null
 
 retriever_manim_rag:
-  enabled: false           # real: injects helpful scenekit snippets into the prompt
+  enabled: true            # Tier 2 Phase 7: real Manim-relevant patterns, wired into
+                            # GeneratorManimPlugin's prompts (renderer_manim._pattern_hints).
+                            # Deterministic/free (no LLM, no embeddings) and scoped entirely to
+                            # the already-experimental --manim path -- safe to default on.
   gate_override: null
 
 generator_code:

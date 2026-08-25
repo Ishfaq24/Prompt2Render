@@ -459,6 +459,22 @@ DOCUMENT → CHECKPOINT.
     section (never a new hard-failure mode). Deliberately narrow first vocabulary (same
     discipline as Phase 3's 5-op addition) — `Axes`/`Code`/`Table`/`SurroundingRectangle`/
     `always_redraw` are not yet supported, a future expansion, not silently dropped.
+  - **Phase 7** (pattern RAG, replacing F14) — **Done.** Unlike Phase 3/6, F14 already had real
+    grounding: "RAG is a keyword matcher over ~10 hardcoded SceneKit snippets, disabled by
+    default, and targets a vocabulary irrelevant to Manim." Confirmed two more facts this
+    session: it was disabled by default, and its output was never read by any live plugin
+    (`docs/HARNESS.md`/`docs/MIGRATION_INVENTORY.md` already documented it as a "no-op stub").
+    Fixed both halves: `retriever_manim_rag`'s 9 snippets' `text` rewritten from "SceneKit
+    pattern: ..." to syntax-agnostic Manim-relevant guidance, plus one new evidenced addition,
+    `linked_list_basic` (the real project shown mid-session, `How Linked List Works`, is exactly
+    this topic, and the old vocabulary only had `tree_basic`'s wrong parent-child framing for
+    it). New `renderer_manim._pattern_hints` injects matched patterns into all three of
+    `GeneratorManimPlugin`'s prompt builders (freehand, Phase 4, Phase 6), reusing the existing
+    `extra_feedback` string each already appends verbatim rather than adding new parameters.
+    `retriever_manim_rag.enabled` flipped to `true` — deterministic and free (no LLM, no
+    embeddings — F14's "not embedding-based" is an explicit, unchanged design choice), scoped
+    entirely to `GeneratorManimPlugin`'s prompts, i.e. still inside the already-experimental
+    `--manim` path; the shippable stills default is untouched.
 - **Tier 3 (Phases 10-15)** — unified multi-verifier; **closed-loop visual grounding** (F3,
   deterministic CV first, VLM only for semantic judgments); motion traces; reproducible weighted
   quality scoring; verifier-driven repair with regression detection; experience memory.

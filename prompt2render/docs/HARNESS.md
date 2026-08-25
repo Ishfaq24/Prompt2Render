@@ -43,7 +43,7 @@ verifier_final_qc → generator_publish
 | `planner_llm` | optional per-section LLM expansion | off | optional extra storyboard call; disabled by default to avoid quota churn |
 | `planner_visual` | deterministic animation contract | on | adds topic-agnostic state, zone, continuity, and validity requirements |
 | `planner_audio` | `align.load` | on | ingests timing produced by the harness-owned alignment stage |
-| `retriever_manim_rag` | *(none live)* | **off** | no-op stub, no RAG exists in prompt2render |
+| `retriever_manim_rag` | deterministic keyword match over a curated Manim pattern library | on | Tier 2 Phase 7: patterns are injected into `GeneratorManimPlugin`'s prompts (`renderer_manim._pattern_hints`) — no longer a no-op stub |
 | `generator_voice` | `voice.build` | on | synthesizes and masters narration; records audio artifacts |
 | `generator_align` | `align.align` | on | creates force-aligned timing artifacts |
 | `generator_code` | `scenes.generate_all` | on | the real Coder — one Gemini call per section, with preflight and audit retries |

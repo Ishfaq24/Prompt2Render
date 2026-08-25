@@ -483,6 +483,40 @@ def _repair_feedback(
 
 
 # ---------------------------------------------------------------------------
+# Pattern retrieval (Tier 2 Phase 7)
+# ---------------------------------------------------------------------------
+
+def _pattern_hints(
+    context: SceneContext,
+    stem: str,
+) -> str:
+    """Format this section's retrieved patterns (retriever_manim_rag) into
+    a short prompt section, or "" when nothing matched or retrieval never
+    ran (the plugin is gated separately and may be disabled)."""
+
+    retrieval_context = getattr(context, "retrieval_context", {})
+
+    if not isinstance(retrieval_context, dict):
+        return ""
+
+    matches = retrieval_context.get(stem, [])
+
+    if not isinstance(matches, list) or not matches:
+        return ""
+
+    lines = [
+        f"- {match.get('text')}"
+        for match in matches
+        if isinstance(match, dict) and match.get("text")
+    ]
+
+    if not lines:
+        return ""
+
+    return "RELEVANT PATTERNS:\n" + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Timing
 # ---------------------------------------------------------------------------
 
@@ -1478,6 +1512,7 @@ class GeneratorManimPlugin(Plugin):
             # accurate documentation, not yet a functional guarantee.
             "animation_ir",
             "semantic_ir",
+            "retrieval_context",
         ]
 
     def declare_effects(self) -> list[str]:
@@ -2281,6 +2316,20 @@ RULES:
                 stem,
             )
         )
+
+        # Tier 2 Phase 7: retrieved patterns come first, repair feedback (a
+        # specific, already-diagnosed problem) stays the most prominent
+        # thing at the end -- combined into the one `extra_feedback` string
+        # every prompt builder already appends verbatim, so none of them
+        # need a new parameter for this.
+        pattern_hints = _pattern_hints(context, stem)
+
+        if pattern_hints:
+            extra_feedback = (
+                f"{pattern_hints}\n\n{extra_feedback}"
+                if extra_feedback
+                else pattern_hints
+            )
 
         use_compiler = bool(
             self.config.get(

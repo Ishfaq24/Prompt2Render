@@ -1,8 +1,20 @@
-"""Deterministic local snippet retriever for Prompt2Render.
+"""Deterministic local pattern retriever for Prompt2Render.
 
-This plugin provides lightweight, dependency-free retrieval of vetted SceneKit
-patterns. It deliberately does NOT perform embedding-based RAG and does not
-make an LLM request.
+Tier 2 Phase 7 (docs/ARCHITECTURE_AUDIT.md SS17, replacing F14 -- "RAG is a
+keyword matcher over ~10 hardcoded SceneKit snippets, disabled by default,
+and targets a vocabulary irrelevant to Manim"). Confirmed this session:
+before this phase, ``context.retrieval_context`` was never read by any live
+plugin (``docs/HARNESS.md``/``docs/MIGRATION_INVENTORY.md`` already
+documented it as a "no-op stub"). This module's snippet *text* is now
+genuinely Manim-relevant, and ``renderer_manim.GeneratorManimPlugin``
+injects retrieved patterns into its prompts (see that module's
+``_pattern_hints``) -- the retrieval mechanism itself was already sound and
+is unchanged.
+
+This plugin provides lightweight, dependency-free retrieval of vetted Manim
+layout/structure patterns. It deliberately does NOT perform embedding-based
+RAG and does not make an LLM request -- F14 calls this a deliberate design
+choice, not a defect, and nothing here second-guesses it.
 
 Design goals
 ------------
@@ -43,6 +55,17 @@ class Snippet:
     priority: int = 0
 
 
+#: Tier 2 Phase 7 (docs/ARCHITECTURE_AUDIT.md SS17, "pattern RAG", replacing
+#: F14): every snippet's ``text`` was originally worded "SceneKit pattern:
+#: ..." -- a vocabulary irrelevant to Manim, the harness's actual renderer.
+#: Rewritten as syntax-agnostic conceptual guidance grounded in real Manim
+#: vocabulary (VGroup, Arrow, MathTex, Code, ...) -- deliberately not raw
+#: Python nor construction-DSL JSON, since the retrieved text is injected
+#: into three different prompt shapes (renderer_manim's freehand,
+#: compiler-backed setup-only, and construction-DSL prompts) and must read
+#: naturally in all three. The matching *mechanism* below
+#: (_normalize/_contains_term/_retrieve) is unchanged -- F14 itself calls
+#: "not embedding-based" a deliberate design choice, not a defect.
 SNIPPETS: tuple[Snippet, ...] = (
     Snippet(
         snippet_id="array_basic",
@@ -55,9 +78,10 @@ SNIPPETS: tuple[Snippet, ...] = (
             "element",
         ),
         text=(
-            "SceneKit pattern: use the documented array primitive for a "
-            "contiguous sequence of elements; keep index labels aligned with "
-            "the corresponding element."
+            "Manim pattern: represent array/list elements as a horizontally "
+            "arranged group of uniform boxes (e.g. squares or rectangles), "
+            "each with an index or value label; keep spacing consistent "
+            "across states."
         ),
         priority=10,
     ),
@@ -74,9 +98,10 @@ SNIPPETS: tuple[Snippet, ...] = (
             "child",
         ),
         text=(
-            "SceneKit pattern: construct tree diagrams from explicit nodes "
-            "and edges/arrows; preserve stable node coordinates between "
-            "successive states."
+            "Manim pattern: represent tree/BST nodes as circles at stable, "
+            "persistent coordinates; connect parent-child pairs with "
+            "explicit edges (lines or arrows) rather than implying "
+            "structure from proximity alone."
         ),
         priority=10,
     ),
@@ -90,8 +115,28 @@ SNIPPETS: tuple[Snippet, ...] = (
             "index pointer",
         ),
         text=(
-            "SceneKit pattern: represent a pointer/reference with a clearly "
-            "anchored label or arrow and keep its target explicit."
+            "Manim pattern: represent a pointer/reference as an arrow "
+            "anchored to the referenced object's edge, or a label "
+            "positioned relative to it -- never an unanchored floating "
+            "label."
+        ),
+        priority=10,
+    ),
+    Snippet(
+        snippet_id="linked_list_basic",
+        keywords=(
+            "linked list",
+            "linked lists",
+            "next pointer",
+            "singly linked",
+            "doubly linked",
+        ),
+        text=(
+            "Manim pattern: represent linked-list nodes as boxes holding a "
+            "value and a next-pointer slot; connect consecutive nodes with "
+            "an arrow from one node's pointer slot to the next node, kept "
+            "in a stable horizontal or vertical sequence -- distinct from a "
+            "tree's parent-child hierarchy: a linked list has no branching."
         ),
         priority=10,
     ),
@@ -111,9 +156,10 @@ SNIPPETS: tuple[Snippet, ...] = (
             "cpp",
         ),
         text=(
-            "SceneKit pattern: use the documented code-block primitive for "
-            "syntax-highlighted source; keep code within the frame and reveal "
-            "important lines progressively."
+            "Manim pattern: use the Code primitive for syntax-highlighted "
+            "source; keep it small enough to fit the frame, and reveal or "
+            "highlight lines progressively rather than showing the whole "
+            "block at once."
         ),
         priority=8,
     ),
@@ -129,8 +175,9 @@ SNIPPETS: tuple[Snippet, ...] = (
             "difference",
         ),
         text=(
-            "SceneKit pattern: place comparison subjects in stable left/right "
-            "zones with a clear visual separator and matched baselines."
+            "Manim pattern: place comparison subjects in stable left/right "
+            "zones with a clear visual separator, sharing a common "
+            "baseline."
         ),
         priority=8,
     ),
@@ -146,9 +193,9 @@ SNIPPETS: tuple[Snippet, ...] = (
             "sequence",
         ),
         text=(
-            "SceneKit pattern: represent sequential processes with explicit "
-            "states and directional connectors; reveal one major transition "
-            "at a time."
+            "Manim pattern: represent sequential steps as nodes connected "
+            "by directional arrows; reveal one transition at a time rather "
+            "than the whole pipeline at once."
         ),
         priority=7,
     ),
@@ -163,9 +210,9 @@ SNIPPETS: tuple[Snippet, ...] = (
             "edges",
         ),
         text=(
-            "SceneKit pattern: represent graph vertices as stable objects and "
-            "edges as explicit connections; do not infer edge direction from "
-            "layout alone."
+            "Manim pattern: represent graph vertices as explicit point "
+            "objects and edges as explicit connections between them; never "
+            "imply an edge from layout proximity alone."
         ),
         priority=7,
     ),
@@ -179,9 +226,9 @@ SNIPPETS: tuple[Snippet, ...] = (
             "sequence over time",
         ),
         text=(
-            "SceneKit pattern: use a stable horizontal time axis and reveal "
-            "events in temporal order without moving already established "
-            "events unnecessarily."
+            "Manim pattern: use a stable horizontal axis and reveal events "
+            "along it in temporal order without repositioning already-"
+            "placed events."
         ),
         priority=6,
     ),
@@ -197,9 +244,9 @@ SNIPPETS: tuple[Snippet, ...] = (
             "expression",
         ),
         text=(
-            "SceneKit pattern: keep mathematical expressions centered and "
-            "separate from explanatory labels; transform equivalent "
-            "expressions rather than replacing them abruptly."
+            "Manim pattern: center mathematical expressions and show "
+            "algebraic steps by transforming one expression into the next "
+            "rather than fading one out and a new one in."
         ),
         priority=6,
     ),
