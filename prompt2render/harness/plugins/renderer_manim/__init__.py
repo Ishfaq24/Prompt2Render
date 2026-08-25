@@ -108,6 +108,57 @@ MAX_HARNESS_CHECK_RETRIES = 1
 
 
 # ---------------------------------------------------------------------------
+# Construction-DSL JSON extraction (Tier 2 Phase 6)
+# ---------------------------------------------------------------------------
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Extract a JSON object from an LLM response (plain, fenced, or
+    surrounded by accidental prose) -- same logic as planner_llm's/
+    planner_semantic's own ``_extract_json`` (each plugin owns this small
+    helper rather than sharing a utils module, matching this codebase's
+    existing per-plugin convention)."""
+
+    import json
+
+    if not isinstance(text, str):
+        return None
+
+    text = text.strip()
+
+    if not text:
+        return None
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+
+        if lines:
+            lines = lines[1:]
+
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+
+        text = "\n".join(lines).strip()
+
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start < 0 or end <= start:
+        return None
+
+    try:
+        value = json.loads(text[start:end + 1])
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Deterministic Manim compatibility normalization
 # ---------------------------------------------------------------------------
 
@@ -562,6 +613,87 @@ def _storyboard_states_for(
 #: SemanticStateIR's beats into a flat motion-op list, regardless of the
 #: order the LLM happened to list them in its response.
 _PHASE_ORDER = {"CONTEXT": 0, "ANTICIPATION": 1, "ACTION": 2, "CONSEQUENCE": 3}
+
+
+def _construction_required_ids(
+    states: list[dict[str, Any]],
+) -> list[tuple[str, list[str]]]:
+    """Per state: which ids (from its motion targets, plus its own
+    caption, plus the shared title in the first state) something must
+    define -- shared by `_build_construction_prompt` (what it tells the LLM
+    to cover) and `_try_construction_dsl` (which state's `_state_<name>`
+    method each compiled id's lines get attributed to)."""
+
+    result: list[tuple[str, list[str]]] = []
+
+    for state_no, state in enumerate(states):
+        name = state.get("name", "state")
+        motion = state.get("motion") or []
+
+        targets = sorted({
+            op.get(key)
+            for op in motion
+            if isinstance(op, dict)
+            for key in ("target", "into", "anchor")
+            if op.get(key)
+        })
+
+        required_ids = list(targets)
+        required_ids.append(f"caption_{name}")
+
+        if state_no == 0:
+            required_ids.append("title")
+
+        result.append((name, required_ids))
+
+    return result
+
+
+def _wrap_construction_lines(
+    section,
+    states: list[dict[str, Any]],
+    id_lines: list[tuple[str, str]],
+) -> str:
+    """Wrap `construction_ir.compile_construction_lines`' flat ``(id,
+    line)`` pairs into the same ``class Scene<stem>(Scene): def
+    _state_<name>(self): ...`` shape a hand-written (or Phase 4 freehand)
+    setup source already takes, so `_splice_construct_method` can splice a
+    compiled `construct()` into it exactly as before.
+
+    Each id's lines are attributed to the *earliest* state that requires it
+    (`_construction_required_ids`) -- an id not required by any state (the
+    LLM defined something extra) falls back to the first state so nothing
+    is silently dropped.
+    """
+
+    required_by_state = _construction_required_ids(states)
+    id_to_state_index: dict[str, int] = {}
+
+    for state_index, (_name, required_ids) in enumerate(required_by_state):
+        for required_id in required_ids:
+            id_to_state_index.setdefault(required_id, state_index)
+
+    lines_by_state_index: dict[int, list[str]] = {i: [] for i in range(len(states))}
+
+    for node_id, line in id_lines:
+        state_index = id_to_state_index.get(node_id, 0)
+        lines_by_state_index.setdefault(state_index, []).append(line)
+
+    body: list[str] = [f"class Scene{section.stem}(Scene):"]
+
+    if not states:
+        body.append("    pass")
+    else:
+        for state_index, (name, _required_ids) in enumerate(required_by_state):
+            body.append(f"    def _state_{name}(self):")
+            state_lines = lines_by_state_index.get(state_index) or []
+
+            if not state_lines:
+                body.append("        pass")
+            else:
+                body.extend(f"        {line}" for line in state_lines)
+
+    return "\n".join(body)
 
 
 def _states_from_semantic_ir(
@@ -1882,6 +2014,118 @@ STATES:
 
         return prompt
 
+    def _build_construction_prompt(
+        self,
+        section,
+        states: list[dict[str, Any]],
+        duration: float,
+        extra_feedback: str,
+    ) -> str:
+        """Tier 2 Phase 6: construction-DSL variant of `_build_setup_prompt`.
+
+        Same contract (one construction per state, `self.title` only in the
+        first state, `self.caption_<name>` in every state) but the LLM
+        emits schema-validated JSON (`harness.construction_ir`) instead of
+        Python -- Manim's Python API becomes a compile target
+        (`construction_ir.compile_construction`), not something the LLM
+        writes directly.
+        """
+
+        from ...construction_ir import KNOWN_COLORS, OBJECT_REQUIRED_PROPS, OBJECT_REQUIRED_REFS
+
+        state_blocks = []
+        required_by_state = _construction_required_ids(states)
+
+        for state_no, (state, (name, required_ids)) in enumerate(
+            zip(states, required_by_state)
+        ):
+            state_blocks.append(
+                f"- state {name!r}:\n"
+                f"    Visual: {state.get('visual', '')}\n"
+                f"    Transition: {state.get('transition', '')}\n"
+                f"    Must define a node/repeat with exactly this id for "
+                f"each of: {required_ids}"
+                + (
+                    " (title -- only this first state may define it)"
+                    if state_no == 0
+                    else ""
+                )
+            )
+
+        states_block = "\n\n".join(state_blocks)
+        kinds = sorted(set(OBJECT_REQUIRED_PROPS) | {"VGroup"})
+
+        prompt = f"""
+Describe the objects for this Manim Community Edition {MANIM_VERSION} scene as
+JSON -- do NOT write Python or Manim API calls yourself. A deterministic
+compiler renders your JSON into the actual construction code.
+
+TITLE:
+{section.title}
+
+VISUAL PLAN:
+{section.anim}
+
+TOTAL DURATION:
+{duration:.1f} seconds
+
+One id per object you define below (across all states) -- ids persist
+across states, define each one exactly once, in whichever state first
+needs it.
+
+STATES (each needs the listed ids defined by SOME node or repeat):
+
+{states_block}
+
+Return ONLY valid JSON of this exact shape:
+{{
+  "repeats": [
+    {{"id": "array", "count": 4, "kind": "Square",
+      "props": {{"side_length": 0.9, "color": "BLUE"}},
+      "arrange_direction": "RIGHT", "arrange_buff": 0.1,
+      "position": {{"kind": "band", "band": "CENTER"}}}}
+  ],
+  "nodes": [
+    {{"id": "title", "kind": "Text", "props": {{"content": "...", "font_size": 40}},
+      "position": {{"kind": "band", "band": "TITLE"}}}},
+    {{"id": "caption_introduce", "kind": "Text",
+      "props": {{"content": "...", "font_size": 24}},
+      "position": {{"kind": "band", "band": "CAPTION"}}}},
+    {{"id": "pointer", "kind": "Arrow", "refs": {{"start_ref": "array", "end_ref": "title"}}}}
+  ]
+}}
+
+RULES:
+1. "kind" must be one of: {kinds}. Object kinds beyond this list (Axes,
+   Code, Table, etc.) are not supported yet -- express the state's visual
+   using only these.
+2. Required props/refs per kind: {dict(OBJECT_REQUIRED_PROPS)}; ref-valued
+   (point at another id): {dict(OBJECT_REQUIRED_REFS)}.
+3. Optional props: "font_size" (number), "color" (one of {sorted(KNOWN_COLORS)}),
+   "radius" (Circle), "side_length" (Square). Never any other prop key.
+4. "position" is optional. "kind" must be "to_edge" (needs "direction" one
+   of UP/DOWN/LEFT/RIGHT, optional "buff"), "next_to" (needs "direction"
+   and "ref" -- an id already defined above), or "band" (needs "band" one
+   of TITLE/CAPTION/CENTER -- there is no other way to place something at
+   an absolute coordinate; never invent one).
+5. "repeats" is for N structurally-identical instances (an array/list/
+   sequence of elements) -- each repeat auto-creates a VGroup under its own
+   "id"; other nodes reference that id directly, never the individual
+   instances.
+6. "VGroup" nodes need "children": a list of already-defined ids, and
+   optionally "arrange_direction"/"arrange_buff".
+7. ids must be short, stable Python identifiers, each defined exactly once,
+   never referenced before they're defined (repeats first, then nodes in
+   the order you list them).
+8. Never include a duration/timestamp/numeric timing value anywhere.
+9. Output ONLY the JSON object. No Markdown fences. No explanation.
+""".strip()
+
+        if extra_feedback:
+            prompt += "\n\n" + extra_feedback
+
+        return prompt
+
     def _generate_code(
         self,
         prompt: str,
@@ -1956,6 +2200,48 @@ STATES:
             code
         ).strip()
 
+    def _try_construction_dsl(
+        self,
+        section,
+        states: list[dict[str, Any]],
+        duration: float,
+        extra_feedback: str,
+    ) -> str | None:
+        """Tier 2 Phase 6: ask the LLM for construction-DSL JSON and compile
+        it deterministically into setup_source Python.
+
+        Returns ``None`` (never raises) on any parse/validation/compile
+        failure -- the caller falls back to Phase 4's freehand
+        `_build_setup_prompt`, matching the same graceful-degradation
+        precedent as `_states_from_semantic_ir`/the motion compiler's own
+        `_compile_construct_method` fallback. DSL failure never regresses
+        below what Phase 4 already tolerates.
+        """
+
+        from .... import cfg
+        from ...construction_ir import compile_construction_lines, validate_and_parse
+
+        stem = section.stem
+        prompt = self._build_construction_prompt(section, states, duration, extra_feedback)
+
+        try:
+            raw_response = self._generate_code(prompt)
+            raw_dsl = _extract_json(raw_response)
+
+            if raw_dsl is None:
+                raise ValueError("LLM response was not valid JSON.")
+
+            plan = validate_and_parse(raw_dsl)
+            id_lines = compile_construction_lines(plan)
+
+            return _wrap_construction_lines(section, states, id_lines)
+        except Exception as exc:
+            cfg.warn(
+                f"section {stem}: construction DSL failed, falling back to "
+                f"freehand setup-only prompt: {exc}"
+            )
+            return None
+
     def _generate_one(
         self,
         context: SceneContext,
@@ -2002,8 +2288,15 @@ STATES:
                 False,
             )
         )
+        use_dsl = use_compiler and bool(
+            self.config.get(
+                "use_construction_dsl",
+                False,
+            )
+        )
 
         states: list[dict[str, Any]] = []
+        dsl_code: str | None = None
 
         if use_compiler:
             states = (
@@ -2011,6 +2304,15 @@ STATES:
                 or _storyboard_states_for(context, stem, index=section.index)
                 or []
             )
+
+            if use_dsl:
+                dsl_code = self._try_construction_dsl(
+                    section, states, duration, extra_feedback
+                )
+
+        if dsl_code is not None:
+            prompt = None
+        elif use_compiler:
             prompt = self._build_setup_prompt(
                 section,
                 states,
@@ -2027,9 +2329,7 @@ STATES:
             )
 
         try:
-            code = self._generate_code(
-                prompt
-            )
+            code = dsl_code if prompt is None else self._generate_code(prompt)
 
             code = self._clean_generated_code(
                 code

@@ -84,6 +84,10 @@ generator_manim:
   use_motion_compiler: false   # Tier 2 Phase 4: opt in to the deterministic
                                 # motion compiler instead of freehand LLM
                                 # choreography. Default off.
+  use_construction_dsl: false  # Tier 2 Phase 6: opt in to the schema-validated
+                                # construction DSL instead of freehand LLM object
+                                # construction. Only takes effect when
+                                # use_motion_compiler is also true. Default off.
 
 verifier_semantic:
   enabled: true              # real: LLM pedagogical critic for domain logic (e.g. Hanoi rules)

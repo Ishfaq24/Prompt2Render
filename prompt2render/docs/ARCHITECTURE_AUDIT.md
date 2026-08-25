@@ -434,6 +434,31 @@ DOCUMENT → CHECKPOINT.
     Phase-4 motion-compiler branch does, and that branch already falls back to computing timing
     on-the-fly when it's unavailable — blocking the whole pipeline over it would risk
     destabilizing the default path for a quantity nothing there needs.
+  - **Phase 6** (Manim-as-compiler) — **Done.** Named once, defined nowhere else in the repo
+    (same situation Phase 3's 5-stage model was in) — given concrete meaning per explicit user
+    direction: the LLM stops writing raw Manim Python for object construction entirely. New
+    `harness/construction_ir.py`: a small, closed, schema-validated JSON vocabulary (`Text`,
+    `MathTex`, `Circle`, `Square`, `Rectangle`, `Dot`, `Line`, `Arrow`, `Triangle`, `VGroup`,
+    plus a `RepeatBlock` construct for the array/list/sequence pattern — grounded in a real
+    generated scene shown mid-session, `for i in range(4): Square(...)` building an array's
+    memory cells) that `compile_construction`/`compile_construction_lines` deterministically
+    render into the exact Python `_build_setup_prompt` (Phase 4) already asks the LLM to
+    hand-write. No escape hatch to raw Python anywhere — a need the vocabulary can't express is
+    a validation failure, not a bypass. Positioning is structurally constrained rather than
+    asked nicely in prose: `move_to` only accepts one of 3 pre-approved bands (`TITLE`,
+    `CAPTION`, `CENTER`, matching `_build_setup_prompt`'s own hardcoded conventions) — the
+    schema cannot express the "accumulating floating annotations at absolute coordinates"
+    anti-pattern the freehand prompt currently only discourages in prose. New config key
+    `use_construction_dsl` on `generator_manim` (default off, only takes effect when
+    `use_motion_compiler` is also on); `GeneratorManimPlugin._try_construction_dsl` asks for DSL
+    JSON via a new `_build_construction_prompt`, and `_wrap_construction_lines` attributes each
+    compiled id's lines to the earliest state that requires it (`_construction_required_ids`),
+    producing the same `class Scene<stem>(Scene): def _state_<name>(self): ...` shape Phase 4's
+    `_compile_construct_method`/`_splice_construct_method` already expect, unchanged. A
+    parse/validation/compile failure falls back to Phase 4's freehand setup prompt for that
+    section (never a new hard-failure mode). Deliberately narrow first vocabulary (same
+    discipline as Phase 3's 5-op addition) — `Axes`/`Code`/`Table`/`SurroundingRectangle`/
+    `always_redraw` are not yet supported, a future expansion, not silently dropped.
 - **Tier 3 (Phases 10-15)** — unified multi-verifier; **closed-loop visual grounding** (F3,
   deterministic CV first, VLM only for semantic judgments); motion traces; reproducible weighted
   quality scoring; verifier-driven repair with regression detection; experience memory.
