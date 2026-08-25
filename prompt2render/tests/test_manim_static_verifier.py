@@ -82,3 +82,96 @@ class Scene01(Scene):
     errors = validate_manim_source(code)
     assert any("Code() does not accept 'font_size='" in e for e in errors)
     assert any("next_to() does not accept 'align_to_left='" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# F15 cleanup: checks merged in from the formerly-separate, duplicate
+# scenes._validate_manim_source (scenes.py's own docstring at the merge site
+# explains why) -- these previously had zero coverage under the public
+# validate_manim_source name.
+# ---------------------------------------------------------------------------
+
+def test_manim_static_verifier_catches_scenekit_primitive_in_manim_mode():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        k.circle(self, "x", 0, 0)
+        self.play(Create(Circle()))
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("Scenekit k.circle() found in Manim mode" in e for e in errors)
+
+
+def test_manim_static_verifier_requires_exactly_one_scene_class():
+    from prompt2render.scenes import validate_manim_source
+
+    no_scene = """
+from manim import *
+class NotAScene:
+    def construct(self):
+        pass
+"""
+    assert any(
+        "no class inheriting from Scene was generated" in e
+        for e in validate_manim_source(no_scene)
+    )
+
+    two_scenes = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        self.play(Create(Circle()))
+        self.wait(1)
+class Scene02(Scene):
+    def construct(self):
+        self.play(Create(Circle()))
+        self.wait(1)
+"""
+    assert any(
+        "generate exactly one main Scene subclass" in e
+        for e in validate_manim_source(two_scenes)
+    )
+
+
+def test_manim_static_verifier_requires_construct_method():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def setup(self):
+        pass
+"""
+    errors = validate_manim_source(code)
+    assert any("Scene01 must implement construct(self)" in e for e in errors)
+
+
+def test_manim_static_verifier_requires_self_play():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        c = Circle()
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("scene contains no self.play() calls" in e for e in errors)
+
+
+def test_manim_static_verifier_forbids_states_function():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        self.play(Create(Circle()))
+        self.wait(1)
+
+def states():
+    pass
+"""
+    errors = validate_manim_source(code)
+    assert any("states() is forbidden in Manim mode" in e for e in errors)

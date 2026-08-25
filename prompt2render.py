@@ -553,6 +553,23 @@ def cmd_harness(a):
     sys.exit(0)
 
 
+def cmd_ablation(a):
+    """Run the Stage 5 Phase A detection-only ablation matrix.
+
+    F16 (docs/ARCHITECTURE_AUDIT.md SS12): tools/ablation_runner.py
+    previously had no CLI wiring at all -- this is a thin wrapper over its
+    own run_ablation(), the same function the standalone
+    `python tools/ablation_runner.py` entry point now also calls.
+    """
+    from prompt2render.tools.ablation_runner import run_ablation
+
+    run_ablation(
+        a.slug,
+        config_path=Path(a.config) if a.config else None,
+        out_path=Path(a.out) if a.out else None,
+    )
+
+
 def cmd_auto(a):
     """script.md -> script.md, if it doesn't exist yet -> final.mp4, unattended.
 
@@ -718,6 +735,14 @@ def main() -> None:
     hr = add("harness", cmd_harness, "run the full harness pipeline (evaluation & repair)")
     hr.add_argument("slug")
     hr.add_argument("--config", help="path to harness config.yaml")
+
+    ab = add("ablation", cmd_ablation,
+             "Stage 5 Phase A: 4-condition detection-only ablation matrix "
+             "(verifier_spatial x verifier_lifecycle on/off)")
+    ab.add_argument("slug")
+    ab.add_argument("--config", help="path to harness config.yaml")
+    ab.add_argument("--out", help="output JSON path (default: "
+                                   "<project>/build/harness/ablation_results.json)")
 
     al = add("align", cmd_align, "force-align the narration to word level")
     al.add_argument("slug"); al.add_argument("--only")

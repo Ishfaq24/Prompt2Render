@@ -142,12 +142,16 @@ def stock_card(proj: Path, index: int, text: str, seconds: float = 6.0) -> Path:
 
 def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
                 index: int) -> Path:
-    """Render one hand-authored Manim scene into the section contract.
+    """Render one Manim scene into the section contract.
 
-    Deliberately hand-authored only. Manim's API surface is enormous, renders
+    Originally hand-authored only (Manim's API surface is enormous, renders
     are slow, and it has none of the scene kit's defensive self-shrinking, so
-    pointing a model at it burns far more tokens for worse layout. For one or
-    two hero shots per video, written by you, it is the better tool.
+    pointing a model at it burned far more tokens for worse layout than the
+    stills backend) -- as of the harness's Tier 2 Manim-as-compiler work
+    (docs/ARCHITECTURE_AUDIT.md SS17), this is also the shared render entry
+    point ``renderer_manim`` calls for LLM/compiler-generated scenes, not
+    just the manual ``prompt2render manim`` escape hatch. Still the right
+    tool for one or two hand-written hero shots too.
 
     Note MathTex and Tex need a LaTeX install; `prompt2render doctor` will say
     whether you have one.

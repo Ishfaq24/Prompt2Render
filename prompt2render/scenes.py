@@ -640,7 +640,18 @@ def validate_manim_source(code: str) -> list[str]:
 
             if func_name in {"print", "open", "exec", "eval"}:
                 errors.append(f"{func_name}() is not allowed in a scene module (line {node.lineno})")
-                
+
+            # Scenekit's `k.*` primitives (matplotlib backend) have no
+            # meaning against real Manim -- catches a model reverting to
+            # the wrong backend's API mid-generation.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "k"
+            ):
+                errors.append(f"Scenekit k.{node.func.attr}() found in Manim mode (line {node.lineno})")
+
+
             # Manim 0.19 specific checks
             if func_name in {"get_x_label", "get_y_label"}:
                 for kw in node.keywords:
@@ -724,6 +735,48 @@ def validate_manim_source(code: str) -> list[str]:
                 
     if has_scene_class and not has_wait:
         errors.append("module does not contain any self.wait() calls; you MUST use self.wait() to align animations with narration cues")
+
+    # Exactly one Scene-inheriting class, each implementing construct(self)
+    # and driving its animation through self.play() -- stricter than the
+    # generic has_scene_class check above (which only requires *some* class
+    # to exist), consolidated in from the formerly-separate
+    # _validate_manim_source so every Manim generation path is checked by
+    # the same rules (previously only verifier_execution used this
+    # function; scenes._generate_manim's own retry loop used a private,
+    # looser-in-some-ways/stricter-in-others duplicate -- SS15/F15).
+    scene_classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and any(
+            (isinstance(base, ast.Name) and base.id == "Scene")
+            or (isinstance(base, ast.Attribute) and base.attr == "Scene")
+            for base in node.bases
+        )
+    ]
+
+    if not scene_classes:
+        errors.append("no class inheriting from Scene was generated")
+    elif len(scene_classes) != 1:
+        errors.append("generate exactly one main Scene subclass")
+
+    for cls in scene_classes:
+        if not any(
+            isinstance(member, ast.FunctionDef) and member.name == "construct"
+            for member in cls.body
+        ):
+            errors.append(f"{cls.name} must implement construct(self)")
+
+    if scene_classes and not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "play"
+        for node in ast.walk(tree)
+    ):
+        errors.append("scene contains no self.play() calls")
+
+    if re.search(r"^\s*def\s+states\s*\(", code, re.MULTILINE):
+        errors.append("states() is forbidden in Manim mode")
 
     # General, introspection-backed checks against the actually-installed
     # manim package. These catch hallucinated identifiers and invalid
@@ -1009,90 +1062,6 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
     """).strip()
 
 
-def _validate_manim_source(code: str) -> list[str]:
-    """Static validation for generated real-Manim source."""
-    errors = []
-
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as exc:
-        return [f"syntax error at line {exc.lineno}: {exc.msg}"]
-
-    scene_classes = []
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        bases = []
-        for base in node.bases:
-            if isinstance(base, ast.Name):
-                bases.append(base.id)
-            elif isinstance(base, ast.Attribute):
-                bases.append(base.attr)
-        if "Scene" in bases:
-            scene_classes.append(node)
-
-    if not scene_classes:
-        errors.append("no class inheriting from Scene was generated")
-    elif len(scene_classes) != 1:
-        errors.append("generate exactly one main Scene subclass")
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name not in {"manim", "math", "numpy"}:
-                    errors.append(f"import '{alias.name}' is not allowed")
-        elif isinstance(node, ast.ImportFrom):
-            if node.module not in {"manim", "math", "numpy"}:
-                errors.append(
-                    f"from '{node.module}' import ... is not allowed"
-                )
-
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id in {
-                "print", "open", "exec", "eval"
-            }:
-                errors.append(
-                    f"{node.func.id}() is not allowed in generated scenes"
-                )
-
-            if (
-                isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "k"
-            ):
-                errors.append(
-                    f"Scenekit k.{node.func.attr}() found in Manim mode"
-                )
-
-    for cls in scene_classes:
-        if not any(
-            isinstance(n, ast.FunctionDef) and n.name == "construct"
-            for n in cls.body
-        ):
-            errors.append(f"{cls.name} must implement construct(self)")
-
-    if not any(
-        isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "play"
-        for n in ast.walk(tree)
-    ):
-        errors.append("scene contains no self.play() calls")
-
-    if not any(
-        isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "wait"
-        for n in ast.walk(tree)
-    ):
-        errors.append("scene contains no self.wait() calls")
-
-    if re.search(r"^\s*def\s+states\s*\(", code, re.MULTILINE):
-        errors.append("states() is forbidden in Manim mode")
-
-    return list(dict.fromkeys(errors))
-
-
 def _render_manim(proj: Path, src: Path, section_dir: Path,
                   class_name: str) -> list[Path]:
     """Render a real Manim scene through the installed Manim CLI."""
@@ -1231,7 +1200,7 @@ def _generate_manim(proj: Path, script: Script, index: int,
             )
 
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-        errors = _validate_manim_source(raw)
+        errors = validate_manim_source(raw)
 
         if digest in seen:
             errors.append(
