@@ -39,6 +39,7 @@ from typing import Any
 
 from ...context import CodeArtifact, RenderArtifact, SceneContext
 from ...motion import MOTION_OPS, find_storyboard_states
+from ...temporal_ir import compute_state_slots
 from ...timing import narration_span
 from ...plugin import Plugin
 from ..verifier_execution import check_scene_artifact
@@ -630,62 +631,38 @@ def _states_from_semantic_ir(
     return states
 
 
-def _state_cue_timings(
+#: Relocated to harness/temporal_ir.py (Tier 2 Phase 5), which is now the
+#: single owner of narration-timing math shared with verifier_temporal. Kept
+#: importable under this name so this file's own call sites/tests need no
+#: further changes -- only the implementation moved.
+_state_cue_timings = compute_state_slots
+
+
+def _timings_for(
+    context: SceneContext,
+    stem: str,
     states: list[dict[str, Any]],
     sentences: list[dict[str, float]] | None,
     duration: float,
 ) -> list[dict[str, float]]:
-    """Split narration time into a run_time/wait budget per state.
-
-    Each state's ``cue`` resolves to a narration start timestamp. States are
-    partitioned into consecutive slots bounded by the next state's start,
-    with the final slot's boundary telescoping to the TRUE narration end
-    (``sentences[-1]["end"]``) rather than ``duration`` — ``duration`` (as
-    computed by ``_load_timing``) is sum(sentence durations), which excludes
-    inter-sentence silence gaps and would otherwise silently truncate the
-    final state's slot by the sum of every such gap in the section.
+    """Prefer ``context.temporal_ir`` (Tier 2 Phase 5) when this stem has a
+    matching, already-computed ``SectionTiming``; otherwise compute the
+    slots on-the-fly exactly as before Phase 5 -- same resilience pattern as
+    ``_states_from_semantic_ir``'s graceful fallback, no new hard-failure
+    mode for this still-experimental path.
     """
 
-    if not states:
-        return []
+    temporal_ir = context.temporal_ir
 
-    if sentences:
-        true_end = float(sentences[-1].get("end", duration))
-    else:
-        true_end = float(duration)
+    if temporal_ir is not None:
+        section_timing = next(
+            (s for s in temporal_ir.sections if s.stem == stem), None
+        )
 
-    def _cue_start(cue: Any) -> float:
-        if not sentences:
-            return 0.0
-        try:
-            idx = int(cue)
-        except (TypeError, ValueError):
-            return 0.0
-        if idx < 0 or idx >= len(sentences):
-            return 0.0
-        return float(sentences[idx].get("start", 0.0))
+        if section_timing is not None and len(section_timing.states) == len(states):
+            return [state.to_dict() for state in section_timing.states]
 
-    starts = [_cue_start(state.get("cue", 0)) for state in states]
-    boundaries = starts[1:] + [true_end]
-
-    timings: list[dict[str, float]] = []
-
-    for start, boundary in zip(starts, boundaries):
-        slot = boundary - start
-
-        # A degenerate (zero/negative) slot only arises when cues can't
-        # resolve to real timestamps (e.g. no sentence data at all) — floor
-        # it so the state still gets a positive run_time. Real sentence data
-        # never triggers this, so the telescoping sum stays exact above.
-        if slot <= 0.0:
-            slot = 0.1
-
-        run_time = slot * 0.85
-        wait = slot - run_time
-
-        timings.append({"run_time": run_time, "wait": wait})
-
-    return timings
+    return compute_state_slots(states, sentences, duration)
 
 
 #: How long each motion op naturally takes to read as an animation, in
@@ -2065,7 +2042,7 @@ STATES:
 
             if use_compiler:
                 try:
-                    timings = _state_cue_timings(states, sentences, duration)
+                    timings = _timings_for(context, stem, states, sentences, duration)
                     construct_src = _compile_construct_method(
                         states,
                         timings,

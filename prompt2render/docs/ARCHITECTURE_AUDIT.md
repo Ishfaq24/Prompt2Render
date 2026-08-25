@@ -411,6 +411,19 @@ DOCUMENT → CHECKPOINT.
     path — `generator_manim` is still unregistered in `REGISTRY` (F13) and hot-swapped in after
     DAG resolution; fixing that and making Manim shippable-by-default (F12) is Phase 8-9's job,
     untouched here. Stills pipeline (the shippable default) unaffected either way.
+  - **Phase 5** (TemporalIR, narration-authoritative) — **Done.** New `harness/temporal_ir.py`:
+    typed/versioned/hashed `TemporalIR`/`SectionTiming`/`StateTiming`, unifying two timing
+    computations that had already drifted into separate implementations (the same anti-pattern
+    Phase 0.5/F7 fixed once for plain duration) — `renderer_manim`'s per-state run_time/wait
+    split (relocated here unchanged as `compute_state_slots`) and `verifier_temporal`'s inline
+    inter-sentence gap-sum loop (replaced with the new, properly-tested `total_gap_seconds`).
+    New deterministic plugin `planner_temporal` builds `context.temporal_ir` from
+    `context.semantic_ir` + real alignment, positioned after `planner_semantic`. Deliberately
+    **advisory** (`gate_override: false`), unlike Tier 1's hard gates: nothing on the shippable
+    stills/freehand-Manim default path consumes `temporal_ir`, only the already-experimental
+    Phase-4 motion-compiler branch does, and that branch already falls back to computing timing
+    on-the-fly when it's unavailable — blocking the whole pipeline over it would risk
+    destabilizing the default path for a quantity nothing there needs.
 - **Tier 3 (Phases 10-15)** — unified multi-verifier; **closed-loop visual grounding** (F3,
   deterministic CV first, VLM only for semantic judgments); motion traces; reproducible weighted
   quality scoring; verifier-driven repair with regression detection; experience memory.

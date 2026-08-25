@@ -23,6 +23,7 @@ from prompt2render.harness.animation_ir import from_storyboard_plan
 from prompt2render.harness.context import SceneContext, ScenePlanEntry
 from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin
 from prompt2render.harness.semantic_plan import annotate
+from prompt2render.harness.temporal_ir import SectionTiming, StateTiming, TemporalIR
 
 
 @pytest.fixture(autouse=True)
@@ -203,3 +204,46 @@ def test_flag_on_falls_back_to_storyboard_plan_when_semantic_ir_absent(tmp_path)
 
     written = (tmp_path / "build" / "manim" / "scene_01.py").read_text(encoding="utf-8")
     assert "Create(self.circle)" in written
+
+
+def test_flag_on_prefers_context_temporal_ir_over_on_the_fly_computation(tmp_path):
+    """Tier 2 Phase 5: when context.temporal_ir already has a SectionTiming
+    for this stem, _generate_one must use ITS run_time/wait values, not
+    recompute them on-the-fly -- proving the wiring, not just the fallback
+    (already covered by the other tests in this file, which run with
+    temporal_ir unset)."""
+
+    ctx, section = _ctx_and_section(tmp_path)
+    # A deliberately distinctive run_time no on-the-fly computation would
+    # ever produce, so its presence in the output is unambiguous evidence
+    # context.temporal_ir was actually consumed.
+    ctx.temporal_ir = TemporalIR(
+        schema_version="1.0",
+        source_semantic_hash=ctx.semantic_ir.semantic_hash,
+        sections=[
+            SectionTiming(
+                index=1,
+                stem="01",
+                target_duration=42.0,
+                total_gap_seconds=0.0,
+                states=[StateTiming(name="introduce", cue=0, run_time=13.37, wait=0.0)],
+            )
+        ],
+    )
+
+    plugin = GeneratorManimPlugin({"use_motion_compiler": True})
+    setup_only_code = (
+        "class Scene01(Scene):\n"
+        "    def _state_introduce(self):\n"
+        "        self.circle = Circle()\n"
+    )
+    plugin._generate_code = MagicMock(return_value=setup_only_code)
+
+    plugin._generate_one(ctx, section)
+
+    written = (tmp_path / "build" / "manim" / "scene_01.py").read_text(encoding="utf-8")
+    # _compile_construct_method caps run_time at Create's natural duration
+    # (1.4s) and pushes the rest into wait -- 13.37 - 1.4 = 11.97, so that
+    # exact wait value is the unambiguous fingerprint that 13.37 (not some
+    # on-the-fly-computed value) flowed all the way through.
+    assert "self.wait(11.97)" in written

@@ -30,6 +30,9 @@ from .verifier_animation_ir import (
 from .planner_semantic import (
     PlannerSemanticPlugin,
 )
+from .planner_temporal import (
+    PlannerTemporalPlugin,
+)
 from .planner_audio import PlannerAudioPlugin
 from .retriever_manim_rag import (
     RetrieverManimRagPlugin,
@@ -92,6 +95,7 @@ REGISTRY: dict[str, type] = {
     "verifier_storyboard": VerifierStoryboardPlugin,
     "verifier_animation_ir": VerifierAnimationIrPlugin,
     "planner_semantic": PlannerSemanticPlugin,
+    "planner_temporal": PlannerTemporalPlugin,
 
     "planner_visual": PlannerVisualPlugin,
     "planner_audio": PlannerAudioPlugin,

@@ -49,6 +49,10 @@ planner_semantic:
   enabled: true
   gate_override: true
 
+planner_temporal:
+  enabled: true
+  gate_override: false   # advisory -- see planner_temporal.py's docstring
+
 planner_llm:
   enabled: true           # one video-level LLM storyboard call
   gate_override: true

@@ -43,6 +43,7 @@ from ...finding import (
     next_finding_id,
 )
 from ...plugin import Plugin
+from ...temporal_ir import total_gap_seconds
 from ...timing import narration_span, sentence_duration
 from .... import align, cfg
 
@@ -428,24 +429,21 @@ class VerifierTemporalPlugin(Plugin):
                     has_waits = False
                     sum_waits = 0.0
 
-            # Compute inter-sentence gap sum from authoritative alignment
+            # Compute inter-sentence gap sum from authoritative alignment.
+            # Single source of truth (Tier 2 Phase 5, harness/temporal_ir.py)
+            # -- this used to be a second, independent inline computation of
+            # exactly the "where are the narration timing boundaries"
+            # quantity renderer_manim's motion compiler also derives, the
+            # same class of drift Phase 0.5 (F7) fixed once already for
+            # plain section duration.
             gap_sum = 0.0
             num_sentences = 0
             try:
                 data = align.load(context.project_dir, entry.stem)
                 sents = data.get("sentences", []) if isinstance(data, dict) else []
-                if isinstance(sents, list) and len(sents) > 1:
+                if isinstance(sents, list):
                     num_sentences = len(sents)
-                    for idx in range(len(sents) - 1):
-                        try:
-                            cur_end = float(sents[idx].get("end", float(sents[idx].get("start", 0)) + float(sents[idx].get("dur", 0))))
-                            nxt_start = float(sents[idx + 1].get("start", cur_end))
-                            gap = max(0.0, nxt_start - cur_end)
-                            gap_sum += gap
-                        except Exception:
-                            continue
-                elif isinstance(sents, list):
-                    num_sentences = len(sents)
+                    gap_sum = total_gap_seconds(sents)
             except Exception:
                 num_sentences = 0
 

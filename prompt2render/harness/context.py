@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .animation_ir import AnimationIR
     from .semantic_plan import SemanticAnimationIR
+    from .temporal_ir import TemporalIR
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +285,11 @@ class SceneContext:
     # CONSEQUENCE/HOLD) built on top of animation_ir by planner_semantic.
     # None until that plugin has run successfully.
     semantic_ir: "SemanticAnimationIR | None" = None
+
+    # Narration-authoritative timing built on top of semantic_ir by
+    # planner_temporal. None until that plugin has run successfully;
+    # advisory (non-blocking) -- see planner_temporal's _default_gate.
+    temporal_ir: "TemporalIR | None" = None
 
     # Deterministic local retrieval context. Kept separate from authored
     # ScenePlanEntry.anim so retrieved snippets cannot silently rewrite the
