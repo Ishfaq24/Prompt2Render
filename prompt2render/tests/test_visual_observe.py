@@ -1,4 +1,4 @@
-"""Tier 3 Phase 11 (F3): deterministic visual grounding.
+"""Tier 3 Phases 11-12 (F3; motion traces): deterministic visual grounding.
 
 ``ink_fraction`` is tested against real cv2/numpy arithmetic (both are real
 project dependencies, not mocked) since it is the arithmetic this whole
@@ -212,3 +212,171 @@ def test_observe_clip_unprobeable_duration_skips(tmp_path, monkeypatch):
     record = vo.observe_clip(clip, None, scratch_dir=tmp_path / "scratch")
 
     assert record["status"] == "skip"
+
+
+# ---------------------------------------------------------------------------
+# Tier 3 Phase 12: motion traces
+# ---------------------------------------------------------------------------
+
+
+def test_frame_delta_identical_frames_is_zero(tmp_path):
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    _write_frame(a, (10, 20, 30))
+    _write_frame(b, (10, 20, 30))
+
+    assert vo.frame_delta(a, b) == 0.0
+
+
+def test_frame_delta_fully_different_frames_is_one(tmp_path):
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    _write_frame(a, (0, 0, 0))
+    _write_frame(b, (255, 255, 255))
+
+    assert vo.frame_delta(a, b) == 1.0
+
+
+def test_frame_delta_mismatched_dimensions_returns_none(tmp_path):
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    _write_frame(a, (0, 0, 0), size=40)
+    _write_frame(b, (0, 0, 0), size=20)
+
+    assert vo.frame_delta(a, b) is None
+
+
+def test_frame_delta_missing_file_returns_none(tmp_path):
+    a = tmp_path / "a.png"
+    _write_frame(a, (0, 0, 0))
+
+    assert vo.frame_delta(a, tmp_path / "missing.png") is None
+
+
+def test_motion_sample_points_uses_run_time_window_with_margin():
+    timing = SectionTiming(
+        index=1,
+        stem="01",
+        target_duration=10.0,
+        total_gap_seconds=0.0,
+        states=[
+            StateTiming(name="s1", cue=0, run_time=2.0, wait=1.0),
+            StateTiming(name="s2", cue=1, run_time=3.0, wait=0.5),
+        ],
+    )
+
+    points = vo.motion_sample_points(timing, clip_duration=10.0)
+
+    assert points == [
+        ("s1", 0.1, 1.9),          # [0, 2.0] trimmed by 0.1 margin
+        ("s2", 3.1, 5.9),          # elapsed=3.0 -> [3.0, 6.0] trimmed
+    ]
+
+
+def test_motion_sample_points_skips_states_too_short_to_trim():
+    timing = SectionTiming(
+        index=1,
+        stem="01",
+        target_duration=5.0,
+        total_gap_seconds=0.0,
+        states=[
+            StateTiming(name="instant", cue=0, run_time=0.1, wait=0.0),
+            StateTiming(name="real", cue=1, run_time=2.0, wait=0.0),
+        ],
+    )
+
+    points = vo.motion_sample_points(timing, clip_duration=5.0)
+
+    assert [name for name, _, _ in points] == ["real"]
+
+
+def test_motion_sample_points_without_temporal_ir_returns_nothing():
+    assert vo.motion_sample_points(None, clip_duration=10.0) == []
+
+
+def test_motion_sample_points_empty_clip_duration_returns_nothing():
+    timing = SectionTiming(
+        index=1,
+        stem="01",
+        target_duration=5.0,
+        total_gap_seconds=0.0,
+        states=[StateTiming(name="s", cue=0, run_time=2.0, wait=0.0)],
+    )
+    assert vo.motion_sample_points(timing, clip_duration=0.0) == []
+
+
+def test_observe_motion_missing_clip_skips(tmp_path):
+    record = vo.observe_motion(tmp_path / "nope.mp4", None, scratch_dir=tmp_path / "s")
+
+    assert record["status"] == "skip"
+    assert record["traces"] == []
+
+
+def test_observe_motion_without_temporal_ir_skips(tmp_path, monkeypatch):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"0" * 64)
+    monkeypatch.setattr(vo.cfg, "duration", lambda path: 5.0)
+
+    record = vo.observe_motion(clip, None, scratch_dir=tmp_path / "scratch")
+
+    assert record["status"] == "skip"
+    assert record["traces"] == []
+
+
+def test_observe_motion_records_raw_deltas_without_judgment(tmp_path, monkeypatch):
+    """observe_motion must not itself decide warn/pass -- that's
+    verifier_motion's job (see visual_observe.py's module docstring)."""
+
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"0" * 64)
+
+    timing = SectionTiming(
+        index=1,
+        stem="01",
+        target_duration=5.0,
+        total_gap_seconds=0.0,
+        states=[StateTiming(name="s1", cue=0, run_time=2.0, wait=0.0)],
+    )
+
+    monkeypatch.setattr(vo.cfg, "duration", lambda path: 5.0)
+    monkeypatch.setattr(
+        vo,
+        "extract_frame",
+        lambda clip_path, ts, out_path: out_path.write_bytes(b"x") or True,
+    )
+    # Near-zero delta -- would be a warning-worthy state, but observe_motion
+    # itself must report it as plain evidence, not a verdict.
+    monkeypatch.setattr(vo, "frame_delta", lambda a, b, **kw: 0.0001)
+
+    record = vo.observe_motion(clip, timing, scratch_dir=tmp_path / "scratch")
+
+    assert record["status"] == "ok"
+    assert record["traces"] == [
+        {"state": "s1", "delta": 0.0001, "start": 0.1, "end": 1.9}
+    ]
+
+
+def test_observe_motion_all_pairs_undecodable_skips(tmp_path, monkeypatch):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"0" * 64)
+
+    timing = SectionTiming(
+        index=1,
+        stem="01",
+        target_duration=5.0,
+        total_gap_seconds=0.0,
+        states=[StateTiming(name="s1", cue=0, run_time=2.0, wait=0.0)],
+    )
+
+    monkeypatch.setattr(vo.cfg, "duration", lambda path: 5.0)
+    monkeypatch.setattr(
+        vo,
+        "extract_frame",
+        lambda clip_path, ts, out_path: out_path.write_bytes(b"x") or True,
+    )
+    monkeypatch.setattr(vo, "frame_delta", lambda a, b, **kw: None)
+
+    record = vo.observe_motion(clip, timing, scratch_dir=tmp_path / "scratch")
+
+    assert record["status"] == "skip"
+    assert record["traces"] == []

@@ -107,6 +107,16 @@ class RenderArtifact:
     )
     audit: dict[str, Any] | None = None
 
+    #: Tier 3 Phase 12 (motion traces): raw per-state frame-delta evidence
+    #: from ``visual_observe.observe_motion``, populated by
+    #: ``ObserverVisualPlugin`` alongside ``audit``. Kept as a separate
+    #: field rather than folded into ``audit`` -- unlike ``audit``, no
+    #: existing consumer (verifier_spatial) needs to parse it unmodified,
+    #: and "motion" is a distinct quality dimension from "spatial" in
+    #: quality_report.py's own classification, so conflating the two
+    #: records would blur a distinction Phase 10 deliberately introduced.
+    motion: dict[str, Any] | None = None
+
 
 # ---------------------------------------------------------------------------
 # Audio/video artifacts

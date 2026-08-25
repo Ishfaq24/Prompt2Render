@@ -41,11 +41,11 @@ from typing import Any
 #: Quality report schema version.
 QUALITY_REPORT_SCHEMA_VERSION = "1.0"
 
-#: Every dimension the target architecture names (SS16), even ones no
-#: current verifier covers -- "motion" has no verifier at all today (a
-#: real, documented gap; Tier 3 Phase 12 "motion traces" is presumably
-#: where that gets filled in), so it always reports zero findings rather
-#: than being silently absent from the report.
+#: Every dimension the target architecture names (SS16). "motion" had no
+#: verifier at all before Tier 3 Phase 12 ("motion traces") added
+#: verifier_motion; a dimension with no producer still reports zero
+#: findings here rather than being silently absent from the report, which is
+#: exactly what made that gap visible in the first place.
 DIMENSIONS = (
     "semantic",
     "temporal",
@@ -65,6 +65,9 @@ VERIFIER_DIMENSIONS: dict[str, str] = {
     "verifier_semantic": "semantic",
     "verifier_temporal": "temporal",
     "verifier_spatial": "spatial",
+    # Tier 3 Phase 12: the first real producer of the "motion" dimension --
+    # it was declared in Phase 10 with zero producers until now.
+    "verifier_motion": "motion",
     # k.array length changes between adjacent scenes is fundamentally a
     # continuity check (does the data structure's visible state persist
     # correctly across the cut), not a spatial or semantic one.

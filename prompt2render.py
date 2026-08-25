@@ -263,9 +263,10 @@ def cmd_harness(a):
         cfg_dict.setdefault("renderer_manim", {})["enabled"] = False
         cfg_dict.setdefault("renderer_manim_finish", {})["enabled"] = False
         cfg_dict.setdefault("verifier_manim_final_qc", {})["enabled"] = False
-        # Tier 3 Phase 11: only meaningful for Manim clips; nothing to
+        # Tier 3 Phase 11/12: only meaningful for Manim clips; nothing to
         # observe on the stills path.
         cfg_dict.setdefault("observer_visual", {})["enabled"] = False
+        cfg_dict.setdefault("verifier_motion", {})["enabled"] = False
     else:
         cfg_dict.setdefault("generator_code", {})["enabled"] = False
         cfg_dict.setdefault("generator_manim", {})["enabled"] = True
@@ -279,6 +280,9 @@ def cmd_harness(a):
         # RenderArtifact.audit was always None there before this, so
         # verifier_spatial always reported skip.
         cfg_dict.setdefault("observer_visual", {})["enabled"] = True
+        # Tier 3 Phase 12: first real producer of the "motion" quality
+        # dimension (quality_report.py).
+        cfg_dict.setdefault("verifier_motion", {})["enabled"] = True
         # Manim produces one complete clip per section directly -- the
         # stills-only per-frame Ken-Burns plan/encode stages (F12: this used
         # to mean the whole production tail was disabled and --manim could

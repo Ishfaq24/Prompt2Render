@@ -121,6 +121,17 @@ verifier_spatial:
                               # (SceneKit on stills, observer_visual on Manim)
   gate_override: null
 
+# Tier 3 Phase 12 ("motion traces"): the first producer of quality_report.py's
+# "motion" dimension (zero producers since Phase 10 shipped that dimension).
+# Reads RenderArtifact.motion (observer_visual's raw per-state frame deltas)
+# and decides warn/pass itself, suppressing hold-flagged states. Only
+# meaningful in --manim mode; disabled by default like observer_visual,
+# flipped on by the --manim CLI flag.
+verifier_motion:
+  enabled: false
+  gate_override: null    # advisory -- see verifier_motion/__init__.py's docstring
+  min_motion_delta: 0.001
+
 verifier_lifecycle:
   enabled: true               # always-[] shell, per the migration brief
   gate_override: false

@@ -148,6 +148,7 @@ Test narration.
         # applied) -- must be disabled explicitly, same trap already hit
         # twice for the Manim-family plugins above.
         "observer_visual": {"enabled": False},
+        "verifier_motion": {"enabled": False},
         "verifier_lifecycle": {"enabled": False},
         "verifier_audio": {"enabled": False},
         "verifier_final_qc": {"enabled": True},

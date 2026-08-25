@@ -1,4 +1,5 @@
-"""Deterministic visual grounding for rendered video -- Tier 3 Phase 11 (F3).
+"""Deterministic visual grounding for rendered video -- Tier 3 Phases 11-12
+(F3, closed-loop visual grounding; motion traces).
 
 The audit's own framing (docs/ARCHITECTURE_AUDIT.md SS16-17): "today the
 system can only answer 'did the Python execute?'. Answering 'did the
@@ -14,10 +15,22 @@ directly. A rendered Manim clip has no such in-memory artist model at verify
 time -- only pixels -- so this module measures the same "share of the frame
 that is not background" quantity via cv2 on an extracted frame instead.
 
-Deliberately NOT object identity or motion tracking (a future phase's job,
-named separately in the audit as "motion traces") -- a low ink-fraction
-reading is reported as a finding for a human or the repair loop to interpret,
-never resolved here.
+Phase 11's ``ink_fraction``/``observe_clip`` answer presence only ("is
+something on screen"). Phase 12 adds ``frame_delta``/``observe_motion``,
+which answer a distinct question: did the screen actually change while a
+state's motion op was supposed to be executing? quality_report.py's own
+"motion" quality dimension has had zero producers since Phase 10 shipped it
+-- this is that producer. Still deterministic CV only (frame differencing),
+still no object identity/tracking (true per-object motion trails remain out
+of scope -- this only measures aggregate pixel change over a state's
+run_time window, not *which* object moved).
+
+Unlike Phase 11's ``observe_clip`` (which embeds its own pass/warn judgment
+so its output can be parsed unmodified by ``verifier_spatial``'s existing
+text parser), ``observe_motion`` deliberately records raw per-state deltas
+only and leaves the warn/pass judgment to ``verifier_motion`` -- there is no
+legacy parser to reuse here, so the cleaner "observer observes, verifier
+decides" split applies without compromise.
 
 Pure-ish module: no ``SceneContext``, no ``Plugin`` coupling (the harness
 wiring lives in ``harness/plugins/observer_visual``), matching the split
@@ -63,6 +76,18 @@ DEFAULT_MIN_INK_FRACTION = 0.002
 #: fallback must never be a hard-failure mode).
 DEFAULT_FALLBACK_COUNT = 5
 
+#: A state whose frame-to-frame change over its run_time window falls below
+#: this is a candidate "nothing visibly moved" trace. Deliberately small,
+#: same reasoning as DEFAULT_MIN_INK_FRACTION -- verifier_motion additionally
+#: suppresses this for hold-flagged states, where zero change is correct.
+DEFAULT_MIN_MOTION_DELTA = 0.001
+
+#: Seconds trimmed off each end of a state's run_time window before
+#: sampling its start/end frames, so the "start" sample doesn't land on the
+#: previous state's still-frozen last frame and the "end" sample doesn't
+#: land on the next state's first frame.
+_RUN_TIME_MARGIN = 0.1
+
 
 def ink_fraction(
     frame_path: Path,
@@ -93,6 +118,46 @@ def ink_fraction(
     for channel, bg in enumerate(_BG_RGB):
         plane = img[:, :, channel]
         diff = np.maximum(plane, bg) - np.minimum(plane, bg)
+        mask |= diff > tolerance
+
+    return float(np.count_nonzero(mask)) / mask.size
+
+
+def frame_delta(
+    frame_a: Path,
+    frame_b: Path,
+    *,
+    tolerance: int = _TOLERANCE,
+) -> float | None:
+    """Share of pixels that changed between two decoded frames.
+
+    Same per-channel-distance arithmetic as ``ink_fraction``, but between two
+    frames instead of one frame and a fixed background -- this is what makes
+    it a *motion* signal rather than a presence signal. Returns ``None``
+    (never raises) when cv2 is unavailable, either frame fails to decode, or
+    the two frames have different dimensions.
+    """
+
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    img_a = cv2.imread(str(frame_a))
+    img_b = cv2.imread(str(frame_b))
+
+    if img_a is None or img_b is None:
+        return None
+
+    if img_a.shape != img_b.shape:
+        return None
+
+    mask = np.zeros(img_a.shape[:2], dtype=bool)
+
+    for channel in range(img_a.shape[2]):
+        plane_a = img_a[:, :, channel]
+        plane_b = img_b[:, :, channel]
+        diff = np.maximum(plane_a, plane_b) - np.minimum(plane_a, plane_b)
         mask |= diff > tolerance
 
     return float(np.count_nonzero(mask)) / mask.size
@@ -177,6 +242,128 @@ def sample_points(
         (f"sample_{i}", round(clip_duration * (i + 1) / (count + 1), 3))
         for i in range(count)
     ]
+
+
+def motion_sample_points(
+    section_timing: "SectionTiming | None",
+    clip_duration: float,
+) -> list[tuple[str, float, float]]:
+    """(state name, run_time start, run_time end) triples worth diffing.
+
+    Only states with a positive ``run_time`` are included -- a state with
+    ``run_time == 0`` has no animation-in-progress window to measure motion
+    over at all (distinct from ``sample_points``' broader "zero
+    run_time + wait" skip, since a state could have ``wait > 0`` alone).
+
+    Unlike ``sample_points``, there is no evenly-spaced fallback: without
+    TemporalIR there is no principled way to know where one state's
+    animation window ends and the next begins, so this returns ``[]`` and
+    the caller degrades to ``status: skip`` -- correct, not a compromise,
+    since fabricating a window here would risk measuring across a state
+    boundary and misreporting real motion as absent (or vice versa).
+    """
+
+    if clip_duration <= 0:
+        return []
+
+    if section_timing is None or not section_timing.states:
+        return []
+
+    points: list[tuple[str, float, float]] = []
+    elapsed = 0.0
+
+    for state in section_timing.states:
+        run_time = state.run_time
+
+        if run_time > 2 * _RUN_TIME_MARGIN:
+            start = min(elapsed + _RUN_TIME_MARGIN, clip_duration - 0.05)
+            end = min(elapsed + run_time - _RUN_TIME_MARGIN, clip_duration - 0.05)
+
+            if end > start >= 0:
+                points.append((state.name, round(start, 3), round(end, 3)))
+
+        elapsed += run_time + state.wait
+
+    return points
+
+
+def observe_motion(
+    clip_path: Path,
+    section_timing: "SectionTiming | None",
+    *,
+    scratch_dir: Path,
+) -> dict[str, Any]:
+    """Sample a rendered clip's per-state motion and report raw deltas.
+
+    Returns ``{"status": "ok"/"skip", "traces": [{"state", "delta",
+    "start", "end"}, ...]}``. Deliberately makes no warn/pass judgment --
+    see the module docstring for why that is ``verifier_motion``'s job here,
+    unlike Phase 11's ``observe_clip``.
+
+    Never raises: every failure mode degrades to ``status: skip``, the same
+    posture ``observe_clip`` already established.
+    """
+
+    if not clip_path.exists():
+        return {"status": "skip", "detail": "Rendered clip not found.", "traces": []}
+
+    try:
+        clip_duration = cfg.duration(clip_path)
+    except Exception:
+        return {
+            "status": "skip",
+            "detail": "Could not determine clip duration.",
+            "traces": [],
+        }
+
+    points = motion_sample_points(section_timing, clip_duration)
+
+    if not points:
+        return {
+            "status": "skip",
+            "detail": "No samplable run_time windows for this clip.",
+            "traces": [],
+        }
+
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+
+    traces: list[dict[str, Any]] = []
+
+    for name, start, end in points:
+        frame_a = scratch_dir / f"motion_{name}_start_{start:.3f}.png"
+        frame_b = scratch_dir / f"motion_{name}_end_{end:.3f}.png"
+
+        if not extract_frame(clip_path, start, frame_a):
+            continue
+
+        if not extract_frame(clip_path, end, frame_b):
+            continue
+
+        delta = frame_delta(frame_a, frame_b)
+
+        if delta is None:
+            continue
+
+        traces.append(
+            {
+                "state": name,
+                "delta": delta,
+                "start": start,
+                "end": end,
+            }
+        )
+
+    if not traces:
+        return {
+            "status": "skip",
+            "detail": (
+                "cv2/ffmpeg unavailable, or every sampled frame pair failed "
+                "to extract/decode."
+            ),
+            "traces": [],
+        }
+
+    return {"status": "ok", "traces": traces}
 
 
 def observe_clip(
@@ -273,8 +460,12 @@ def observe_clip(
 __all__ = [
     "DEFAULT_FALLBACK_COUNT",
     "DEFAULT_MIN_INK_FRACTION",
+    "DEFAULT_MIN_MOTION_DELTA",
     "extract_frame",
+    "frame_delta",
     "ink_fraction",
+    "motion_sample_points",
     "observe_clip",
+    "observe_motion",
     "sample_points",
 ]

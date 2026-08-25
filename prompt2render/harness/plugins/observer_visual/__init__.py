@@ -1,4 +1,5 @@
-"""Visual observation -- Tier 3 Phase 11 (F3), closed-loop visual grounding.
+"""Visual observation -- Tier 3 Phases 11-12 (F3 closed-loop visual
+grounding; motion traces).
 
 The target architecture (docs/ARCHITECTURE_AUDIT.md SS16) names this as its
 own pipeline stage, distinct from verification:
@@ -7,32 +8,44 @@ own pipeline stage, distinct from verification:
         -> Visual observation (frame sampling, object/motion traces)
         -> Multi-verifier: semantic | temporal | spatial | motion | ...
 
-This plugin is that stage's first, deterministic-CV-only slice: it samples a
-rendered Manim clip and measures non-background pixel presence via
-``visual_observe.observe_clip`` (cv2, no LLM/VLM). It does not itself decide
-pass/fail -- it produces evidence, the same role ``renderer_stills`` already
-plays for the SceneKit audit on the stills path. ``verifier_spatial`` is the
-plugin that turns evidence into findings, for either renderer.
+This plugin IS that stage, in full -- both named sub-concerns ("frame
+sampling" and "object/motion traces") are grouped under the one diagram box,
+so both live in this one plugin rather than two:
 
-Concretely, this plugin populates ``RenderArtifact.audit`` for Manim stems,
-using the exact record shape ``verifier_spatial`` already parses -- so this
-also resolves F4 (``verifier_spatial`` unconditionally reporting ``skip`` on
-the Manim path, because ``renderer_manim`` never set ``.audit``) as a direct
-side effect, without any change to ``verifier_spatial``'s own contract
-beyond a one-line message-wording fix (see its docstring).
+- Presence (Phase 11): samples a rendered Manim clip and measures
+  non-background pixel presence via ``visual_observe.observe_clip`` (cv2, no
+  LLM/VLM), writing ``RenderArtifact.audit``.
+- Motion (Phase 12): samples each state's run_time start/end and measures
+  frame-to-frame change via ``visual_observe.observe_motion``, writing
+  ``RenderArtifact.motion``.
+
+Neither half decides pass/fail here -- this plugin produces evidence, the
+same role ``renderer_stills`` already plays for the SceneKit audit on the
+stills path. Two different verifiers turn that evidence into findings:
+``verifier_spatial`` reads ``.audit`` (Phase 11; unmodified, see below),
+``verifier_motion`` reads ``.motion`` (Phase 12; new, see its own
+docstring for why the threshold decision lives there and not here).
+
+Concretely, the presence half populates ``RenderArtifact.audit`` for Manim
+stems, using the exact record shape ``verifier_spatial`` already parses --
+so this also resolves F4 (``verifier_spatial`` unconditionally reporting
+``skip`` on the Manim path, because ``renderer_manim`` never set ``.audit``)
+as a direct side effect, without any change to ``verifier_spatial``'s own
+contract beyond a one-line message-wording fix (see its docstring).
 
 No-ops for stills stems: ``RendererStillsPlugin`` already populates a real
 audit record via ``scenekit.audit()`` (matplotlib-artist bbox math -- the
-right tool for that renderer, unrelated machinery). This plugin only fills
-the gap where ``RenderArtifact.audit`` is still ``None``, so it is safe to
-enable unconditionally without disturbing the stills default path -- though
-in practice it is only meaningful in ``--manim`` mode and is toggled off by
+right tool for that renderer, unrelated machinery, and one with no
+per-section clip to diff for motion either). This plugin only fills the gap
+where ``RenderArtifact.audit`` is still ``None``, so it is safe to enable
+unconditionally without disturbing the stills default path -- though in
+practice it is only meaningful in ``--manim`` mode and is toggled off by
 default the same way the other Manim-only plugins are (F13's precedent).
 
 Deliberately advisory (``_default_gate() -> False``) and deliberately
-produces no ``check_results`` of its own -- ``verifier_spatial`` already
-does that from the audit record this plugin writes, so a second finding set
-here would just double-report the same evidence.
+produces no ``check_results`` of its own -- the two verifiers above already
+do that from the evidence this plugin writes, so a second finding set here
+would just double-report the same evidence.
 """
 
 from __future__ import annotations
@@ -121,6 +134,12 @@ class ObserverVisualPlugin(Plugin):
             )
 
             artifact.audit = record
+
+            artifact.motion = visual_observe.observe_motion(
+                clip_path,
+                section_timings.get(stem),
+                scratch_dir=scratch_dir,
+            )
 
         return context
 

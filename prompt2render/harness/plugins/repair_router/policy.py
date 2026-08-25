@@ -57,6 +57,11 @@ class StaticTableRoutingPolicy(RoutingPolicy):
         "semantic_mismatch": ["generator_code"],
         "execution_failure": ["generator_code"],
         "spatial_conflict": ["generator_code"],
+        # Tier 3 Phase 12: verifier_motion's finding -- rendered pixels
+        # barely changed where a non-hold state's motion op was supposed to
+        # execute. Same repair action as spatial_conflict: regenerate the
+        # code.
+        "motion_absence": ["generator_code"],
         "lifecycle_violation": ["generator_code"],
         "temporal_mismatch": ["generator_code"],
         "manim_crash": ["generator_code"],

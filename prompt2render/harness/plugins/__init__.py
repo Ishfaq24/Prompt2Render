@@ -50,6 +50,9 @@ from .observer_visual import (
 from .verifier_spatial import (
     VerifierSpatialPlugin,
 )
+from .verifier_motion import (
+    VerifierMotionPlugin,
+)
 from .verifier_lifecycle import (
     VerifierLifecyclePlugin,
 )
@@ -136,6 +139,9 @@ REGISTRY: dict[str, type] = {
     # relies on.
     "observer_visual": ObserverVisualPlugin,
     "verifier_spatial": VerifierSpatialPlugin,
+    # Tier 3 Phase 12: reads RenderArtifact.motion, also populated by
+    # observer_visual above -- same dict-order dependency as verifier_spatial.
+    "verifier_motion": VerifierMotionPlugin,
     "verifier_lifecycle": VerifierLifecyclePlugin,
     "verifier_temporal": VerifierTemporalPlugin,
     "verifier_audio": VerifierAudioPlugin,
