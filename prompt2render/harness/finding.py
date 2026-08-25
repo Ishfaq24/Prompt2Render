@@ -121,6 +121,19 @@ class Finding:
     message: str
     object_id: str | None = None
 
+    #: The routing key consumed by ``repair_router``. It lives here so the
+    #: typed layer and the routing layer are not disjoint: previously every
+    #: verifier had to remember to hand-add ``result["finding_type"] = ...``
+    #: to the raw dict after calling :meth:`as_check_result`, with nothing
+    #: to remind it, and a forgotten assignment silently fell back to
+    #: ``_DEFAULT_FINDING_TYPE[source_plugin]``.
+    #:
+    #: Left ``None`` the key is omitted from the serialized dict entirely
+    #: rather than emitted as null -- ``RoutingPolicy.decide`` reads it with
+    #: ``str(finding.get("finding_type", ""))``, so a literal ``None`` would
+    #: stringify to ``"None"``, match no route, and disable the fallback.
+    finding_type: str | None = None
+
     def __post_init__(
         self,
     ) -> None:
@@ -235,6 +248,15 @@ class Finding:
         result[
             "detail"
         ] = self.message
+
+        # An unset finding_type must be ABSENT, not null: consumers read it
+        # via ``.get("finding_type", "")`` and would otherwise receive None,
+        # whose str() is the truthy "None". See the field's docstring.
+        if self.finding_type is None:
+            result.pop(
+                "finding_type",
+                None,
+            )
 
         return result
 

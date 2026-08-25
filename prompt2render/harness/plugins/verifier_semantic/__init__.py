@@ -415,6 +415,34 @@ def _preview_path(
     )
 
 
+def _preview_is_fresh(
+    preview: Path,
+    source: Path,
+) -> bool:
+    """Is ``preview`` actually a picture of ``source``?
+
+    A preview only counts as visual evidence when it is at least as new as
+    the code it claims to depict. ``has_preview`` used to be a bare
+    ``Path.exists()``, so outside a repair cycle the verifier would happily
+    attach whatever PNG last happened to land on disk -- typically the
+    render of a *previous* generation of the scene -- and present it to the
+    model as evidence for layout. That produces confident verdicts about a
+    frame the current code never produced, in both directions: passing a
+    broken scene because the old frame looked fine, or failing a fixed one
+    because the old frame still shows the defect.
+
+    Being unable to prove freshness is treated as stale. This module's
+    contract is that it never claims visual verification it does not have
+    (see the module docstring); judging from code alone is the weaker but
+    honest answer.
+    """
+
+    try:
+        return preview.stat().st_mtime >= source.stat().st_mtime
+    except OSError:
+        return False
+
+
 def _regenerate_preview(
     context: SceneContext,
     entry,
@@ -702,8 +730,14 @@ class VerifierSemanticPlugin(Plugin):
             # Build prompt
             # ----------------------------------------------------------
 
+            # A preview that predates the code it depicts is not evidence
+            # about this scene -- see _preview_is_fresh().
             has_preview = (
                 preview.exists()
+                and _preview_is_fresh(
+                    preview,
+                    artifact.path,
+                )
             )
 
             prompt = _build_prompt(

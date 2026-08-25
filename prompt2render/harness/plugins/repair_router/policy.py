@@ -69,6 +69,16 @@ class StaticTableRoutingPolicy(RoutingPolicy):
     #: Post-render VLM findings are routed back to the verifier that owns
     #: the corresponding Finding category. The verifier then decides what
     #: precise finding/repair information to emit.
+    #:
+    #: RESERVED -- no plugin emits ``vlm_post_render_defect`` today. This is
+    #: deliberately kept rather than deleted: it is the repair destination
+    #: for closed-loop visual grounding (sampling rendered frames and
+    #: comparing observed object state against intended state), which has no
+    #: implementation yet. A producer must set
+    #: ``finding_type="vlm_post_render_defect"`` and a ``category`` drawn
+    #: from the keys below; an unlisted category routes nowhere (``[]``).
+    #: Until such a producer exists this table is exercised only by
+    #: ``tests/harness/test_repair_router.py``.
     VLM_CATEGORY_ROUTE: dict[str, list[str]] = {
         "SPATIAL": ["verifier_spatial"],
         "TEMPORAL": ["verifier_lifecycle"],
