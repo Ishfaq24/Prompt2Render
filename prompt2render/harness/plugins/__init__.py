@@ -44,6 +44,9 @@ from .verifier_semantic import (
 from .verifier_execution import (
     VerifierExecutionPlugin,
 )
+from .observer_visual import (
+    ObserverVisualPlugin,
+)
 from .verifier_spatial import (
     VerifierSpatialPlugin,
 )
@@ -126,6 +129,12 @@ REGISTRY: dict[str, type] = {
     # Post-generation / rendered verification
     # ---------------------------------------------------------------
     "verifier_semantic": VerifierSemanticPlugin,
+    # Tier 3 Phase 11 (F3/F4): populates RenderArtifact.audit for Manim
+    # stems before verifier_spatial reads it -- REGISTRY dict order is the
+    # tie-break that guarantees this ordering (see loader.resolve_order's
+    # own docstring), the same mechanism the rest of this section already
+    # relies on.
+    "observer_visual": ObserverVisualPlugin,
     "verifier_spatial": VerifierSpatialPlugin,
     "verifier_lifecycle": VerifierLifecyclePlugin,
     "verifier_temporal": VerifierTemporalPlugin,

@@ -143,6 +143,11 @@ Test narration.
         "verifier_semantic": {"enabled": False},
         "verifier_execution": {"enabled": False},
         "verifier_spatial": {"enabled": False},
+        # Tier 3 Phase 11: new REGISTRY entry, defaults enabled=True in a
+        # from-scratch config dict like this one (no config.yaml defaults
+        # applied) -- must be disabled explicitly, same trap already hit
+        # twice for the Manim-family plugins above.
+        "observer_visual": {"enabled": False},
         "verifier_lifecycle": {"enabled": False},
         "verifier_audio": {"enabled": False},
         "verifier_final_qc": {"enabled": True},

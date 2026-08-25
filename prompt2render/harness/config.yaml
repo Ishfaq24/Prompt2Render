@@ -102,8 +102,23 @@ verifier_execution:
   enabled: true              # real: deterministic AST-based execution verifier
   gate_override: true
 
+# Tier 3 Phase 11 (F3/F4): deterministic-CV-only visual grounding, no VLM.
+# Samples the rendered Manim clip at each state's settled timestamp (from
+# temporal_ir when available, evenly-spaced fallback otherwise) and measures
+# non-background pixel coverage via cv2 -- populates RenderArtifact.audit for
+# Manim stems so verifier_spatial (below) stops unconditionally reporting
+# skip there (F4). No-op on the stills path (scenekit already sets .audit
+# there). Only meaningful in --manim mode; disabled by default like the
+# other Manim-only plugins, flipped on by the --manim CLI flag.
+observer_visual:
+  enabled: false
+  gate_override: null    # advisory -- see observer_visual/__init__.py's docstring
+  min_ink_fraction: 0.002
+  sample_fallback_count: 5
+
 verifier_spatial:
-  enabled: true              # real: wraps scenekit.audit()'s recorded verdict
+  enabled: true              # real: wraps RenderArtifact.audit's recorded verdict
+                              # (SceneKit on stills, observer_visual on Manim)
   gate_override: null
 
 verifier_lifecycle:

@@ -1,21 +1,24 @@
 """Deterministic spatial verifier for rendered Prompt2Render scenes.
 
-This plugin surfaces the geometry verdict already recorded by SceneKit's
-``audit()`` during rendering. It deliberately does not render scenes again.
+This plugin surfaces the geometry verdict already recorded on
+``RenderArtifact.audit``. It deliberately does not render scenes again, and
+deliberately does not care which renderer produced the record:
 
-The renderer/audit pipeline is:
+    stills path:  stills.render_many() -> SceneKit audit()      -> audit
+    Manim path:   renderer_manim -> observer_visual (Tier 3      -> audit
+                  Phase 11, visual_observe.observe_clip())
+                                                                     |
+                                                                     v
+                                                        VerifierSpatialPlugin
+                                                                     |
+                                                                     v
+                                                    structured spatial findings
 
-    generated scene
-        ↓
-    stills.render_many()
-        ↓
-    SceneKit audit()
-        ↓
-    RenderArtifact.audit
-        ↓
-    VerifierSpatialPlugin
-        ↓
-    structured spatial findings
+Both producers write the same shape (``status``/``warnings``/``stills``,
+warning strings as ``"LEVEL [kind] message"``), which is what makes this
+verifier renderer-agnostic. Before Tier 3 Phase 11, ``renderer_manim`` never
+set ``RenderArtifact.audit`` at all, so this verifier always reported
+``skip`` on the Manim path (F4); ``observer_visual`` closes that gap.
 
 The audit is therefore treated as an observed renderer result, not something
 this verifier recomputes.
@@ -348,6 +351,16 @@ class VerifierSpatialPlugin(Plugin):
                 0,
             )
 
+            # Tier 3 Phase 11: RenderArtifact.audit can now also come from
+            # observer_visual (Manim frame sampling), which sets
+            # unit="frames" instead of the stills path's implicit default,
+            # so the pass message doesn't misleadingly say "stills" for a
+            # video-frame observation.
+            unit = record.get(
+                "unit",
+                "stills",
+            )
+
             findings.append(
                 {
                     "status": "pass",
@@ -359,7 +372,7 @@ class VerifierSpatialPlugin(Plugin):
                         Category.SPATIAL.value
                     ),
                     "detail": (
-                        f"{still_count} stills clean"
+                        f"{still_count} {unit} clean"
                     ),
                 }
             )

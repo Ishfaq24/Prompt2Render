@@ -30,3 +30,6 @@ Jinja2>=3.1              # already a transitive dep elsewhere; used directly her
 # --- Prompt2Render harness (prompt2render/harness/, tools/harness_run.py, tools/ablation_runner.py) ---
 PyYAML>=6.0               # plugin config
 pytest>=8.0                # tests/harness/
+
+# --- visual grounding (Tier 3 Phase 11: prompt2render/visual_observe.py, --manim only) ---
+opencv-python>=4.8       # deterministic frame-content-presence check

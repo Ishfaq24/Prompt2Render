@@ -15,6 +15,9 @@ def test_enabled_manim_renderer_still_waits_for_code_and_timeline_waits_for_audi
         "renderer_stills": {"enabled": False},
         "verifier_semantic": {"enabled": False},
         "verifier_spatial": {"enabled": False},
+        # Tier 3 Phase 11: new REGISTRY entry, would default enabled=True
+        # here otherwise (same trap as the Manim-family plugins above).
+        "observer_visual": {"enabled": False},
         "verifier_lifecycle": {"enabled": False},
         "verifier_audio": {"enabled": False},
         "feedback_hitl": {"enabled": False},

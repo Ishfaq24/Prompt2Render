@@ -506,6 +506,22 @@ def _check_scenes(r: Report) -> None:
 
 def _check_optional(r: Report) -> None:
     try:
+        import cv2
+
+        r.add(
+            OK,
+            "opencv (cv2)",
+            cv2.__version__,
+        )
+    except ImportError:
+        r.add(
+            WARN,
+            "opencv (cv2)",
+            "not installed — observer_visual (Tier 3 Phase 11, "
+            "--manim only) will report skip for every stem",
+        )
+
+    try:
         import manim  # noqa: F401
     except ImportError:
         r.add(
