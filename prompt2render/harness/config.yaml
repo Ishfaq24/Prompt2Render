@@ -77,6 +77,16 @@ verifier_lifecycle:
   enabled: true               # always-[] shell, per the migration brief
   gate_override: false
 
+verifier_temporal:
+  enabled: true               # real: ffprobe'd clip duration vs narration span
+  gate_override: true         # a clip that does not match its narration is a
+                              # hard failure -- this was the plugin's own
+                              # _default_gate() all along, but the entry was
+                              # missing from this file entirely, so the gate
+                              # was invisible here and the ablation runner
+                              # could not neutralise it.
+  # tolerance_seconds: 1.5    # default; raise to loosen the duration match
+
 verifier_audio:
   enabled: true                # real: wraps qc.py's caption-drift gate (whole-video scoped)
   gate_override: null

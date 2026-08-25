@@ -38,12 +38,20 @@ class Event:
 class EventBus:
     """Synchronous, deterministic event dispatcher."""
 
+    #: The complete harness event vocabulary. ``repair_router`` emits
+    #: ``repair.started``/``repair.finished`` around every repair cycle;
+    #: these were historically absent here, so each emit raised
+    #: ``ValueError`` straight into the router's exception handler and no
+    #: repair lifecycle event was ever delivered to anyone. Subscribing to
+    #: them failed for the same reason.
     VALID_EVENTS = frozenset(
         {
             "stage.started",
             "stage.failed",
             "check.failed",
             "repair.triggered",
+            "repair.started",
+            "repair.finished",
         }
     )
 

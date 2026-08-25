@@ -342,9 +342,15 @@ def _finding(
     result["finding_type"] = (
         "lifecycle_violation"
     )
-    result["mismatch_subtype"] = (
-        "temporal_mismatch"
-    )
+
+    # Deliberately no ``mismatch_subtype``. This finding used to carry
+    # ``mismatch_subtype="temporal_mismatch"``, which is doubly wrong: a
+    # lifecycle violation is not a temporal one, and the router only ever
+    # reads that key for ``finding_type == "audio_visual_mismatch"``
+    # (see repair_router/policy.py:decide), so it routed identically with
+    # or without it. Harmless today, but a live trap the moment
+    # lifecycle_violation gains a subtype table -- it would then silently
+    # route every lifecycle defect down the temporal branch.
 
     return result
 

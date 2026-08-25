@@ -43,6 +43,7 @@ from ...finding import (
     next_finding_id,
 )
 from ...plugin import Plugin
+from ...timing import narration_span, sentence_duration
 from .... import align, cfg
 
 
@@ -144,8 +145,6 @@ def _target_duration(
             "alignment 'sentences' is not a list."
         )
 
-    durations: list[float] = []
-
     for index, sentence in enumerate(
         sentences
     ):
@@ -157,47 +156,21 @@ def _target_duration(
                 f"alignment sentence {index} is not an object."
             )
 
-        # New align format stores start/end without dur; old format
-        # stores dur. Handle both so 5.00s raw vs 39.11s target is
-        # correctly flagged (previously raised ValueError and verifier
-        # emitted skip instead of BLOCKING).
-        raw_dur = sentence.get("dur")
-        if raw_dur is None:
-            # compute from start/end
-            try:
-                s = float(sentence.get("start", 0))
-                e = float(sentence.get("end", s))
-                raw_dur = e - s
-            except Exception:
-                raw_dur = None
-        if raw_dur is None:
+        # Both align formats (new start/end, old dur) are handled by
+        # harness/timing.py. A sentence that yields neither is malformed.
+        if sentence_duration(sentence) is None:
             raise ValueError(
-                f"alignment sentence {index} has no 'dur'/'end'."
+                f"alignment sentence {index} has no usable "
+                f"'dur'/'end'."
             )
 
-        duration = float(
-            raw_dur
-        )
-
-        if not math.isfinite(
-            duration
-        ) or duration < 0:
-            raise ValueError(
-                f"alignment sentence {index} has invalid "
-                f"duration: {raw_dur!r}"
-            )
-
-        durations.append(
-            duration
-        )
-
-    if not durations:
-        raise ValueError(
-            "alignment contains no sentence durations."
-        )
-
-    total = sum(
-        durations
+    # The rendered clip must cover inter-sentence silence too, so the
+    # target is the section's wall-clock SPAN, not the sum of speech
+    # durations. Summing understated the target by the accumulated
+    # silence and disagreed with verifier_execution, which already used
+    # the span. See harness/timing.py.
+    total = narration_span(
+        sentences
     )
 
     if total <= 0:

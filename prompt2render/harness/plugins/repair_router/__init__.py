@@ -29,6 +29,7 @@ from typing import Any
 from ...context import SceneContext
 from ...events import Event, EventBus
 from ...plugin import Plugin
+from .... import cfg
 from .policy import RoutingPolicy, StaticTableRoutingPolicy
 
 
@@ -632,9 +633,24 @@ class RepairRouterPlugin(Plugin):
                 event_name,
                 **payload,
             )
-        except Exception:
-            # Repair events must never crash the repair itself.
-            return
+        except ValueError as exc:
+            # A ValueError here means the event name is not in the bus's
+            # VALID_EVENTS -- a contract break between this module and
+            # harness/events.py, not a subscriber problem. That is a bug we
+            # want to hear about: swallowing it silently is exactly why
+            # repair.started/repair.finished went undelivered for so long.
+            # Still non-fatal (a broken event must not abort a repair), but
+            # no longer invisible.
+            cfg.warn(
+                f"repair_router: cannot emit {event_name!r} — {exc}"
+            )
+        except Exception as exc:
+            # A subscriber raised. Isolate it: one bad listener must never
+            # crash the repair it is observing.
+            cfg.warn(
+                f"repair_router: subscriber for {event_name!r} raised "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     # ------------------------------------------------------------------
     # Logging

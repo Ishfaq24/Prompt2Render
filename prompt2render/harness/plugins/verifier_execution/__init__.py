@@ -34,6 +34,7 @@ from ...finding import (
 )
 from ...motion import find_storyboard_states
 from ...plugin import Plugin
+from ...timing import narration_span
 from ....scenes import (
     trace_scene_source,
     validate_scene_source,
@@ -205,11 +206,13 @@ def _safe_narration_duration(
     context: SceneContext,
     stem: str,
 ) -> float:
-    """The true end of a section's narration — sum(sentence durations)
-    excludes inter-sentence silence gaps, so this uses the last sentence's
-    actual end timestamp instead. Must agree with renderer_manim's compiler
-    (``_state_cue_timings``), which targets the same true end, or this
-    verifier will reject scenes the compiler rendered correctly.
+    """The section's wall-clock narration span, including inter-sentence
+    silence.
+
+    Delegates to ``harness.timing.narration_span`` so this, ``_load_timing``
+    and ``verifier_temporal._target_duration`` cannot drift apart again --
+    they previously disagreed, this one using the true end while the other
+    two summed speech durations and silently dropped every gap.
     """
 
     narration = getattr(context, "narration", {}).get(stem)
@@ -222,9 +225,7 @@ def _safe_narration_duration(
     if not sentences:
         return 0.0
 
-    last = sentences[-1]
-
-    return float(last.get("end", 0.0))
+    return narration_span(sentences)
 
 
 # ---------------------------------------------------------------------------

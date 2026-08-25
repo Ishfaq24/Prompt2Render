@@ -39,6 +39,7 @@ from typing import Any
 
 from ...context import CodeArtifact, RenderArtifact, SceneContext
 from ...motion import MOTION_OPS, find_storyboard_states
+from ...timing import narration_span
 from ...plugin import Plugin
 from ..verifier_execution import check_scene_artifact
 from ....project import parse_script
@@ -460,21 +461,17 @@ def _load_timing(
         )
 
         if isinstance(sentences, list) and sentences:
-            # Support both old (dur) and new (start/end) align formats.
-            def _dur(s: dict) -> float:
-                if "dur" in s and s.get("dur") is not None:
-                    try:
-                        return float(s["dur"])
-                    except Exception:
-                        pass
-                try:
-                    return float(s.get("end", 0)) - float(s.get("start", 0))
-                except Exception:
-                    return 0.0
+            # Both the old (dur) and new (start/end) align formats are
+            # handled inside harness/timing.py -- see sentence_duration().
 
-            duration = sum(
-                _dur(s) for s in sentences if isinstance(s, dict)
-            )
+            # The section's wall-clock span, INCLUDING inter-sentence
+            # silence. Previously this summed per-sentence durations, which
+            # excludes every gap -- and since the prompt below asserts "the
+            # total animation duration MUST equal {duration}", every scene
+            # was told to finish early by exactly the accumulated silence
+            # (measured: 13.50s across 342.08s on a real project). See
+            # harness/timing.py.
+            duration = narration_span(sentences)
             # fallback to audio_dur if sentences sum is broken (e.g. missing end)
             if duration <= 0.01:
                 try:
