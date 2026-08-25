@@ -1,9 +1,10 @@
-"""Tier 3 Phase 10: unified multi-verifier quality report.
+"""Tier 3 Phases 10 and 13: unified multi-verifier quality report.
 
 Covers build_quality_report's dimension classification, blocking/warning/
-pass counting, the provisional overall_score formula, unmapped-verifier
-visibility, and write_quality_report's persistence/graceful-failure
-behavior.
+pass counting, unmapped-verifier visibility, write_quality_report's
+persistence/graceful-failure behavior, and (Phase 13) the graduated
+per-dimension score, the weighted overall_score, weight overrides, and the
+embedded scoring_version/weights that make a report self-describing.
 """
 from __future__ import annotations
 
@@ -11,11 +12,15 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from prompt2render.harness.quality_report import (
+    DEFAULT_DIMENSION_WEIGHTS,
     DIMENSIONS,
     QUALITY_REPORT_SCHEMA_VERSION,
+    SCORING_VERSION,
     build_quality_report,
     write_quality_report,
 )
@@ -89,6 +94,12 @@ def test_blocking_dimensions_lists_only_dimensions_with_a_blocker():
 
 
 # --------------------------------------------------------- overall_score --
+#
+# Tier 3 Phase 13 replaced the placeholder (fraction of dimensions with zero
+# blocking findings) with a graduated, weighted formula -- these two cases
+# are the ones where the new formula is numerically identical to the old
+# one (see quality_report.py's module docstring), so they still hold
+# unchanged; new tests below exercise genuinely graduated behavior.
 
 def test_overall_score_is_one_when_nothing_blocks():
     report = build_quality_report({"verifier_semantic": [{"status": "pass"}]})
@@ -101,6 +112,108 @@ def test_overall_score_degrades_per_blocking_dimension():
     )
     # 5 of 6 dimensions clean.
     assert abs(report.overall_score - (5 / 6)) < 1e-9
+
+
+# ------------------------------------------------- Phase 13: dimension score
+
+def test_dimension_score_is_one_with_no_findings():
+    report = build_quality_report({})
+    assert all(s.score == 1.0 for s in report.dimensions.values())
+
+
+def test_dimension_score_all_blocking_is_zero():
+    report = build_quality_report(
+        {"verifier_temporal": [{"status": "fail", "severity": "BLOCKING"}]}
+    )
+    assert report.dimensions["temporal"].score == 0.0
+
+
+def test_dimension_score_all_warning_is_half():
+    report = build_quality_report(
+        {"verifier_lifecycle": [{"status": "warn", "severity": "WARNING"}]}
+    )
+    assert report.dimensions["continuity"].score == 0.5
+
+
+def test_dimension_score_is_graduated_not_binary():
+    # One blocking finding among many passes should be penalized less than
+    # one blocking finding alone -- this is exactly what the old binary
+    # placeholder could not express.
+    report = build_quality_report(
+        {
+            "verifier_semantic": [
+                {"status": "fail", "severity": "BLOCKING"},
+                {"status": "pass"},
+                {"status": "pass"},
+                {"status": "pass"},
+            ]
+        }
+    )
+    score = report.dimensions["semantic"].score
+    assert 0.0 < score < 1.0
+    assert score == pytest.approx(1.0 - 1 / 4)
+
+
+# ---------------------------------------------------- Phase 13: weighting
+
+def test_default_weights_are_equal_across_all_dimensions():
+    assert len(set(DEFAULT_DIMENSION_WEIGHTS.values())) == 1
+    assert set(DEFAULT_DIMENSION_WEIGHTS) == set(DIMENSIONS)
+
+
+def test_custom_weights_change_overall_score():
+    check_results = {
+        "verifier_temporal": [{"status": "fail", "severity": "BLOCKING"}],
+        "verifier_semantic": [{"status": "pass"}],
+    }
+
+    equal = build_quality_report(check_results)
+    # Zero-weight everything except the dimension that's actually failing --
+    # overall_score should collapse to exactly that dimension's own score.
+    only_temporal = build_quality_report(
+        check_results,
+        weights={"temporal": 1.0},
+    )
+
+    assert only_temporal.overall_score == 0.0
+    assert only_temporal.overall_score != equal.overall_score
+
+
+def test_weight_omitted_from_custom_table_is_excluded_not_zeroed():
+    # A dimension missing from a custom weights table must not count as a
+    # zero score dragging the average down -- it must be excluded outright.
+    report = build_quality_report(
+        {"verifier_temporal": [{"status": "fail", "severity": "BLOCKING"}]},
+        weights={"semantic": 1.0},  # temporal (the failing one) excluded
+    )
+    assert report.overall_score == 1.0  # only "semantic" counted, and it's clean
+
+
+def test_no_positively_weighted_dimensions_defaults_to_clean():
+    report = build_quality_report({}, weights={})
+    assert report.overall_score == 1.0
+
+
+# -------------------------------------------------- Phase 13: reproducibility
+
+def test_scoring_version_and_weights_embedded_in_report():
+    report = build_quality_report({})
+    assert report.scoring_version == SCORING_VERSION
+    assert report.weights == DEFAULT_DIMENSION_WEIGHTS
+
+
+def test_custom_weights_are_embedded_verbatim():
+    report = build_quality_report({}, weights={"semantic": 2.0})
+    assert report.weights == {"semantic": 2.0}
+
+
+def test_hash_changes_when_weights_change():
+    a = build_quality_report({"verifier_semantic": [{"status": "pass"}]})
+    b = build_quality_report(
+        {"verifier_semantic": [{"status": "pass"}]},
+        weights={"semantic": 2.0},
+    )
+    assert a.report_hash != b.report_hash
 
 
 def test_two_verifiers_sharing_a_dimension_both_contribute():

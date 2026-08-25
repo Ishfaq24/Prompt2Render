@@ -1,4 +1,4 @@
-"""Unified multi-verifier quality report -- Tier 3 Phase 10.
+"""Unified multi-verifier quality report -- Tier 3 Phases 10 and 13.
 
 Tier 3 (docs/ARCHITECTURE_AUDIT.md SS17, Phases 10-15) opens with "unified
 multi-verifier" — named once, with no elaboration or F-number anywhere else
@@ -13,10 +13,6 @@ spatial | motion | continuity | pedagogical").
 
 Deliberately scoped to aggregation only, per explicit user direction:
 - Does **not** touch any of the 9 existing verifier plugins or their gates.
-- Does **not** attempt a final scoring formula -- `overall_score` here is a
-  clearly-provisional placeholder (fraction of dimensions with zero
-  blocking findings). Tier 3 Phase 13 ("reproducible weighted quality
-  scoring") is where that gets designed properly.
 - Is **not** a DAG-tracked plugin. ``check_results`` is the one
   ``MERGEABLE_EFFECTS`` field multiple plugins write to concurrently
   (``loader.py``), and the topological sort only guarantees "runs after
@@ -28,6 +24,25 @@ Deliberately scoped to aggregation only, per explicit user direction:
   ``write_quality_report`` is called directly after ``HarnessRunner.run()``
   completes (success or ``GateFailure``), when ``context.check_results`` is
   known-complete.
+
+Tier 3 Phase 13 ("reproducible weighted quality scoring") replaces Phase
+10's placeholder formula (the fraction of dimensions with zero blocking
+findings) with a graduated one: each dimension gets its own ``score`` in
+[0, 1] from its actual blocking/warning counts (:func:`_dimension_score`),
+and ``overall_score`` is a weighted average of those
+(:data:`DEFAULT_DIMENSION_WEIGHTS`, all six equal by default -- SS16 states
+no priority order between them, and there is no evidence in this repo yet to
+justify weighting one content dimension over another; the mechanism is the
+point, not a specific set of numbers). "Reproducible" means a persisted
+report is self-describing: ``scoring_version`` and the ``weights`` actually
+used are embedded in every report (and therefore folded into
+``report_hash``), so a report is interpretable on its own even after this
+formula changes again later, and two reports are only directly comparable
+when their ``scoring_version`` matches. On the two cases Phase 10's own
+tests already covered (a clean run; a single all-blocking dimension with no
+other findings), this formula's output is numerically identical to the old
+placeholder -- it is a strict refinement, not a behavior change for those
+cases.
 """
 
 from __future__ import annotations
@@ -40,6 +55,18 @@ from typing import Any
 
 #: Quality report schema version.
 QUALITY_REPORT_SCHEMA_VERSION = "1.0"
+
+#: Tier 3 Phase 13: the scoring *formula*'s own version, independent of the
+#: report schema -- bump this when the formula/weights change in a way that
+#: would make an old and a new report's overall_score not directly
+#: comparable, even if the schema shape itself is unchanged.
+SCORING_VERSION = "1.0"
+
+#: Cost of one finding at this severity, before normalizing by how many
+#: findings the dimension actually produced. An all-blocking dimension
+#: scores 0.0; an all-warning dimension scores 0.5.
+BLOCKING_PENALTY = 1.0
+WARNING_PENALTY = 0.5
 
 #: Every dimension the target architecture names (SS16). "motion" had no
 #: verifier at all before Tier 3 Phase 12 ("motion traces") added
@@ -54,6 +81,16 @@ DIMENSIONS = (
     "continuity",
     "pedagogical",
 )
+
+#: Tier 3 Phase 13: relative importance of each dimension in overall_score.
+#: Equal by default -- see the module docstring for why. Callers with actual
+#: evidence for a different priority order pass their own table to
+#: build_quality_report/write_quality_report rather than editing this
+#: default; a dimension omitted from a custom table is treated as
+#: weight 0 (excluded from the average, not zeroed-and-averaged-in).
+DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
+    dimension: 1.0 for dimension in DIMENSIONS
+}
 
 #: Verifier plugin name -> quality dimension. Verifiers whose job is build/
 #: structural correctness rather than content quality (verifier_storyboard,
@@ -86,6 +123,12 @@ class DimensionSummary:
     warning: int = 0
     passed: int = 0
     verifiers: list[str] = field(default_factory=list)
+    #: Tier 3 Phase 13: this dimension's own [0, 1] score. Set by
+    #: build_quality_report after counting is complete -- see
+    #: _dimension_score for the formula. 1.0 until then (the same "no
+    #: evidence, no penalty" default the formula itself uses for an
+    #: untouched dimension).
+    score: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +138,7 @@ class DimensionSummary:
             "warning": self.warning,
             "passed": self.passed,
             "verifiers": list(self.verifiers),
+            "score": self.score,
         }
 
 
@@ -105,6 +149,11 @@ class QualityReport:
     overall_score: float
     blocking_dimensions: list[str]
     unmapped_verifiers: list[str]
+    #: Tier 3 Phase 13: the formula version and the weights actually used to
+    #: compute overall_score, embedded so the report is self-describing --
+    #: see the module docstring's "reproducible" paragraph.
+    scoring_version: str = SCORING_VERSION
+    weights: dict[str, float] = field(default_factory=dict)
     report_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -116,6 +165,8 @@ class QualityReport:
             "overall_score": self.overall_score,
             "blocking_dimensions": list(self.blocking_dimensions),
             "unmapped_verifiers": list(self.unmapped_verifiers),
+            "scoring_version": self.scoring_version,
+            "weights": dict(self.weights),
             "report_hash": self.report_hash,
         }
 
@@ -146,13 +197,73 @@ def _is_pass(finding: Any) -> bool:
     return isinstance(finding, dict) and str(finding.get("status", "")).lower() == "pass"
 
 
+def _dimension_score(summary: DimensionSummary) -> float:
+    """One dimension's own [0, 1] score.
+
+    A dimension with no findings at all is clean (1.0) -- absence of
+    evidence is not evidence of failure, the same principle Phase 10's
+    original placeholder already established for blocking_dimensions.
+    Otherwise: 1.0 minus a findings-weighted penalty (BLOCKING_PENALTY per
+    blocking finding, WARNING_PENALTY per warning), normalized by this
+    dimension's own total finding count -- so a heavily-scrutinized
+    dimension with one blocking finding among fifty passes isn't punished
+    as hard as one with a single blocking finding and nothing else.
+    """
+
+    if summary.total == 0:
+        return 1.0
+
+    penalty = (
+        summary.blocking * BLOCKING_PENALTY
+        + summary.warning * WARNING_PENALTY
+    ) / summary.total
+
+    return max(0.0, min(1.0, 1.0 - penalty))
+
+
+def _overall_score(
+    dimensions: dict[str, DimensionSummary],
+    weights: dict[str, float],
+) -> float:
+    """Weighted average of every dimension's own score.
+
+    A dimension with weight <= 0 (including one simply absent from a custom
+    ``weights`` table) is excluded from the average entirely, not zeroed and
+    averaged in -- "don't count this dimension" and "this dimension scored
+    zero" are different statements. No weighted dimensions at all is treated
+    as a clean run (1.0), matching the empty-input convention the rest of
+    this module already uses.
+    """
+
+    weighted_sum = 0.0
+    total_weight = 0.0
+
+    for name, summary in dimensions.items():
+        weight = weights.get(name, 0.0)
+
+        if weight <= 0:
+            continue
+
+        weighted_sum += weight * _dimension_score(summary)
+        total_weight += weight
+
+    return weighted_sum / total_weight if total_weight > 0 else 1.0
+
+
 def build_quality_report(
     check_results: dict[str, list[dict[str, Any]]],
+    *,
+    weights: dict[str, float] | None = None,
 ) -> QualityReport:
     """Aggregate every verifier's ``check_results`` entry into one report,
     grouped by quality dimension. Pure function -- no ``SceneContext``, no
     file I/O (see :func:`write_quality_report` for the persisted form).
+
+    ``weights`` overrides :data:`DEFAULT_DIMENSION_WEIGHTS` for this call
+    only -- see the module docstring for why the default is equal weights.
     """
+
+    weights = dict(weights) if weights is not None else dict(DEFAULT_DIMENSION_WEIGHTS)
 
     dimensions: dict[str, DimensionSummary] = {
         dimension: DimensionSummary(dimension=dimension) for dimension in DIMENSIONS
@@ -186,12 +297,10 @@ def build_quality_report(
         name for name, summary in dimensions.items() if summary.blocking > 0
     )
 
-    # Provisional formula (Tier 3 Phase 13 designs the real one): the
-    # fraction of dimensions with zero blocking findings. A dimension no
-    # verifier touched this run counts as clean (nothing to report is not
-    # the same as failing), not as a penalty.
-    clean = sum(1 for summary in dimensions.values() if summary.blocking == 0)
-    overall_score = clean / len(dimensions) if dimensions else 1.0
+    for summary in dimensions.values():
+        summary.score = _dimension_score(summary)
+
+    overall_score = _overall_score(dimensions, weights)
 
     report = QualityReport(
         schema_version=QUALITY_REPORT_SCHEMA_VERSION,
@@ -199,6 +308,8 @@ def build_quality_report(
         overall_score=overall_score,
         blocking_dimensions=blocking_dimensions,
         unmapped_verifiers=sorted(set(unmapped)),
+        scoring_version=SCORING_VERSION,
+        weights=weights,
     )
     report.report_hash = report.compute_hash()
 
@@ -208,6 +319,8 @@ def build_quality_report(
 def write_quality_report(
     check_results: dict[str, list[dict[str, Any]]],
     project_dir: Path | None,
+    *,
+    weights: dict[str, float] | None = None,
 ) -> Path | None:
     """Persist ``build/harness/quality_report.json``. Never raises -- a bug
     in report generation must not mask the real success/failure of a
@@ -218,7 +331,7 @@ def write_quality_report(
         return None
 
     try:
-        report = build_quality_report(check_results)
+        report = build_quality_report(check_results, weights=weights)
         path = Path(project_dir) / "build" / "harness" / "quality_report.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
