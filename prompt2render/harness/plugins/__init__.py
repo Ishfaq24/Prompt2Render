@@ -72,6 +72,7 @@ from .renderer_manim import (
     VerifierManimFinalQcPlugin,
 )
 from .feedback_hitl import FeedbackHitlPlugin
+from .verifier_hitl_approval import VerifierHitlApprovalPlugin
 from .repair_router import RepairRouterPlugin
 from .pipeline_downstream import (
     GeneratorVoicePlugin,
@@ -150,6 +151,11 @@ REGISTRY: dict[str, type] = {
     # Human feedback
     # ---------------------------------------------------------------
     "feedback_hitl": FeedbackHitlPlugin,
+    # Tier 4 (HUMAN_APPROVAL mode): disabled by default, toggled by
+    # --hitl-mode human_approval. See its own docstring for why its default
+    # gate is a deliberate exception to this migration's usual
+    # advisory-first posture.
+    "verifier_hitl_approval": VerifierHitlApprovalPlugin,
 
     # ---------------------------------------------------------------
     # Downstream production

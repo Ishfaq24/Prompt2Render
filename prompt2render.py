@@ -295,6 +295,23 @@ def cmd_harness(a):
         # "assemble runs *after* the harness", no longer applies).
         cfg.say("harness: running in experimental --manim mode")
 
+    # Tier 4: HITL extension -- three modes over the SAME hitl_feedback.json
+    # contract (SS18, "must be extended, not replaced"). AUTONOMOUS is
+    # today's unchanged behaviour (default): verifier_hitl_approval stays
+    # off, a hard GateFailure just exits. HUMAN_APPROVAL turns on the new
+    # publish-blocking approval gate. HUMAN_ON_FAILURE doesn't touch any
+    # plugin at all -- see the GateFailure handler below, where it drafts a
+    # review-needed file instead of just exiting.
+    hitl_mode = str(getattr(a, "hitl_mode", None) or "autonomous").strip().lower()
+
+    if hitl_mode not in ("autonomous", "human_on_failure", "human_approval"):
+        cfg.warn(f"unknown --hitl-mode {hitl_mode!r}; falling back to autonomous")
+        hitl_mode = "autonomous"
+
+    cfg_dict.setdefault("verifier_hitl_approval", {})["enabled"] = (
+        hitl_mode == "human_approval"
+    )
+
     plugins = build_plugins(config=cfg_dict)
     repair_router = build_repair_router(config=cfg_dict)
     
@@ -342,6 +359,25 @@ def cmd_harness(a):
             from_repair_records,
         )
         append_experience(ctx.project_dir, from_repair_records(ctx.repair_records))
+
+        # Tier 4, HUMAN_ON_FAILURE mode: draft hitl_review_needed.json from
+        # this exact failure's findings instead of leaving the human to
+        # hand-author reject entries from scratch by reading logs (today's
+        # only documented workflow, HITL_WORKFLOW.md). Never raises, and
+        # never touches hitl_feedback.json itself -- see harness/hitl.py's
+        # docstring for why a separate, inert draft file is the safe choice.
+        if hitl_mode == "human_on_failure":
+            from prompt2render.harness.hitl import write_review_draft
+
+            draft_path = write_review_draft(ctx.project_dir, e.findings)
+
+            if draft_path is not None:
+                cfg.say(
+                    f"HUMAN_ON_FAILURE: drafted {draft_path} -- review it, "
+                    "then edit/rename it to hitl_feedback.json (see "
+                    "HITL_WORKFLOW.md) and re-run."
+                )
+
         sys.exit(f"[prompt2render] harness hard gate failed: {e}")
     finally:
         if progress:
@@ -755,6 +791,14 @@ def main() -> None:
                         help="route the build through the new harness layer (evaluation & repair)")
         sp.add_argument("--manim", action="store_true",
                         help="experimental: use Manim to generate scenes instead of scenekit")
+        sp.add_argument("--hitl-mode", dest="hitl_mode",
+                        choices=["autonomous", "human_on_failure", "human_approval"],
+                        default="autonomous",
+                        help="Tier 4 HITL mode over the same hitl_feedback.json contract: "
+                             "autonomous (default, today's behaviour), human_on_failure "
+                             "(drafts hitl_review_needed.json on a hard gate failure instead "
+                             "of just exiting), human_approval (blocks generator_publish "
+                             "until every section has an explicit hitl_feedback.json accept)")
 
     bd = add("build", cmd_build, "voice -> align -> scenes -> ... -> check")
     bd.add_argument("slug")

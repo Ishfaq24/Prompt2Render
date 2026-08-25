@@ -19,6 +19,7 @@ def test_enabled_manim_renderer_still_waits_for_code_and_timeline_waits_for_audi
         # here otherwise (same trap as the Manim-family plugins above).
         "observer_visual": {"enabled": False},
         "verifier_motion": {"enabled": False},
+        "verifier_hitl_approval": {"enabled": False},
         "verifier_lifecycle": {"enabled": False},
         "verifier_audio": {"enabled": False},
         "feedback_hitl": {"enabled": False},

@@ -37,6 +37,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ... import hitl
 from ...context import CodeArtifact, RenderArtifact, SceneContext, VideoArtifact
 from ...motion import MOTION_OPS, find_storyboard_states
 from ...temporal_ir import compute_state_slots
@@ -59,32 +60,15 @@ def hitl_status_sets(project_dir: Path | None) -> tuple[set[str], set[str]]:
     file's mtime". Without an explicit lock, that kind of incidental
     trigger silently re-runs the (non-deterministic) LLM on a scene the
     user already approved, and it can come back worse.
+
+    Tier 4: a thin wrapper over ``harness.hitl.status_sets`` -- SS14 already
+    documented this and ``feedback_hitl`` as two independent parsers of the
+    same file; kept as a module-level function here (rather than deleted)
+    for the one external call site below and so this stays the module's own
+    established entry point.
     """
 
-    rejected: set[str] = set()
-    locked: set[str] = set()
-
-    try:
-        import json as _json
-
-        path = project_dir / "hitl_feedback.json" if project_dir else None
-
-        if path and path.exists():
-            data = _json.loads(path.read_text(encoding="utf-8") or "{}")
-
-            if isinstance(data, dict):
-                for stem, entry in data.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    status = entry.get("status")
-                    if status == "reject":
-                        rejected.add(str(stem))
-                    elif status == "accept":
-                        locked.add(str(stem))
-    except Exception:
-        return set(), set()
-
-    return rejected, locked
+    return hitl.status_sets(project_dir)
 
 
 # ---------------------------------------------------------------------------

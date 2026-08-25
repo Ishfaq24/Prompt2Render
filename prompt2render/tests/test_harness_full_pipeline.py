@@ -153,6 +153,11 @@ Test narration.
         "verifier_audio": {"enabled": False},
         "verifier_final_qc": {"enabled": True},
         "feedback_hitl": {"enabled": False},
+        # Tier 4: new REGISTRY entry, defaults enabled=True here (same
+        # from-scratch-dict trap as observer_visual/verifier_motion above)
+        # AND its own _default_gate() is True -- left enabled here it would
+        # hard-fail this test over a missing hitl_feedback.json accept.
+        "verifier_hitl_approval": {"enabled": False},
     }
     
     plugins = build_plugins(config=config)

@@ -184,6 +184,16 @@ feedback_hitl:
   enabled: true                   # manual/async — never blocks an automated run
   gate_override: false
 
+# Tier 4 (HUMAN_APPROVAL mode): disabled by default -- toggled on by
+# --hitl-mode human_approval (prompt2render.py's cmd_harness). Reuses
+# hitl_feedback.json's existing "accept" semantics (harness/hitl.py); no new
+# file, no new schema. gate_override left null so the plugin's own
+# _default_gate() (True -- deliberate exception, see its docstring) governs
+# whenever this mode is actually selected.
+verifier_hitl_approval:
+  enabled: false
+  gate_override: null
+
 generator_timeline:
   enabled: true
   gate_override: null
