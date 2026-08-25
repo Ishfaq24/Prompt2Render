@@ -17,6 +17,16 @@ Plugin execution has two failure classes:
 
 The runner owns orchestration and gate policy. Repair policy remains in
 ``repair_router`` and ``RoutingPolicy``.
+
+Tier 3 Phase 14 ("verifier-driven repair with regression detection") adds
+one more trigger source to the rewind loop below: ``regression.
+scene_fingerprints``/``changed_stems`` (see ``regression.py`` for the
+structural gap this closes and an honest note on why it is a forward-looking
+safety net today rather than a fix for a currently-live bug). Purely
+additive: it only ever widens ``trigger``, never narrows it, so it cannot
+change any existing gate/rewind decision by itself -- it can only cause
+*more* re-verification to happen in a case that would otherwise silently
+skip it.
 """
 
 from __future__ import annotations
@@ -24,6 +34,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from . import regression
 from .context import HistoryEntry, SceneContext, snapshot
 from .events import EventBus
 from .logging_ import (
@@ -120,6 +131,7 @@ class HarnessRunner:
 
             before_repair_stems = set(ctx.repair_context.keys())
             before_render_keys = set(ctx.render_artifacts.keys())
+            before_fingerprints = regression.scene_fingerprints(ctx)
 
             ctx = self._run_one(
                 plugin,
@@ -153,6 +165,31 @@ class HarnessRunner:
                 or not getattr(ctx.render_artifacts.get(s, None), "manifest", None)
             }
             trigger = new_repairs | stale_renders | missing_renders
+
+            # Tier 3 Phase 14: a repair routed to a plugin without
+            # regenerate_one/revert_scene degrades to a full target.run(ctx)
+            # (SS15 implicit contract #2), which can silently rewrite an
+            # unrelated stem's authored content without touching
+            # repair_context/render_artifacts at all -- the three triggers
+            # above would never see it. Detect that directly and widen
+            # trigger; this can only add stems, never remove any of the
+            # above.
+            after_fingerprints = regression.scene_fingerprints(ctx)
+            silently_changed = regression.changed_stems(
+                before_fingerprints, after_fingerprints
+            )
+            regression_detected = silently_changed - trigger
+
+            if regression_detected:
+                self.logger.info(
+                    f"Regression detected at {plugin.name}: repair "
+                    f"silently changed {sorted(regression_detected)} "
+                    "without registering them via repair_context/"
+                    "render_artifacts -- widening rewind scope to "
+                    "re-verify them too."
+                )
+
+            trigger = trigger | regression_detected
 
             if trigger:
                 # Rewind to the earliest *consumer* of code/render artifacts
