@@ -393,6 +393,24 @@ DOCUMENT → CHECKPOINT.
 - **Tier 2 (Phases 4-9)** — motion compiler (re-wire F1 **behind a config flag, default off**);
   TemporalIR; Manim-as-compiler; pattern RAG (replacing F14); renderer capability profiles +
   router + hybrid, which must also resolve F12 and F13.
+  - **Phase 4** (motion compiler re-wire, config flag default off) — **Done.**
+    `GeneratorManimPlugin` (`harness/plugins/renderer_manim/__init__.py`) gained
+    `use_motion_compiler` (config key, default `False`): off, `_generate_one` is byte-for-byte
+    unchanged (freehand `_build_prompt`); on, it uses `_build_setup_prompt` (LLM authors object
+    construction only) and deterministically compiles `construct()` via the F1 compiler that's
+    existed complete-but-disconnected since commit `e30043e`. New adapter
+    `_states_from_semantic_ir` feeds the compiler from `context.semantic_ir` (Phase 3's
+    phase-tagged, potentially-enriched beats, flattened CONTEXT→ANTICIPATION→ACTION→
+    CONSEQUENCE), falling back to the older `storyboard_plan`-based lookup when semantic_ir is
+    unavailable — this is what actually delivers Phase 3's enrichment into compiled
+    choreography rather than leaving it unconsumed. `_render_motion_op`/`_NATURAL_DURATION`
+    extended for Phase 3's 5 new ops, which the compiler would otherwise crash on. The flag is
+    reachable via `config.yaml`'s new `generator_manim` block; previously `prompt2render.py`'s
+    `--manim` hot-swap constructed `GeneratorManimPlugin()` with no config at all, so this
+    required a one-line fix there too. Scope stays inside the already-experimental `--manim`
+    path — `generator_manim` is still unregistered in `REGISTRY` (F13) and hot-swapped in after
+    DAG resolution; fixing that and making Manim shippable-by-default (F12) is Phase 8-9's job,
+    untouched here. Stills pipeline (the shippable default) unaffected either way.
 - **Tier 3 (Phases 10-15)** — unified multi-verifier; **closed-loop visual grounding** (F3,
   deterministic CV first, VLM only for semantic judgments); motion traces; reproducible weighted
   quality scoring; verifier-driven repair with regression detection; experience memory.

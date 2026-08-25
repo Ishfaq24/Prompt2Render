@@ -69,6 +69,15 @@ generator_code:
   enabled: true            # real: wraps scenes.generate_all
   gate_override: null
 
+# generator_manim has no REGISTRY entry (F13, unfixed -- Tier 2 Phase 8-9's
+# job) -- it's hot-swapped in for generator_code by prompt2render.py's
+# --manim flag, which passes this block through. enabled/gate_override here
+# would go unread; only plugin-specific keys matter.
+generator_manim:
+  use_motion_compiler: false   # Tier 2 Phase 4: opt in to the deterministic
+                                # motion compiler instead of freehand LLM
+                                # choreography. Default off.
+
 verifier_semantic:
   enabled: true              # real: LLM pedagogical critic for domain logic (e.g. Hanoi rules)
   gate_override: true

@@ -557,6 +557,79 @@ def _storyboard_states_for(
     return find_storyboard_states(context, stem, index=index)
 
 
+#: CONTEXT->ANTICIPATION->ACTION->CONSEQUENCE ordering for flattening a
+#: SemanticStateIR's beats into a flat motion-op list, regardless of the
+#: order the LLM happened to list them in its response.
+_PHASE_ORDER = {"CONTEXT": 0, "ANTICIPATION": 1, "ACTION": 2, "CONSEQUENCE": 3}
+
+
+def _states_from_semantic_ir(
+    context: SceneContext,
+    stem: str,
+) -> list[dict[str, Any]] | None:
+    """Adapt Phase 3's ``SemanticAnimationIR`` into the flat state-dict shape
+    ``_build_setup_prompt``/``_compile_construct_method`` already expect, so
+    the compiler consumes the phase-tagged, potentially LLM-enriched beats
+    instead of the flatter pre-Tier-1 storyboard motion list -- this is what
+    actually delivers Phase 3's enrichment into rendered choreography rather
+    than leaving it unconsumed.
+
+    A ``hold=True`` state needs no special case: its empty beats list already
+    produces an empty motion list, which ``_compile_construct_method``
+    already treats as "fold this state's whole time budget into
+    ``self.wait()``".
+
+    Returns ``None`` (never raises) when either IR is missing or has no
+    matching section/state for this stem -- the caller falls back to
+    ``_storyboard_states_for``, keeping this experimental path resilient
+    rather than adding a new hard-failure mode.
+    """
+
+    animation_ir = context.animation_ir
+    semantic_ir = context.semantic_ir
+
+    if animation_ir is None or semantic_ir is None:
+        return None
+
+    source_section = next(
+        (s for s in animation_ir.sections if s.stem == stem), None
+    )
+    semantic_section = next(
+        (s for s in semantic_ir.sections if s.stem == stem), None
+    )
+
+    if source_section is None or semantic_section is None:
+        return None
+
+    source_state_by_name = {s.name: s for s in source_section.states}
+    states: list[dict[str, Any]] = []
+
+    for sem_state in semantic_section.states:
+        source_state = source_state_by_name.get(sem_state.name)
+
+        if source_state is None:
+            return None
+
+        ordered_beats = sorted(
+            sem_state.beats,
+            key=lambda b: _PHASE_ORDER.get(b.phase, len(_PHASE_ORDER)),
+        )
+
+        states.append(
+            {
+                "name": sem_state.name,
+                "cue": sem_state.cue,
+                "visual": source_state.visual,
+                "transition": source_state.transition,
+                "motion": [
+                    {"op": beat.op.op, **beat.op.params} for beat in ordered_beats
+                ],
+            }
+        )
+
+    return states
+
+
 def _state_cue_timings(
     states: list[dict[str, Any]],
     sentences: list[dict[str, float]] | None,
@@ -630,6 +703,12 @@ _NATURAL_DURATION = {
     "Transform": 1.1,
     "MoveTo": 0.9,
     "Highlight": 0.8,
+    # Phase 3 (docs/ARCHITECTURE_AUDIT.md SS17) ops.
+    "NextTo": 0.9,
+    "Circumscribe": 0.8,
+    "GrowArrow": 1.0,
+    "Uncreate": 1.2,
+    "Rotate": 1.0,
 }
 _DEFAULT_NATURAL_DURATION = 1.2
 
@@ -667,6 +746,23 @@ def _render_motion_op(op_name: str, op: dict[str, Any]) -> str:
 
     if op_name == "Highlight":
         return f"Indicate(self.{target})"
+
+    if op_name == "NextTo":
+        return f"self.{target}.animate.next_to(self.{op.get('anchor')})"
+
+    if op_name == "Circumscribe":
+        return f"Circumscribe(self.{target})"
+
+    if op_name == "GrowArrow":
+        return f"GrowArrow(self.{target})"
+
+    if op_name == "Uncreate":
+        return f"Uncreate(self.{target})"
+
+    if op_name == "Rotate":
+        # Angle is never authored in the motion vocabulary (see motion.py) --
+        # a quarter turn is a safe, generic "show the other side" default.
+        return f"Rotate(self.{target}, angle=PI/2)"
 
     raise ValueError(f"unknown motion op {op_name!r}")
 
@@ -1265,6 +1361,14 @@ class GeneratorManimPlugin(Plugin):
         return [
             "scene_plan",
             "narration",
+            # Documents the real data dependency now that the (opt-in)
+            # motion-compiler path can consume animation_ir/semantic_ir.
+            # Note: generator_manim is hot-swapped in for generator_code
+            # AFTER DAG resolution (F13, unfixed -- Tier 2 Phase 8-9's job),
+            # so this has no effect on today's actual ordering; it's
+            # accurate documentation, not yet a functional guarantee.
+            "animation_ir",
+            "semantic_ir",
         ]
 
     def declare_effects(self) -> list[str]:
@@ -1915,13 +2019,35 @@ STATES:
             )
         )
 
-        prompt = self._build_prompt(
-            section,
-            timing_table,
-            duration,
-            extra_feedback,
-            sentences,
+        use_compiler = bool(
+            self.config.get(
+                "use_motion_compiler",
+                False,
+            )
         )
+
+        states: list[dict[str, Any]] = []
+
+        if use_compiler:
+            states = (
+                _states_from_semantic_ir(context, stem)
+                or _storyboard_states_for(context, stem, index=section.index)
+                or []
+            )
+            prompt = self._build_setup_prompt(
+                section,
+                states,
+                duration,
+                extra_feedback,
+            )
+        else:
+            prompt = self._build_prompt(
+                section,
+                timing_table,
+                duration,
+                extra_feedback,
+                sentences,
+            )
 
         try:
             code = self._generate_code(
@@ -1936,6 +2062,21 @@ STATES:
                 raise RuntimeError(
                     "LLM returned empty Manim code."
                 )
+
+            if use_compiler:
+                try:
+                    timings = _state_cue_timings(states, sentences, duration)
+                    construct_src = _compile_construct_method(
+                        states,
+                        timings,
+                        setup_source=code,
+                    )
+                    code = _splice_construct_method(code, construct_src)
+                except (SyntaxError, ValueError) as exc:
+                    cfg.warn(
+                        f"section {stem}: motion compiler failed, falling "
+                        f"back to setup-only code: {exc}"
+                    )
 
             # Write only after successful generation and normalization.
             py_file.write_text(

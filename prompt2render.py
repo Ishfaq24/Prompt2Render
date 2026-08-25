@@ -272,8 +272,13 @@ def cmd_harness(a):
     # Hot-swap plugins if --manim is requested
     if getattr(a, "manim", False):
         from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, RendererManimPlugin
-        # Replace generator_code with generator_manim
-        plugins = [GeneratorManimPlugin() if p.name == "generator_code" else p for p in plugins]
+        # Replace generator_code with generator_manim. Pass its config.yaml
+        # block through (e.g. use_motion_compiler) -- a bare GeneratorManimPlugin()
+        # would silently ignore any config for it.
+        plugins = [
+            GeneratorManimPlugin(cfg_dict.get("generator_manim", {})) if p.name == "generator_code" else p
+            for p in plugins
+        ]
         # Keep an already-enabled renderer_manim, or replace renderer_stills
         # when an older configuration supplied only the still renderer.
         new_plugins = []

@@ -9,12 +9,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from prompt2render.harness.animation_ir import from_storyboard_plan
 from prompt2render.harness.context import SceneContext
 from prompt2render.harness.plugins.renderer_manim import (
     _compile_construct_method,
     _state_cue_timings,
+    _states_from_semantic_ir,
     _storyboard_states_for,
 )
+from prompt2render.harness.semantic_plan import annotate
 
 
 # ------------------------------------------------------------------ _state_cue_timings --
@@ -480,3 +483,130 @@ def test_compile_construct_multiple_states_in_cue_order():
     source = _compile_construct_method(states, timings)
     assert source.index("self._state_a()") < source.index("self._state_b()")
     assert source.index("Create(self.x)") < source.index("FadeOut(self.x)")
+
+
+# ---------------------------------- Tier 2 Phase 4: new Phase-3 ops render --
+
+def test_next_to_compiles_to_relative_positioning():
+    states = [{"name": "a", "motion": [{"op": "NextTo", "target": "b", "anchor": "a"}]}]
+    timings = [{"run_time": 1.0, "wait": 0.0}]
+    source = _compile_construct_method(states, timings)
+    assert "self.b.animate.next_to(self.a)" in source
+
+
+def test_circumscribe_grow_arrow_uncreate_rotate_all_compile():
+    states = [{
+        "name": "a",
+        "motion": [
+            {"op": "Circumscribe", "target": "x"},
+            {"op": "GrowArrow", "target": "v"},
+            {"op": "Uncreate", "target": "old"},
+            {"op": "Rotate", "target": "sq"},
+        ],
+    }]
+    timings = [{"run_time": 2.0, "wait": 0.0}]
+    source = _compile_construct_method(states, timings)
+    assert "Circumscribe(self.x)" in source
+    assert "GrowArrow(self.v)" in source
+    assert "Uncreate(self.old)" in source
+    assert "Rotate(self.sq, angle=PI/2)" in source
+
+
+# ------------------------------------------------ _states_from_semantic_ir --
+
+def _ir_pair():
+    plan = {
+        "version": "2.0",
+        "prompt_sha256": "deadbeef",
+        "sections": [
+            {
+                "index": 1,
+                "stem": "01",
+                "title": "Intro",
+                "states": [
+                    {
+                        "name": "introduce",
+                        "cue": 0,
+                        "visual": "Show a circle.",
+                        "transition": "progressive reveal",
+                        "values": [],
+                        "motion": [{"op": "Create", "target": "circle"}],
+                    },
+                    {
+                        "name": "pause",
+                        "cue": 1,
+                        "visual": "Let it sit.",
+                        "transition": "hold",
+                        "values": [],
+                        "motion": [],
+                    },
+                ],
+            }
+        ],
+    }
+    animation_ir = from_storyboard_plan(plan)
+    raw = {
+        "sections": [
+            {
+                "index": 1,
+                "states": [
+                    {
+                        "name": "introduce",
+                        "hold": False,
+                        "beats": [
+                            {"phase": "ANTICIPATION", "op": "Circumscribe", "target": "circle"},
+                            {"phase": "ACTION", "op": "Create", "target": "circle"},
+                        ],
+                    },
+                    {"name": "pause", "hold": True, "beats": []},
+                ],
+            }
+        ]
+    }
+    semantic_ir = annotate(animation_ir, raw)
+    return animation_ir, semantic_ir
+
+
+def test_states_from_semantic_ir_flattens_beats_in_phase_order():
+    animation_ir, semantic_ir = _ir_pair()
+    ctx = SceneContext(animation_ir=animation_ir, semantic_ir=semantic_ir)
+
+    states = _states_from_semantic_ir(ctx, "01")
+
+    assert states is not None
+    introduce = states[0]
+    assert introduce["visual"] == "Show a circle."
+    assert introduce["transition"] == "progressive reveal"
+    # ANTICIPATION (Circumscribe) must precede ACTION (Create), even though
+    # the raw response above already listed them in that order -- the
+    # adapter sorts by phase regardless of response order.
+    ops = [op["op"] for op in introduce["motion"]]
+    assert ops == ["Circumscribe", "Create"]
+
+
+def test_states_from_semantic_ir_hold_state_has_empty_motion():
+    animation_ir, semantic_ir = _ir_pair()
+    ctx = SceneContext(animation_ir=animation_ir, semantic_ir=semantic_ir)
+
+    states = _states_from_semantic_ir(ctx, "01")
+
+    assert states[1]["name"] == "pause"
+    assert states[1]["motion"] == []
+
+
+def test_states_from_semantic_ir_returns_none_without_semantic_ir():
+    animation_ir, _ = _ir_pair()
+    ctx = SceneContext(animation_ir=animation_ir, semantic_ir=None)
+    assert _states_from_semantic_ir(ctx, "01") is None
+
+
+def test_states_from_semantic_ir_returns_none_without_animation_ir():
+    _, semantic_ir = _ir_pair()
+    ctx = SceneContext(animation_ir=None, semantic_ir=semantic_ir)
+    assert _states_from_semantic_ir(ctx, "01") is None
+
+
+def test_states_from_semantic_ir_returns_none_for_unmatched_stem():
+    animation_ir, semantic_ir = _ir_pair()
+    ctx = SceneContext(animation_ir=animation_ir, semantic_ir=semantic_ir)
+    assert _states_from_semantic_ir(ctx, "99") is None
