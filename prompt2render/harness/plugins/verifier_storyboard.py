@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ..context import SceneContext
+from ..motion import validate_motion_ops
 from ..plugin import Plugin
 from ... import align
 
@@ -58,6 +59,11 @@ class VerifierStoryboardPlugin(Plugin):
                                        "category": "STORYBOARD", "severity": "BLOCKING",
                                        "stem": entry.stem,
                                        "detail": f"state {position} is missing {key}"})
+                for message in validate_motion_ops(state.get("motion")):
+                    issues.append({"status": "fail", "finding_type": "storyboard_failure",
+                                   "category": "STORYBOARD", "severity": "BLOCKING",
+                                   "stem": entry.stem,
+                                   "detail": f"state {position} motion error: {message}"})
         has_blocking = any(
             isinstance(item, dict)
             and str(item.get("status", "")).lower() == "fail"

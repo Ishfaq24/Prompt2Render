@@ -75,7 +75,11 @@ def _fits(
         max_line,
         max_lines,
     )
-    return len(lines) <= max_lines
+    # caption_lines() returns a list of CARDS, each already capped at
+    # `max_lines` lines -- fitting in a single card means exactly one such
+    # group is needed, not `<= max_lines` groups (which would let up to
+    # max_lines**2 lines of text into what should be one caption card).
+    return len(lines) <= 1
 
 
 def _cards(
@@ -101,9 +105,13 @@ def _cards(
         for a, b in zip(words, words[1:])
     ]
 
-    typical = statistics.median(
-        [gap for gap in gaps if gap > 0.0] or [0.0]
-    )
+    # Median over ALL gaps, not just positive ones: when a single real pause
+    # dominates an otherwise back-to-back stream, filtering to positive-only
+    # gaps made that one pause its own baseline (median of a 1-element list
+    # equals itself), so it could never clear a "1.5x typical" threshold
+    # relative to itself. Including the zeros keeps the baseline near zero
+    # in that case, letting a genuine outlier pause register as one.
+    typical = statistics.median(gaps) if gaps else 0.0
 
     cards: list[list[dict]] = []
     start = 0
@@ -205,6 +213,15 @@ def _constrain(cards: list[dict]) -> list[dict]:
         end = max(
             end,
             start + desired,
+        )
+
+        # `desired` only ever pulls a too-short card up to the maximum; a
+        # card whose given `end` already exceeds the maximum (e.g. an
+        # outlier alignment timestamp) was never actually pulled back down
+        # by the max() above. Clamp explicitly.
+        end = min(
+            end,
+            start + float(cfg.CAPTION_MAX_S),
         )
 
         normalized.append(

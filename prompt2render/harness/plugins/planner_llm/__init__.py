@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from ...context import SceneContext
+from ...motion import MOTION_OPS, validate_motion_ops
 from ...plugin import Plugin
 from .... import cfg, llm
 
@@ -196,6 +197,7 @@ def _fallback(entry: Any) -> dict[str, Any]:
 
     return {
         "index": entry.index,
+        "stem": entry.stem,
         "title": entry.title,
         "claim": claim,
         "states": [
@@ -205,6 +207,7 @@ def _fallback(entry: Any) -> dict[str, Any]:
                 "visual": entry.anim or "Introduce the concept.",
                 "values": [],
                 "transition": "progressive reveal",
+                "motion": [],
             },
             {
                 "name": "explain",
@@ -212,6 +215,7 @@ def _fallback(entry: Any) -> dict[str, Any]:
                 "visual": entry.anim or "Explain the concept.",
                 "values": [],
                 "transition": "preserve established state",
+                "motion": [],
             },
         ],
         "source": "deterministic-fallback",
@@ -221,6 +225,23 @@ def _fallback(entry: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+def _normalise_motion(raw: Any) -> list[dict[str, Any]]:
+    """Coerce a state's motion-op list into a safe, typed shape.
+
+    Deliberately does NOT drop or repair unrecognised ops / missing required
+    keys — that would hide the exact kind of LLM mistake this field exists to
+    catch. Normalisation only guarantees every entry is a dict so
+    ``_validate_sections`` (via ``validate_motion_ops``) can inspect it
+    freely; deciding whether an op name or missing key is an error is
+    validation's job, not normalisation's.
+    """
+
+    if not isinstance(raw, list):
+        return []
+
+    return [item if isinstance(item, dict) else {} for item in raw]
+
 
 def _normalise_state(
     state: Any,
@@ -257,6 +278,10 @@ def _normalise_state(
         "transition": str(
             state.get("transition")
             or "progressive reveal"
+        ),
+
+        "motion": _normalise_motion(
+            state.get("motion")
         ),
     }
 
@@ -400,6 +425,11 @@ def _validate_sections(
                     "values must be a list."
                 )
 
+            for message in validate_motion_ops(state.get("motion")):
+                errors.append(
+                    f"Section {index}, state {state_no}: {message}"
+                )
+
     return errors
 
 
@@ -456,6 +486,22 @@ For EVERY section:
 10. Follow the existing animation brief as a hard constraint.
 11. Avoid visual decoration that does not teach something.
 12. Prefer progressive construction over simultaneous presentation.
+13. `motion` lists which fixed motion operations apply to which named
+    objects for this state. Every operation's `op` MUST be one of:
+    {", ".join(sorted(MOTION_OPS))}. Every operation MUST include all of its
+    required keys: {"; ".join(f"{op} needs {sorted(keys)}" for op, keys in sorted(MOTION_OPS.items()))}.
+    Object names in `target`/`into`/`anchor` must be short, stable Python
+    identifiers (e.g. "circle", "digits_text") that name a `self.<name>`
+    attribute the scene code will define for this state — they are
+    implementation detail, not narration. NEVER include a duration,
+    timestamp, or numeric timing value anywhere in `motion` — timing is
+    computed separately from the narration timing, not decided here. A
+    state that introduces or changes nothing on screen may have an empty
+    `motion` list.
+14. If this state's `transition` replaces or removes something the
+    previous state put on screen, include the matching `FadeOut`/
+    `Transform` operation in `motion` for that object — do not just
+    describe the removal in prose and leave it out of `motion`.
 
 IMPORTANT:
 
@@ -479,7 +525,10 @@ Schema:
           "cue": 0,
           "visual": "...",
           "values": [],
-          "transition": "..."
+          "transition": "...",
+          "motion": [
+            {{"op": "Create", "target": "circle"}}
+          ]
         }}
       ]
     }}
@@ -945,6 +994,12 @@ Preserve:
 
 Fix only the reported problem.
 
+Every state's `motion` list must use only these ops, each with all of its
+required keys: {"; ".join(f"{op} needs {sorted(keys)}" for op, keys in sorted(MOTION_OPS.items()))}.
+`target`/`into`/`anchor` values must be short, stable Python identifiers
+naming a `self.<name>` attribute the scene code defines — never a duration
+or timestamp.
+
 Return ONLY JSON.
 
 {{
@@ -957,7 +1012,10 @@ Return ONLY JSON.
       "cue": 0,
       "visual": "...",
       "values": [],
-      "transition": "..."
+      "transition": "...",
+      "motion": [
+        {{"op": "Create", "target": "circle"}}
+      ]
     }}
   ]
 }}

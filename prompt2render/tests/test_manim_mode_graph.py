@@ -1,10 +1,15 @@
 from prompt2render.harness.loader import build_plugins
-from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, RendererManimPlugin
+from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin
 
 
 def test_manim_graph_has_one_renderer_and_no_still_downstream():
     cfg = {
         "renderer_manim": {"enabled": True},
+        # renderer_stills and renderer_manim both declare the render_artifacts
+        # effect, so exactly one may be enabled -- this mirrors what the real
+        # CLI's --manim flag does (see prompt2render.py's cfg_dict.setdefault
+        # calls for renderer_stills/renderer_manim).
+        "renderer_stills": {"enabled": False},
         "generator_timeline": {"enabled": True},
         "renderer_encode": {"enabled": True},
         "renderer_finish": {"enabled": True},
@@ -13,20 +18,19 @@ def test_manim_graph_has_one_renderer_and_no_still_downstream():
         "generator_publish": {"enabled": True},
     }
     plugins = build_plugins(config=cfg)
+    # generator_manim has no registry entry of its own (it's an alternative
+    # implementation swapped in for generator_code, same as the CLI does);
+    # renderer_manim, unlike the old diagnosis-log-era code, is already its
+    # own correctly-built registry entry and needs no post-hoc replacement.
     plugins = [GeneratorManimPlugin() if p.name == "generator_code" else p for p in plugins]
-    new_plugins = []
-    for p in plugins:
-        if p.name == "renderer_stills":
-            new_plugins.append(RendererManimPlugin({"enabled": True, "gate_override": True}))
-        elif p.name != "renderer_manim":
-            new_plugins.append(p)
     incompatible = {
         "generator_timeline", "renderer_encode", "renderer_finish",
         "verifier_audio", "verifier_final_qc", "generator_publish",
     }
-    plugins = [p for p in new_plugins if p.name not in incompatible]
+    plugins = [p for p in plugins if p.name not in incompatible]
     names = [p.name for p in plugins]
     assert names.count("renderer_manim") == 1
+    assert "renderer_stills" not in names
     assert "generator_manim" in names
     assert not incompatible.intersection(names)
     assert names.index("generator_manim") < names.index("renderer_manim")

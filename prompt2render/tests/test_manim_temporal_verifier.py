@@ -32,8 +32,11 @@ def test_verifier_temporal_detects_mismatch(tmp_path):
             assert len(findings) == 1
             assert findings[0]["status"] == "fail"
             assert findings[0]["finding_type"] == "temporal_mismatch"
-            assert "requires exactly 10.0 seconds" in findings[0]["detail"]
-            assert "runs for 8.0 seconds" in findings[0]["detail"]
+            # Message wording was made more actionable (mentions adjusting
+            # self.play/self.wait) since this assertion was first written;
+            # check the numbers it must still report, not the exact phrasing.
+            assert "10.00s" in findings[0]["detail"]
+            assert "8.00s" in findings[0]["detail"]
 
 def test_verifier_temporal_passes_match(tmp_path):
     from prompt2render.harness.plugins.verifier_temporal import VerifierTemporalPlugin

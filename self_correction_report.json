@@ -1,15 +1,8 @@
 {
   "project": "unknown",
   "final_pass": false,
-  "iterations": 4,
+  "iterations": 5,
   "detected_issues": [
-    {
-      "status": "pass",
-      "finding_type": "stage_success",
-      "category": "TECHNICAL",
-      "severity": "INFO",
-      "detail": "stage completed successfully"
-    },
     {
       "status": "fail",
       "finding_type": "spatial_conflict",
@@ -27,11 +20,11 @@
         "generator_code"
       ],
       "diagnostic_message": "collision at (1,2)",
-      "pre_repair_context_hash": "1256bf745659a161",
-      "post_repair_context_hash": "60b83c8a347fac56",
-      "outcome": "unresolved",
+      "pre_repair_context_hash": "97ef275ddd6ebdd1",
+      "post_repair_context_hash": "cdddac3c02bace72",
+      "outcome": "attempted",
       "cycles_used": 1,
-      "timestamp": "2026-08-24T02:58:47Z"
+      "timestamp": "2026-08-24T23:28:13Z"
     },
     {
       "cycle_id": 2,
@@ -42,11 +35,11 @@
         "generator_code"
       ],
       "diagnostic_message": "collision at (1,2)",
-      "pre_repair_context_hash": "7a4b152a86732087",
-      "post_repair_context_hash": "de27ab3cfbc464b2",
-      "outcome": "unresolved",
+      "pre_repair_context_hash": "5b1126335f6e2adb",
+      "post_repair_context_hash": "6e1bb11018ce5a55",
+      "outcome": "attempted",
       "cycles_used": 2,
-      "timestamp": "2026-08-24T02:58:47Z"
+      "timestamp": "2026-08-24T23:28:13Z"
     },
     {
       "cycle_id": 3,
@@ -57,23 +50,14 @@
         "generator_code"
       ],
       "diagnostic_message": "collision at (1,2)",
-      "pre_repair_context_hash": "4ed743b7e06b5a16",
-      "post_repair_context_hash": "4ed743b7e06b5a16",
+      "pre_repair_context_hash": "d53ece79e1985313",
+      "post_repair_context_hash": "d53ece79e1985313",
       "outcome": "gave_up",
       "cycles_used": 2,
-      "timestamp": "2026-08-24T02:58:47Z"
+      "timestamp": "2026-08-24T23:28:13Z"
     }
   ],
   "verification_results": {
-    "generator_code": [
-      {
-        "status": "pass",
-        "finding_type": "stage_success",
-        "category": "TECHNICAL",
-        "severity": "INFO",
-        "detail": "stage completed successfully"
-      }
-    ],
     "dummy_verifier": [
       {
         "status": "fail",
@@ -84,6 +68,6 @@
     ]
   },
   "findings_by_category": {
-    "TECHNICAL": 2
+    "TECHNICAL": 1
   }
 }

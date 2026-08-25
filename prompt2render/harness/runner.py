@@ -250,6 +250,17 @@ class HarnessRunner:
     ) -> SceneContext:
         """Execute, optionally repair, and re-verify one plugin."""
 
+        # Stems already present in repair_context before this plugin does
+        # anything. Used as a fallback in _clear_verified_repair_context
+        # when a successful result carries no stem info at all: any stem
+        # that appeared in repair_context ONLY during this invocation was
+        # necessarily added by this same plugin's own failure (see below),
+        # so a since-confirmed clean re-verification can safely clear it —
+        # without guessing about unrelated stems that were already pending.
+        repair_keys_before_run = set(
+            ctx.repair_context.keys()
+        )
+
         snap = snapshot(
             ctx
         )
@@ -608,6 +619,7 @@ class HarnessRunner:
             self._clear_verified_repair_context(
                 ctx,
                 plugin,
+                repair_keys_before_run,
             )
 
         ctx.history.append(
@@ -684,6 +696,7 @@ class HarnessRunner:
     def _clear_verified_repair_context(
         ctx: SceneContext,
         plugin: Plugin,
+        repair_keys_before_run: set[str],
     ) -> None:
         """Clear repair context only for scenes actually verified successfully.
 
@@ -713,8 +726,18 @@ class HarnessRunner:
                     str(stem)
                 )
 
-        # If the verifier's successful result contains no scene information,
-        # do not guess that every repair is now safe to clear.
+        if not affected:
+            # The verifier's successful result carries no scene information
+            # at all (a global/aggregate pass, e.g. verifier_storyboard's
+            # all-clean case) — do not guess that every OTHER pending repair
+            # is now safe to clear. But any stem that appeared in
+            # repair_context only DURING this plugin's own run necessarily
+            # came from this same plugin's own earlier failure in this
+            # invocation (see repair_keys_before_run in _run_one), so a
+            # since-confirmed clean re-verification can safely clear those
+            # specific entries without touching unrelated pending repairs.
+            affected = set(ctx.repair_context.keys()) - repair_keys_before_run
+
         if not affected:
             return
 

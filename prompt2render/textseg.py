@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from . import abbrev
+
 # --------------------------------------------------------------- sentences --
 
 #: Abbreviations whose trailing dot never ends a sentence. Kept lowercase and
@@ -201,15 +203,17 @@ _SYMBOLS = {
 }
 
 #: Spelled out the way an ASR transcribes them, which is not always the way
-#: they are written. Extend this table when alignment confidence drops.
+#: they are written. Derived from abbrev.ABBREVIATIONS (the same table
+#: mathspeech.speech_text() uses for actual synthesis) so alignment/
+#: caption-drift QC agrees with what Kokoro was actually told to say. A few
+#: entries below are local to alignment/QC text and never reach synthesis, so
+#: they are layered on top rather than pushed into the shared table.
 _LEXICON = {
+    **abbrev.alignment_lexicon(),
     "o(log": "oh log", "o(n": "oh n", "o(1)": "oh one",
-    "ok": "okay", "vs": "versus", "etc": "etcetera",
-    "e.g": "for example", "i.e": "that is",
-    "dr": "doctor", "mr": "mister", "mrs": "missus", "prof": "professor",
-    "lufs": "l u f s", "srt": "s r t", "api": "a p i", "cpu": "c p u",
-    "gpu": "g p u", "ram": "ram", "url": "u r l", "html": "h t m l",
-    "ffmpeg": "f f m peg", "tts": "t t s", "asr": "a s r",
+    "ok": "okay",
+    "lufs": "l u f s", "srt": "s r t",
+    "ffmpeg": "f f m peg",
 }
 
 _ORDINAL_RE = re.compile(r"^(\d+)(st|nd|rd|th)$")

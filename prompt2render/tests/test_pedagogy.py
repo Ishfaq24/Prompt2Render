@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from prompt2render.pedagogy import deterministic_review
-from prompt2render.project import parse_script
+from prompt2render.project import Script, Section, parse_script
 
 
 def _script(tmp_path: Path, body: str):
@@ -17,8 +17,16 @@ def test_pedagogy_accepts_complete_section(tmp_path):
     assert result["profile"] in {"standard", "deep"}
 
 
-def test_pedagogy_rejects_missing_narration_and_animation(tmp_path):
-    script = _script(tmp_path, "## 1 - Idea\n> ANIM:\n\n")
+def test_pedagogy_rejects_missing_narration_and_animation():
+    # Built directly rather than via parse_script(): project.py's own
+    # parse-time validation now hard-rejects (SystemExit) a section with an
+    # empty ANIM brief before deterministic_review ever sees it, so this
+    # exercises deterministic_review's narration/animation checks as a unit,
+    # independent of that separate, stricter parse-time gate.
+    script = Script(
+        meta={"title": "Sorting", "audience": "undergraduate computer science"},
+        sections=[Section(index=1, title="Idea", anim="", narration="")],
+    )
     result = deterministic_review(script)
     assert result["pass"] is False
     categories = {issue["category"] for issue in result["issues"]}

@@ -31,12 +31,14 @@ scene is accepted.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from ...context import CodeArtifact, RenderArtifact, SceneContext
+from ...motion import MOTION_OPS, find_storyboard_states
 from ...plugin import Plugin
 from ..verifier_execution import check_scene_artifact
 from ....project import parse_script
@@ -532,6 +534,424 @@ def _load_timing(
         "(No timing data available)",
         [],
     )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic motion compiler (Phase 2)
+#
+# GeneratorManimPlugin's LLM call authors object construction/placement
+# only (one `_state_<name>(self)` method per storyboard state). The actual
+# `construct()` choreography — self.play/self.wait sequencing and timing —
+# is compiled deterministically from the storyboard's `motion` list here,
+# instead of being free-hand authored by the LLM. This removes the LLM as a
+# source of overlap/timing bugs for choreography, though it does not govern
+# the LLM's *initial* placement of new mobjects inside each state's own
+# setup method (see renderer_manim's REFERENCE PATTERN prompt guidance for
+# that half of the problem).
+# ---------------------------------------------------------------------------
+
+def _storyboard_states_for(
+    context: SceneContext,
+    stem: str,
+    index: int | None = None,
+) -> list[dict[str, Any]] | None:
+    """One section's ``states`` list, looked up by stem with index fallback."""
+
+    return find_storyboard_states(context, stem, index=index)
+
+
+def _state_cue_timings(
+    states: list[dict[str, Any]],
+    sentences: list[dict[str, float]] | None,
+    duration: float,
+) -> list[dict[str, float]]:
+    """Split narration time into a run_time/wait budget per state.
+
+    Each state's ``cue`` resolves to a narration start timestamp. States are
+    partitioned into consecutive slots bounded by the next state's start,
+    with the final slot's boundary telescoping to the TRUE narration end
+    (``sentences[-1]["end"]``) rather than ``duration`` — ``duration`` (as
+    computed by ``_load_timing``) is sum(sentence durations), which excludes
+    inter-sentence silence gaps and would otherwise silently truncate the
+    final state's slot by the sum of every such gap in the section.
+    """
+
+    if not states:
+        return []
+
+    if sentences:
+        true_end = float(sentences[-1].get("end", duration))
+    else:
+        true_end = float(duration)
+
+    def _cue_start(cue: Any) -> float:
+        if not sentences:
+            return 0.0
+        try:
+            idx = int(cue)
+        except (TypeError, ValueError):
+            return 0.0
+        if idx < 0 or idx >= len(sentences):
+            return 0.0
+        return float(sentences[idx].get("start", 0.0))
+
+    starts = [_cue_start(state.get("cue", 0)) for state in states]
+    boundaries = starts[1:] + [true_end]
+
+    timings: list[dict[str, float]] = []
+
+    for start, boundary in zip(starts, boundaries):
+        slot = boundary - start
+
+        # A degenerate (zero/negative) slot only arises when cues can't
+        # resolve to real timestamps (e.g. no sentence data at all) — floor
+        # it so the state still gets a positive run_time. Real sentence data
+        # never triggers this, so the telescoping sum stays exact above.
+        if slot <= 0.0:
+            slot = 0.1
+
+        run_time = slot * 0.85
+        wait = slot - run_time
+
+        timings.append({"run_time": run_time, "wait": wait})
+
+    return timings
+
+
+#: How long each motion op naturally takes to read as an animation, in
+#: seconds -- independent of how long the narration slot around it happens
+#: to be. Regression: a real e2e run showed run_time values of 15-30s for a
+#: SINGLE Create() of one line/matrix, because run_time was simply 85% of
+#: the whole narration slot with no ceiling -- a near-motionless crawl
+#: instead of an animation. The excess must become self.wait() (the scene
+#: holds while narration keeps talking), not stretch the animation itself.
+_NATURAL_DURATION = {
+    "Create": 1.4,
+    "Write": 1.4,
+    "FadeIn": 0.7,
+    "FadeOut": 0.6,
+    "Transform": 1.1,
+    "MoveTo": 0.9,
+    "Highlight": 0.8,
+}
+_DEFAULT_NATURAL_DURATION = 1.2
+
+
+def _natural_run_time(motion: list[dict[str, Any]]) -> float:
+    """The natural animation duration for a group of simultaneous ops.
+
+    Ops in one self.play(...) call run concurrently, not sequentially, so
+    the group's natural duration is the slowest single op, not their sum.
+    """
+
+    if not motion:
+        return 0.0
+
+    return max(
+        _NATURAL_DURATION.get(op.get("op"), _DEFAULT_NATURAL_DURATION)
+        for op in motion
+        if isinstance(op, dict)
+    )
+
+
+def _render_motion_op(op_name: str, op: dict[str, Any]) -> str:
+    """Render one validated motion op to a Manim expression string."""
+
+    target = op.get("target")
+
+    if op_name in ("Create", "Write", "FadeIn", "FadeOut"):
+        return f"{op_name}(self.{target})"
+
+    if op_name == "Transform":
+        return f"Transform(self.{target}, self.{op.get('into')})"
+
+    if op_name == "MoveTo":
+        return f"self.{target}.animate.move_to(self.{op.get('anchor')})"
+
+    if op_name == "Highlight":
+        return f"Indicate(self.{target})"
+
+    raise ValueError(f"unknown motion op {op_name!r}")
+
+
+def _validate_motion_op(op_name: str, op: dict[str, Any], state_name: str) -> None:
+    """Defense-in-depth check mirroring harness.motion.validate_motion_ops.
+
+    verifier_storyboard is the real gate for malformed motion; this only
+    guards against the compiler ever being asked to emit broken Python if
+    that gate is somehow bypassed.
+    """
+
+    if op_name not in MOTION_OPS:
+        raise ValueError(
+            f"unknown motion op {op_name!r} in state {state_name!r}"
+        )
+
+    missing = sorted(
+        key for key in MOTION_OPS[op_name] if not op.get(key)
+    )
+
+    if missing:
+        raise ValueError(
+            f"missing required key(s) {missing} for {op_name} "
+            f"in state {state_name!r}"
+        )
+
+
+def _state_setup_assignments(
+    setup_source: str,
+    state_name: str,
+) -> dict[str, bool]:
+    """{attr: has_constructor_args} for every ``self.<attr> = ...``
+    assignment inside ``_state_<state_name>``'s own method body that
+    ultimately traces to a real constructor call — either directly
+    (``self.attr = Ctor(...)``) or via a local variable built up first and
+    attached to ``self`` afterward (``group = VGroup(...); ...;
+    self.attr = group`` — a common, natural way to write setup code, e.g.
+    when the group is arranged/positioned across a couple of statements
+    before being assigned). A real e2e run showed the direct-only version
+    of this silently missing every object built this second way, so it
+    never got a default entrance and never appeared on screen at all.
+
+    Scoped to that one method's body (not the whole class) — an attribute
+    reassigned by a *later* state is a different method entirely and is
+    examined independently when that state is processed, so continuity
+    ("don't re-fade-in a persistent object introduced earlier") falls out
+    naturally without needing separate cross-state bookkeeping.
+    """
+
+    try:
+        tree = ast.parse(setup_source)
+    except SyntaxError:
+        return {}
+
+    method_name = f"_state_{state_name}"
+    assignments: dict[str, bool] = {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name:
+            # First pass: local `name = Ctor(...)` bindings, so a later
+            # `self.attr = name` can be traced back to its constructor call.
+            local_calls: dict[str, bool] = {}
+
+            for stmt in ast.walk(node):
+                if not (isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call)):
+                    continue
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        has_args = bool(stmt.value.args) or bool(stmt.value.keywords)
+                        local_calls[target.id] = has_args
+
+            # Second pass: self.attr assignments, resolved directly or via
+            # the local-variable trace above.
+            for stmt in ast.walk(node):
+                if not isinstance(stmt, ast.Assign):
+                    continue
+
+                if isinstance(stmt.value, ast.Call):
+                    has_args = bool(stmt.value.args) or bool(stmt.value.keywords)
+                elif isinstance(stmt.value, ast.Name) and stmt.value.id in local_calls:
+                    has_args = local_calls[stmt.value.id]
+                else:
+                    continue
+
+                for target in stmt.targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                    ):
+                        assignments[target.attr] = has_args
+            break
+
+    return assignments
+
+
+def _compile_construct_method(
+    states: list[dict[str, Any]],
+    timings: list[dict[str, float]],
+    setup_source: str | None = None,
+) -> str:
+    """Deterministically compile ``construct(self):`` from storyboard states.
+
+    Per state: call its ``_state_<name>()`` setup method, then group all of
+    its motion ops into one ``self.play(..., run_time=...)`` and follow with
+    ``self.wait(...)`` (suppressed when it would round to ~0 — Manim raises
+    on ``wait(0)``). A state with no motion folds its whole time budget into
+    a single ``self.wait(...)``.
+
+    When ``setup_source`` is given, any mobject a state's own setup method
+    constructs but that state's motion never explicitly brings on screen
+    (the storyboard contract allows an empty ``motion`` list even when the
+    setup code still legally does ``self.title = Text(...)`` — assigning to
+    a Python attribute does not add anything to the Manim scene) gets a
+    default entrance: ``self.add(...)`` for a zero-argument constructor call
+    (the "build a container across states via later .add() calls" pattern —
+    Manim errors animating FadeIn on a statically-empty VGroup()), otherwise
+    a soft ``FadeIn`` folded into that state's grouped ``self.play(...)``.
+
+    Two attribute names are structural, independent of the storyboard's
+    motion vocabulary (which only plans the diagram/content, not chrome):
+    ``self.title`` (any state) gets the same default-entrance FadeIn as any
+    other newly-introduced object — nothing special, it just needs to exist
+    once. ``self.caption_<state name>`` is special-cased: the first state
+    that defines one gets it as a normal entrance, but every later state
+    that defines its own ``caption_<state name>`` gets a ``Transform`` from
+    the FIRST caption attribute into the new one, not a second independent
+    FadeIn — this is what keeps every scene down to exactly one on-screen
+    caption at a time (Transform mutates the original mobject's identity in
+    place; a second independent FadeIn would instead leave both texts
+    visible simultaneously, reproducing the original overlap bug this
+    compiler exists to prevent).
+    """
+
+    lines = ["def construct(self):"]
+
+    if not states:
+        lines.append("    pass")
+        return "\n".join(lines)
+
+    # Attributes already on screen from an earlier state (via motion or a
+    # prior default entrance). A later state's own setup method commonly
+    # re-declares `self.<attr> = Ctor(...)` for an object that already
+    # exists (ordinary, harmless code redundancy) — without this, that
+    # re-declaration reads as "newly introduced" and gets a spurious default
+    # FadeIn, which combines with a same-beat FadeOut into a fade-out-then-
+    # back-in glitch instead of the intended removal.
+    seen_attrs: set[str] = set()
+
+    # The single caption mobject's identity attribute, once introduced —
+    # every later state's caption update Transforms into/out of this same
+    # attribute rather than creating a second independent caption.
+    caption_identity: str | None = None
+
+    for state, timing in zip(states, timings):
+        name = state.get("name", "state")
+        motion = state.get("motion") or []
+
+        lines.append(f"    self._state_{name}()")
+
+        effective_motion = list(motion)
+
+        # Any attribute this state's OWN motion already references at all —
+        # as target, into, or anchor, on ANY op — is already accounted for
+        # by the storyboard author. Restricting this to just Create/Write/
+        # FadeIn missed Transform/FadeOut/MoveTo targets, so e.g. an object
+        # the storyboard already FadeOut's this beat would ALSO get a
+        # default FadeIn layered into the same self.play(...) call —
+        # contradictory (fade out and in at once) purely because its setup
+        # method happens to construct it in this state too.
+        introduced = {
+            op.get(key)
+            for op in motion
+            if isinstance(op, dict)
+            for key in ("target", "into", "anchor")
+            if op.get(key)
+        }
+
+        if setup_source:
+            assignments = _state_setup_assignments(setup_source, name)
+
+            caption_attr = f"caption_{name}"
+
+            if caption_attr in assignments:
+                if caption_identity is None:
+                    effective_motion.append({"op": "FadeIn", "target": caption_attr})
+                    caption_identity = caption_attr
+                else:
+                    effective_motion.append(
+                        {"op": "Transform", "target": caption_identity, "into": caption_attr}
+                    )
+                # Handled above — the generic default-entrance loop below
+                # must not also fade it in independently.
+                introduced = introduced | {caption_attr}
+
+            for attr, has_args in sorted(assignments.items()):
+                if attr in introduced or attr in seen_attrs:
+                    continue
+                if has_args:
+                    effective_motion.append({"op": "FadeIn", "target": attr})
+                else:
+                    lines.append(f"    self.add(self.{attr})")
+
+            seen_attrs.update(assignments.keys())
+
+        seen_attrs.update(introduced)
+
+        run_time = float(timing.get("run_time", 0.0))
+        wait = float(timing.get("wait", 0.0))
+
+        if effective_motion:
+            calls = []
+
+            for op in effective_motion:
+                if not isinstance(op, dict):
+                    raise ValueError(f"invalid motion op in state {name!r}: {op!r}")
+
+                op_name = op.get("op")
+                _validate_motion_op(op_name, op, name)
+                calls.append(_render_motion_op(op_name, op))
+
+            # Cap run_time at what this motion naturally takes to read as an
+            # animation; a wide narration slot must not stretch the
+            # animation itself into a crawl -- the excess becomes wait
+            # instead, so the scene holds still while narration continues.
+            natural = _natural_run_time(effective_motion)
+            if natural > 0.0 and run_time > natural:
+                wait += run_time - natural
+                run_time = natural
+
+            lines.append(
+                f"    self.play({', '.join(calls)}, run_time={run_time:.2f})"
+            )
+
+            if wait > 0.05:
+                lines.append(f"    self.wait({wait:.2f})")
+        else:
+            total_wait = run_time + wait
+
+            if total_wait > 0.05:
+                lines.append(f"    self.wait({total_wait:.2f})")
+
+    return "\n".join(lines)
+
+
+def _splice_construct_method(setup_source: str, construct_src: str) -> str:
+    """Insert a compiled ``construct(self):`` method into the single class
+    defined by ``setup_source`` (LLM-authored ``_state_<name>`` methods).
+
+    Appended after the class's existing methods rather than parsed/rebuilt
+    as an AST and unparsed, so the LLM's original formatting/comments in
+    ``setup_source`` are preserved byte-for-byte.
+    """
+
+    tree = ast.parse(setup_source)
+
+    class_node = next(
+        (node for node in tree.body if isinstance(node, ast.ClassDef)),
+        None,
+    )
+
+    if class_node is None:
+        raise ValueError(
+            "generated setup source does not define a class"
+        )
+
+    lines = setup_source.splitlines()
+
+    indent = "    "
+
+    if class_node.body:
+        first_line = lines[class_node.body[0].lineno - 1]
+        indent = first_line[: len(first_line) - len(first_line.lstrip())] or indent
+
+    indented_construct = [
+        indent + line for line in construct_src.splitlines()
+    ]
+
+    end = class_node.end_lineno or len(lines)
+
+    return "\n".join(lines[:end] + [""] + indented_construct + lines[end:])
 
 
 # ---------------------------------------------------------------------------
@@ -1035,22 +1455,82 @@ REQUIREMENTS:
     - For example, if sentence 2 starts at 4.50s and sentence 1 ends at 4.20s, insert
       `self.wait(0.30)` after sentence 1's animation before starting sentence 2's. If the gap
       is 0.00, insert no wait.
+    - When `remaining` is large (> ~3s) after the primary reveal, do NOT spend it as one
+      silent `self.wait(remaining)` — that reads as the video freezing. Chain 1-3 more small,
+      purposeful animations that continue supporting the SAME sentence instead (see
+      ANIMATION QUALITY below), and only `self.wait()` whatever small remainder is left after
+      those.
    
    The total animation duration MUST equal:
         {duration:.1f} seconds
 
-4. LAYOUT:
-   - Title: UP * 3.5
-   - Title font_size: 48
-   - Primary visual: centered or slightly above center
-   - Supporting text: below DOWN * 2.0
-   - Do not overlap text and graphics.
+4. LAYOUT (avoid overlap):
+   - Title: `title.to_edge(UP, buff=0.35)`. Never place the title with an absolute
+     `move_to(UP * <guess>)` — a guessed offset can collide with content below it
+     depending on the actual rendered text height; `to_edge` cannot.
+   - Title font_size: 40-48.
+   - Define ONE caption position constant near the top of construct(), e.g.
+     `caption_y = DOWN * 3.15`, and reuse that exact constant for every narration
+     caption in the scene.
+   - Use exactly ONE caption Mobject for the whole scene. Create it once and
+     `.move_to(caption_y)`. For every subsequent narration sentence, update the
+     SAME mobject with `Transform(caption, new_caption)` (or `.become(...)`).
+     Never create a second caption-like text that is visible at the same time as
+     the first — that is a direct overlap risk with the caption band.
+   - Primary visual: centered or slightly above center, clear of the title band
+     and the caption band.
+   - Every OTHER text/label/equation introduced for a single narration beat
+     (a side annotation, an equation, a call-out) must do ONE of:
+       (a) be explicitly removed with `FadeOut` (or replaced via `Transform`)
+           before or when the next beat's own annotations appear, OR
+       (b) be positioned with `next_to(existing_mobject, DIRECTION, buff=...)`
+           relative to a persistent on-screen object — not an absolute
+           `UP*k` / `DOWN*k` guess.
+     Do not let more than one auxiliary label/equation sit simultaneously at
+     independent absolute coordinates as the scene progresses — accumulating
+     "floating" annotations that are never cleaned up is the most common cause
+     of text overlapping other elements later in a scene.
+   - Only the core recurring diagram (e.g. axes, nodes, a persistent graph) may
+     legitimately stay on screen unmodified for the whole scene; everything else
+     is transient and must be cleaned up per the rule above.
+   - Build any legend or multi-part label as
+     `VGroup(part1, part2, ...).arrange(RIGHT, buff=...)` (or `DOWN`) followed by
+     ONE `.move_to(...)` on the group — never position each child of a group
+     with its own separate absolute coordinate; `.arrange()` guarantees the
+     children can't overlap each other by construction.
 
 5. TEXT:
    - Break long sentences into multiple lines.
    - Scale text when necessary.
    - Never allow text to leave the 16:9 frame.
    - Prefer concise labels over paragraphs.
+   - Organize construct() with one comment block per narration sentence
+     (e.g. `# SENTENCE 2`) so the structure is easy to review and regenerate.
+
+REFERENCE PATTERN (imitate this structure — not the specific text/content):
+
+    title = Text("...").to_edge(UP, buff=0.35)
+    caption_y = DOWN * 3.15
+
+    caption = Text("First narration sentence.", font_size=26).move_to(caption_y)
+    self.play(Write(title), Write(caption), run_time=2.0)
+
+    # ... when sentence 2 begins, update the SAME caption mobject ...
+    caption_2 = Text("Second narration sentence.", font_size=26).move_to(caption_y)
+    self.play(Transform(caption, caption_2), run_time=2.0)
+
+    # A transient annotation anchored to an existing object, not a guessed
+    # absolute coordinate:
+    note = Text("detail", font_size=20).next_to(some_node, RIGHT, buff=0.2)
+    self.play(FadeIn(note), run_time=0.8)
+    ...
+    self.play(FadeOut(note), run_time=0.4)  # cleaned up before the next beat's annotations appear
+
+    # A legend/group built with .arrange(), not per-child absolute coordinates:
+    legend = VGroup(
+        VGroup(Dot(color=BLUE), Text("Class 0", font_size=21)).arrange(RIGHT, buff=0.15),
+        VGroup(Dot(color=RED), Text("Class 1", font_size=21)).arrange(RIGHT, buff=0.15),
+    ).arrange(RIGHT, buff=0.5).move_to(DOWN * 2.65)
 
 6. MANIM 0.19 API SAFETY:
    - Do not pass font_size or direction to Axes.get_x_label/get_y_label. Create Text labels and position them with next_to.
@@ -1066,6 +1546,40 @@ REQUIREMENTS:
    - put_start_and_end_on() requires coordinate vectors.
    - Never pass a scalar where a 3D coordinate is required.
    - SurroundingRectangle, BackgroundRectangle, and always_redraw require a Mobject (like a Text or Circle), NOT a coordinate array. Never pass number_to_point(), get_center(), or c2p() directly to them.
+
+8. ANIMATION QUALITY (this is what separates a state-of-the-art explainer
+   from a slideshow — treat it as a hard requirement, not decoration):
+   - Build multi-part diagrams PROGRESSIVELY, never as one flat reveal.
+     Instead of `Create(whole_group)` or `FadeIn(whole_group)`, stagger the
+     pieces: `self.play(LaggedStart(*[Create(m) for m in group], lag_ratio=0.15), run_time=...)`.
+     A diagram assembling itself piece by piece reads as intentional and
+     alive; a whole diagram popping in at once reads as a slide.
+   - Match the animation verb to what is actually happening, not just
+     Create/FadeIn/Transform by default:
+       * `Write` for text/equations being "spoken into existence".
+       * `Create` for drawing a geometric shape/line/graph.
+       * `GrowArrow` / `GrowFromCenter` for vectors, arrows, emphasis pops.
+       * `Indicate`, `Circumscribe`, or `Flash` to draw the eye to
+         whatever the CURRENT narration sentence is actually talking
+         about — use these liberally as secondary beats, not just on
+         first appearance.
+       * `ReplacementTransform` or `TransformMatchingTex` when one
+         equation morphs into a related one (e.g. simplifying, substituting
+         a value) — never FadeOut the old one and FadeIn an unrelated new
+         one when they are mathematically connected; a matching-transform
+         visually shows the algebra happening.
+   - Use `rate_func=` deliberately (e.g. `rate_func=smooth`,
+     `rate_func=there_and_back` for a pulse/highlight) rather than leaving
+     everything on Manim's raw default pacing — it is the difference between
+     motion that feels considered and motion that feels mechanical.
+   - Give every recurring concept (a class, a layer, a variable, a role) ONE
+     fixed color used consistently for it everywhere it appears in this
+     section — color should encode meaning, not be arbitrary decoration.
+   - A long `run_time` window is an invitation to choreograph more, not to
+     stretch one animation thin or sit on one `self.wait()`. If a beat's
+     budget is generous, spend it on 2-4 small sequential animations
+     (build → emphasize a detail → hold briefly) instead of a single slow
+     `Create` or a single static freeze.
 
 9. Do not use:
    - undocumented keyword arguments
@@ -1088,6 +1602,198 @@ REQUIREMENTS:
 13. Output ONLY valid Python code.
     No Markdown fences.
     No explanation.
+""".strip()
+
+        if extra_feedback:
+            prompt += (
+                "\n\n"
+                + extra_feedback
+            )
+
+        return prompt
+
+    def _build_setup_prompt(
+        self,
+        section,
+        states: list[dict[str, Any]],
+        duration: float,
+        extra_feedback: str,
+    ) -> str:
+        """Contract for the compiler-backed path.
+
+        The LLM authors ONLY object construction/placement — one
+        `_state_<name>(self)` method per storyboard state. Choreography
+        (self.play/self.wait/run_time) is compiled deterministically
+        afterward by `_compile_construct_method` from each state's fixed
+        `motion` list; it is never authored by the LLM here, which removes
+        the LLM as a source of choreography-driven overlap/timing bugs.
+        """
+
+        state_blocks = []
+
+        for state_no, state in enumerate(states):
+            name = state.get("name", "state")
+            motion = state.get("motion") or []
+
+            targets = sorted({
+                op.get(key)
+                for op in motion
+                if isinstance(op, dict)
+                for key in ("target", "into", "anchor")
+                if op.get(key)
+            })
+
+            motion_desc = ", ".join(
+                f"{op.get('op')}("
+                + ", ".join(
+                    f"{k}={op.get(k)}"
+                    for k in ("target", "into", "anchor")
+                    if op.get(k)
+                )
+                + ")"
+                for op in motion
+                if isinstance(op, dict)
+            ) or "(none — this state only adjusts what is already visible)"
+
+            required = [f"self.{t}" for t in targets]
+            required.append(f"self.caption_{name}")
+
+            structural_notes = [
+                f"    MUST ALSO define `self.caption_{name}`: a short (<=8 word) "
+                f"on-screen caption Text summarizing this state's teaching point, "
+                f"positioned at the SAME fixed caption position used by every "
+                f"other state's caption (e.g. `.move_to(DOWN * 3.15)`) — the "
+                f"compiled choreography transforms it into/out of every other "
+                f"state's caption automatically; do not position or size it "
+                f"differently per state."
+            ]
+
+            if state_no == 0:
+                required.append("self.title")
+                structural_notes.append(
+                    f"    MUST ALSO define `self.title`: the section title Text, "
+                    f"positioned with `.to_edge(UP, buff=0.35)`. Only this first "
+                    f"state may define it."
+                )
+
+            attrs = ", ".join(required)
+
+            state_blocks.append(
+                f"- _state_{name}(self):\n"
+                f"    Visual: {state.get('visual', '')}\n"
+                f"    Transition: {state.get('transition', '')}\n"
+                f"    Motion for this state (compiled separately — context only, "
+                f"do not implement it yourself): {motion_desc}\n"
+                f"    MUST define these exact attributes so the compiled "
+                f"choreography can reference them: {attrs}\n"
+                + "\n".join(structural_notes)
+            )
+
+        states_block = "\n\n".join(state_blocks)
+
+        prompt = f"""
+Write the object-construction half of a Manim Community Edition
+{MANIM_VERSION} scene for this educational video section.
+
+TITLE:
+{section.title}
+
+VISUAL PLAN:
+{section.anim}
+
+TOTAL DURATION:
+{duration:.1f} seconds
+
+You are authoring ONLY per-state setup methods, NOT the scene's
+choreography. A separate deterministic compiler generates `construct(self)`
+afterward from each state's fixed motion-op list, calling your methods in
+order and animating the exact objects you define. Because of this:
+
+- Do NOT define `construct(self)`.
+- Do NOT call `self.play(`, `self.wait(`, or any other animation method
+  anywhere in your code.
+- Only CONSTRUCT and POSITION mobjects, assigning each one to a
+  `self.<name>` attribute using `.move_to()` / `.to_edge()` / `.next_to()`
+  / `.arrange()` etc. Positioning is required and expected; only
+  *animating* is forbidden.
+
+REQUIREMENTS:
+
+1. Use Manim Community Edition v{MANIM_VERSION}.
+   Use:
+        from manim import *
+
+   Do not use APIs introduced after v{MANIM_VERSION}.
+
+2. Define exactly one class:
+        Scene{section.stem}
+
+   It must inherit from Scene.
+
+3. Define exactly one method per state below, named exactly as given
+   (`_state_<name>(self)`), in this order. Each method must define every
+   `self.<name>` attribute listed for it — the compiled choreography
+   references these attributes by name and will raise AttributeError at
+   render time if any is missing.
+
+STATES:
+
+{states_block}
+
+4. LAYOUT (avoid overlap):
+   - Title: `self.title.to_edge(UP, buff=0.35)` in the first state only. Never
+     place it with an absolute `move_to(UP * <guess>)` — a guessed offset can
+     collide with content below it depending on the actual rendered text
+     height; `to_edge` cannot.
+   - Title font_size: 40-48.
+   - Every state's `self.caption_<name>` MUST use the exact same position
+     (e.g. `.move_to(DOWN * 3.15)`) and font_size — the compiler Transforms
+     the first one into every later one, so any difference in position/size
+     between them will visibly jump. Do NOT write any Transform/FadeIn calls
+     for captions yourself; the compiler does that for you from the
+     `caption_<name>` attributes alone.
+   - Primary visual: centered or slightly above center, clear of the title
+     band and the caption band.
+   - Every OTHER text/label/equation attribute a state defines must either
+     be positioned with `next_to(existing_mobject, DIRECTION, buff=...)`
+     relative to a persistent on-screen object, or reuse the fixed caption
+     position — never an independent absolute `UP*k` / `DOWN*k` guess.
+     Accumulating "floating" annotations at independent absolute
+     coordinates is the most common cause of text overlapping other
+     elements later in a scene. The compiled choreography will FadeOut/
+     Transform objects per each state's motion, but only if you have not
+     already placed them somewhere that collides with what comes next.
+   - Build any legend or multi-part label as
+     `VGroup(part1, part2, ...).arrange(RIGHT, buff=...)` (or `DOWN`)
+     followed by ONE `.move_to(...)` on the group.
+
+5. MANIM 0.19 API SAFETY:
+   - Do not pass font_size or direction to Axes.get_x_label/get_y_label. Create Text labels and position them with next_to.
+   - Do not pass corner= to move_to. Use move_to(point) or align_to.
+   - Do not pass theme= to Code. Use Code(code_string=..., language=...).
+   - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
+   - Do not pass include_background= to Text, MathTex, or Tex.
+   - For Code line numbers use add_line_numbers=True. Never use insert_line_numbers.
+   - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
+
+6. VECTOR SAFETY & SHAPES:
+   - move_to() requires a coordinate vector.
+   - put_start_and_end_on() requires coordinate vectors.
+   - Never pass a scalar where a 3D coordinate is required.
+   - SurroundingRectangle, BackgroundRectangle, and always_redraw require a Mobject (like a Text or Circle), NOT a coordinate array. Never pass number_to_point(), get_center(), or c2p() directly to them.
+
+7. Do not use:
+   - undocumented keyword arguments
+   - deprecated classes
+   - unknown Manim APIs
+   - .set_shadow(blur=...)
+   - invented helper APIs
+
+8. Preserve all numerical values and relationships from the visual plan.
+
+9. Output ONLY valid Python code.
+   No Markdown fences.
+   No explanation.
 """.strip()
 
         if extra_feedback:

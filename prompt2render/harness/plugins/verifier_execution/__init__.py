@@ -32,6 +32,7 @@ from ...finding import (
     Severity,
     next_finding_id,
 )
+from ...motion import find_storyboard_states
 from ...plugin import Plugin
 from ....scenes import (
     trace_scene_source,
@@ -174,6 +175,56 @@ def _safe_narration_cue(
         return None
 
     return len(sentences) - 1
+
+
+def _storyboard_motion_by_state(
+    context: SceneContext,
+    stem: str,
+    index: int | None = None,
+) -> dict[str, list] | None:
+    """Return {state name: motion list} for one storyboard section.
+
+    ``None`` means the section itself could not be found (stem, and index
+    when given, both missed) — distinct from a section that was found but
+    whose states simply declare no motion.
+    """
+
+    states = find_storyboard_states(context, stem, index=index)
+
+    if states is None:
+        return None
+
+    return {
+        state.get("name"): state.get("motion", [])
+        for state in states
+        if isinstance(state, dict)
+    }
+
+
+def _safe_narration_duration(
+    context: SceneContext,
+    stem: str,
+) -> float:
+    """The true end of a section's narration — sum(sentence durations)
+    excludes inter-sentence silence gaps, so this uses the last sentence's
+    actual end timestamp instead. Must agree with renderer_manim's compiler
+    (``_state_cue_timings``), which targets the same true end, or this
+    verifier will reject scenes the compiler rendered correctly.
+    """
+
+    narration = getattr(context, "narration", {}).get(stem)
+
+    if not narration:
+        return 0.0
+
+    sentences = getattr(narration, "sentences", None)
+
+    if not sentences:
+        return 0.0
+
+    last = sentences[-1]
+
+    return float(last.get("end", 0.0))
 
 
 # ---------------------------------------------------------------------------

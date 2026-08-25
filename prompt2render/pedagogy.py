@@ -500,6 +500,10 @@ supports.
 Math may remain in LaTeX delimiters for display; it will be converted
 separately for speech.
 
+Narration will be force-aligned word-for-word to synthesized audio, so avoid
+parentheticals, unusual punctuation, abbreviations, and constructions that a
+text-to-speech voice may read awkwardly.
+
 Return ONLY JSON:
 
 {{

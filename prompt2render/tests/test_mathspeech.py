@@ -30,3 +30,22 @@ def test_abbreviation_expansion():
     assert speech_text("The CPU and GPU are fast.") == "The C P U and G P U are fast."
     assert speech_text("e.g. this is an API") == "for example this is an A P I"
     assert speech_text("We use RAM, i.e. memory.") == "We use ram, that is memory."
+
+
+def test_abbreviation_expansion_units():
+    assert speech_text("The distance is 5 km.") == "The distance is 5 kilometers."
+    assert speech_text("Runs at 2.4 GHz.") == "Runs at 2.4 gigahertz."
+    assert speech_text("A 16 GB drive.") == "A 16 gigabytes drive."
+
+
+def test_abbreviation_expansion_titles_and_latin():
+    assert speech_text("Ask Prof. Lin, cf. the appendix.") == "Ask Professor Lin, compare the appendix."
+    assert speech_text("See fig. 2, approx. correct.") == "See figure 2, approximately correct."
+
+
+def test_abbreviation_expansion_vs_without_period():
+    assert speech_text("A vs B in this test.") == "A versus B in this test."
+
+
+def test_abbreviation_expansion_generic_fallback_acronym():
+    assert speech_text("Ask NASA about DNA.") == "Ask N A S A about D N A."

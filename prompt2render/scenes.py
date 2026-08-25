@@ -1,4 +1,8 @@
-"""Ask the model to storyboard one section against scenekit.
+"""Prompt2Render dual-renderer scene generator.
+
+MATPLOTLIB backend: existing Scenekit state generation.
+MANIM backend: true Scene/construct generation with real self.play() animation.
+The public generate() API routes each section to the selected backend.
 
 This is the Coder role from Code2Video, reduced to a small fixed drawing API:
 few ways to be wrong, and every mistake surfaces as something we can feed
@@ -839,7 +843,505 @@ def validate_scene_source(code: str, max_cue: int | None = None) -> list[str]:
     return list(dict.fromkeys(errors))
 
 
+
+# ---------------------------------------------------------------------------
+# DUAL RENDERER
+# ---------------------------------------------------------------------------
+
+MANIM_API_DOC = r"""
+REAL MANIM BACKEND — PRODUCTION CONTRACT
+
+Generate REAL Manim 0.19+ Python. This backend does NOT use Scenekit and does
+NOT generate def states().
+
+Required:
+    from manim import *
+    class SceneXX(Scene):
+        def construct(self):
+            ...
+
+Allowed imports:
+    from manim import *
+    import math
+    import numpy as np
+
+Do not import external packages.
+
+CANVAS:
+  * 16:9 landscape, designed for 1920x1080.
+  * Keep important content inside x=-7..7 and y=-3.8..3.8.
+  * Reserve the top for titles and the bottom for captions.
+  * Never allow text or diagrams to clip.
+
+ANIMATION:
+  * This is a genuine Manim animation timeline.
+  * Use self.play(), self.wait(), .animate, Transform, ReplacementTransform,
+    FadeIn, FadeOut, Create, Write, Indicate, Circumscribe, AnimationGroup,
+    Succession and LaggedStart when appropriate.
+  * Persistent objects keep identity; do not recreate them to fake continuity.
+  * Use VGroup when labels must move with objects.
+  * Every important animation has an explicit run_time.
+  * Use anticipation -> action -> consequence.
+  * Do not teleport an educationally important object.
+
+PHYSICAL MOTION:
+  * For movement prefer: highlight -> lift -> travel -> settle -> explain.
+  * Tower of Hanoi legal move:
+        lift vertically -> horizontal travel -> lower vertically.
+  * Labels remain attached to disks.
+  * Larger disks cannot be placed on smaller disks except during an explicitly
+    labelled illegal demonstration.
+  * Illegal demonstrations show the attempted state, INVALID/ILLEGAL marker,
+    then restore the valid state.
+
+PEDAGOGY:
+  * One major visual idea per moment.
+  * Highlight the active object before changing it.
+  * Pause after important actions.
+  * Color is never the only semantic signal.
+
+TIMING:
+  * Narration timestamps are authoritative.
+  * Synchronize self.play() and self.wait() with the narration.
+  * Do not leave an unexplained static scene for more than about 8 seconds.
+  * Finish in the state described by the narration.
+
+CODE QUALITY:
+  * No pseudocode, markdown fences, print/open/exec/eval.
+  * No undefined names or hallucinated Manim APIs.
+  * Use constants and small geometry helpers.
+  * The result must execute directly with Manim.
+"""
+
+
+def select_renderer(sec) -> str:
+    """Select the renderer from explicit section tags or semantic cues."""
+    explicit = getattr(sec, "renderer", None)
+    if isinstance(explicit, str):
+        explicit = explicit.strip().lower()
+        if explicit in {"manim", "matplotlib"}:
+            return explicit
+
+    brief = str(getattr(sec, "anim", "") or "").lower()
+
+    # Explicit tags in the animation brief always win.
+    if "[manim]" in brief:
+        return "manim"
+    if "[matplotlib]" in brief or "[scenekit]" in brief:
+        return "matplotlib"
+
+    # Strong continuous-animation signals.
+    manim_terms = (
+        "animate", "animation", "move", "transform", "morph", "lift",
+        "drop", "rotate", "zoom", "camera", "tower of hanoi", "recursion",
+        "sorting", "pointer moves", "traverse", "step through", "trajectory",
+        "physical motion",
+    )
+    if any(term in brief for term in manim_terms):
+        return "manim"
+
+    # Plot/data-heavy sections remain on the mature Matplotlib backend.
+    return "matplotlib"
+
+
+def build_manim_prompt(script: Script, sec, sents: list[dict],
+                       previous_context: str = "") -> str:
+    numbered = "\n".join(
+        f"  [{i}] t={s['start']:6.1f}s -> {s['end']:6.1f}s  {s['text']}"
+        for i, s in enumerate(sents)
+    )
+    total = sents[-1]["end"] if sents else 0.0
+    class_name = f"Scene{sec.stem}"
+
+    return textwrap.dedent(f"""
+    You are the senior Manim animation engineer for Prompt2Render.
+
+    Generate ONE production-quality REAL MANIM SCENE for:
+        "{script.title}"
+
+    Audience:
+        {script.meta.get('audience', 'undergraduates')}
+
+    SECTION:
+        {sec.index}: {sec.title}
+
+    ANIMATION BRIEF:
+        {sec.anim}
+
+    PREVIOUS SECTION CONTEXT:
+        {previous_context}
+
+    NARRATION TIMELINE:
+        Total duration: {total:.2f} seconds
+
+    {numbered}
+
+    {MANIM_API_DOC}
+
+    OUTPUT CONTRACT:
+      * Output ONLY complete Python source.
+      * Start with: from manim import *
+      * Define exactly one main class named {class_name}.
+      * It MUST inherit from Scene and implement construct(self).
+      * Do NOT define states().
+      * Do NOT use Scenekit k.* primitives.
+      * Do NOT use Matplotlib.
+      * The file must render directly with:
+            manim -pqh scene_{sec.stem}.py {class_name}
+
+    TIMING:
+      * Map narration to an intentional visual timeline.
+      * Use self.wait() for explanatory holds.
+      * Use explicit run_time for important animations.
+      * Keep visual event order aligned with narration.
+      * Do not add unrelated animation just to fill time.
+
+    SELF-CHECK:
+      1. Every referenced object is defined.
+      2. Every Manim API call is valid.
+      3. Nothing important clips the frame.
+      4. Labels remain attached to persistent objects.
+      5. Important motion is staged rather than teleported.
+      6. The final state matches the narration.
+      7. The scene runs without manual editing.
+
+    Return ONLY Python source.
+    """).strip()
+
+
+def _validate_manim_source(code: str) -> list[str]:
+    """Static validation for generated real-Manim source."""
+    errors = []
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return [f"syntax error at line {exc.lineno}: {exc.msg}"]
+
+    scene_classes = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = []
+        for base in node.bases:
+            if isinstance(base, ast.Name):
+                bases.append(base.id)
+            elif isinstance(base, ast.Attribute):
+                bases.append(base.attr)
+        if "Scene" in bases:
+            scene_classes.append(node)
+
+    if not scene_classes:
+        errors.append("no class inheriting from Scene was generated")
+    elif len(scene_classes) != 1:
+        errors.append("generate exactly one main Scene subclass")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in {"manim", "math", "numpy"}:
+                    errors.append(f"import '{alias.name}' is not allowed")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module not in {"manim", "math", "numpy"}:
+                errors.append(
+                    f"from '{node.module}' import ... is not allowed"
+                )
+
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in {
+                "print", "open", "exec", "eval"
+            }:
+                errors.append(
+                    f"{node.func.id}() is not allowed in generated scenes"
+                )
+
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "k"
+            ):
+                errors.append(
+                    f"Scenekit k.{node.func.attr}() found in Manim mode"
+                )
+
+    for cls in scene_classes:
+        if not any(
+            isinstance(n, ast.FunctionDef) and n.name == "construct"
+            for n in cls.body
+        ):
+            errors.append(f"{cls.name} must implement construct(self)")
+
+    if not any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "play"
+        for n in ast.walk(tree)
+    ):
+        errors.append("scene contains no self.play() calls")
+
+    if not any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "wait"
+        for n in ast.walk(tree)
+    ):
+        errors.append("scene contains no self.wait() calls")
+
+    if re.search(r"^\s*def\s+states\s*\(", code, re.MULTILINE):
+        errors.append("states() is forbidden in Manim mode")
+
+    return list(dict.fromkeys(errors))
+
+
+def _render_manim(proj: Path, src: Path, section_dir: Path,
+                  class_name: str) -> list[Path]:
+    """Render a real Manim scene through the installed Manim CLI."""
+    import subprocess
+
+    section_dir.mkdir(parents=True, exist_ok=True)
+    media_dir = section_dir / "_manim_media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+
+    quality = os.environ.get("P2R_MANIM_QUALITY", "-qh")
+    if quality not in {"-ql", "-qm", "-qh", "-qp"}:
+        quality = "-qh"
+
+    timeout = int(os.environ.get("P2R_MANIM_TIMEOUT", "600"))
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "manim",
+        quality,
+        "--disable_caching",
+        "--media_dir",
+        str(media_dir),
+        str(src),
+        class_name,
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(proj),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"Manim render timed out after {timeout}s"
+        )
+    except FileNotFoundError:
+        raise SystemExit(
+            "Manim backend selected but `python -m manim` is unavailable"
+        )
+
+    if proc.returncode != 0:
+        output = "\n".join(
+            (proc.stdout + "\n" + proc.stderr).splitlines()[-100:]
+        )
+        raise SystemExit("Manim render failed:\n" + output)
+
+    videos = sorted(
+        media_dir.rglob("*.mp4"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not videos:
+        raise SystemExit("Manim completed without producing an MP4")
+
+    target = section_dir / f"{src.stem}.mp4"
+    shutil.copy2(videos[0], target)
+
+    return sorted(media_dir.rglob("*.png"))
+
+
+def _generate_manim(proj: Path, script: Script, index: int,
+                    retries: int = 0, extra_feedback: str = "") -> Path:
+    sec = next((s for s in script.sections if s.index == index), None)
+    if sec is None:
+        sys.exit(f"[prompt2render] no section {index} in script.md")
+
+    data = align.load(proj, sec.stem)
+    sents = data["sentences"]
+    if not sents:
+        sys.exit(
+            f"[prompt2render] section {sec.stem} has no alignment — "
+            "run `prompt2render align`"
+        )
+
+    outdir = proj / "build" / "scenes"
+    outdir.mkdir(parents=True, exist_ok=True)
+    dst = outdir / f"scene_{sec.stem}.py"
+    section_dir = outdir / sec.stem
+
+    previous_context = ""
+    if index > 1:
+        prev_sec = next(
+            (s for s in script.sections if s.index == index - 1),
+            None,
+        )
+        if prev_sec:
+            prev_dst = outdir / f"scene_{prev_sec.stem}.py"
+            if prev_dst.exists():
+                previous_context = (
+                    "Previous Manim scene for continuity. Preserve important "
+                    "coordinates, scale and visual identity:\n"
+                    f"```python\n"
+                    f"{prev_dst.read_text(encoding='utf-8')[-10000:]}\n"
+                    f"```\n"
+                )
+
+    prompt = build_manim_prompt(
+        script, sec, sents, previous_context
+    )
+    feedback = extra_feedback
+
+    configured_cap = cfg.env_int("P2R_MAX_SCENE_ATTEMPTS", 0)
+    max_attempts = (
+        retries + 1
+        if retries > 0
+        else (configured_cap if configured_cap > 0 else None)
+    )
+
+    attempt = 1
+    seen = set()
+
+    while True:
+        try:
+            code = llm.complete(
+                prompt + feedback,
+                max_tokens=20000,
+                label=(
+                    f"Manim section {sec.stem} "
+                    f"(attempt {attempt}/{max_attempts or 'until pass'})"
+                ),
+            )
+        except Exception as exc:
+            sys.exit(
+                f"[prompt2render] Manim section {sec.stem}: "
+                f"LLM call failed — {exc}"
+            )
+
+        raw = strip_fences(code or "").strip()
+        if not raw:
+            sys.exit(
+                f"[prompt2render] Manim section {sec.stem}: empty completion"
+            )
+
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        errors = _validate_manim_source(raw)
+
+        if digest in seen:
+            errors.append(
+                "model returned identical failed Manim source; "
+                "change the scene structure"
+            )
+        seen.add(digest)
+
+        if errors:
+            cfg.say(
+                f"Manim section {sec.stem}: rejected — {errors[0][:120]}"
+            )
+            feedback = (
+                "\n\nRETURN THE COMPLETE CORRECTED MANIM MODULE.\n"
+                "Do not return a patch or explanation.\n\n"
+                "VALIDATION ERRORS:\n  - "
+                + "\n  - ".join(errors)
+                + "\n\n"
+                "REAL MANIM Scene/construct() ONLY. "
+                "No states(), no k.* primitives, no Matplotlib.\n"
+            )
+            if max_attempts is None or attempt < max_attempts:
+                attempt += 1
+                continue
+            sys.exit(
+                f"[prompt2render] Manim section {sec.stem}: "
+                f"failed after {attempt} attempts — "
+                + "; ".join(errors)
+            )
+
+        dst.write_text(raw, encoding="utf-8")
+
+        try:
+            with _RENDER_LOCK:
+                frames = _render_manim(
+                    proj,
+                    dst,
+                    section_dir,
+                    f"Scene{sec.stem}",
+                )
+        except SystemExit as exc:
+            err = str(exc)
+            cfg.say(
+                f"Manim section {sec.stem}: render rejected — {err[:120]}"
+            )
+            feedback = (
+                "\n\nRETURN THE COMPLETE CORRECTED MANIM MODULE.\n\n"
+                "RUNTIME/RENDER FAILURE:\n"
+                + err
+                + "\n\n"
+                "Fix the actual Manim API, geometry, timing or runtime "
+                "problem. Preserve the educational intent.\n"
+            )
+            if max_attempts is None or attempt < max_attempts:
+                attempt += 1
+                continue
+            sys.exit(
+                f"[prompt2render] Manim section {sec.stem}: "
+                f"render failed after {attempt} attempts — {err}"
+            )
+
+        cfg.say(
+            f"Manim section {sec.stem}: accepted — "
+            f"{len(frames)} rendered frames"
+        )
+        return dst
+
+
 def generate(proj: Path, script: Script, index: int, retries: int = 0,
+             extra_feedback: str = "") -> Path:
+    """Unified dual-renderer entry point.
+
+    Selection:
+      [MANIM]       -> true Manim Scene/construct()
+      [MATPLOTLIB]  -> existing Scenekit/Matplotlib backend
+      [AUTO]        -> semantic routing
+
+    Global override:
+      P2R_RENDERER=manim
+      P2R_RENDERER=matplotlib
+      P2R_RENDERER=auto
+    """
+    sec = next((s for s in script.sections if s.index == index), None)
+    if sec is None:
+        sys.exit(f"[prompt2render] no section {index} in script.md")
+
+    configured = os.environ.get("P2R_RENDERER", "auto").strip().lower()
+    renderer = (
+        configured
+        if configured in {"manim", "matplotlib"}
+        else select_renderer(sec)
+    )
+
+    cfg.say(f"section {sec.stem}: renderer={renderer.upper()}")
+
+    if renderer == "manim":
+        return _generate_manim(
+            proj, script, index,
+            retries=retries,
+            extra_feedback=extra_feedback,
+        )
+
+    return _generate_matplotlib(
+        proj, script, index,
+        retries=retries,
+        extra_feedback=extra_feedback,
+    )
+
+
+def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 0,
             extra_feedback: str = "") -> Path:
     sec = next((s for s in script.sections if s.index == index), None)
     if sec is None:

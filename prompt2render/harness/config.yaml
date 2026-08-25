@@ -86,7 +86,10 @@ renderer_stills:
   gate_override: null
 
 renderer_manim:
-  enabled: true
+  enabled: false          # alternative backend to renderer_stills; both declare
+                          # the same render_artifacts effect, so exactly one may
+                          # be enabled at a time (the CLI's --manim flag flips
+                          # this on and renderer_stills off together)
   gate_override: true
 
 

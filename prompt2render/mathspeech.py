@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from . import abbrev
+
 
 # Delimiters are handled before general punctuation. Currency such as "$5" is
 # not matched and therefore remains available to the ordinary text normalizer.
@@ -274,36 +276,7 @@ def speech_text(text: str) -> str:
         out = equation_to_speech(out)
 
     # Expand common abbreviations so TTS speaks them naturally.
-    # Note: the keys are regex patterns.
-    abbreviations = {
-        r"\bi\.e\.": "that is",
-        r"\be\.g\.": "for example",
-        r"\betc\.": "etcetera",
-        r"\bvs\.": "versus",
-        r"\bDr\.": "Doctor",
-        r"\bMr\.": "Mister",
-        r"\bMrs\.": "Missus",
-        r"\bProf\.": "Professor",
-
-        # Technical abbreviations.
-        r"\bAPI\b": "A P I",
-        r"\bCPU\b": "C P U",
-        r"\bGPU\b": "G P U",
-        r"\bRAM\b": "ram",
-        r"\bURL\b": "U R L",
-        r"\bHTML\b": "H T M L",
-        r"\bJSON\b": "J SON",
-        r"\bASR\b": "A S R",
-        r"\bTTS\b": "T T S",
-    }
-
-    for pattern, replacement in abbreviations.items():
-        out = re.sub(
-            pattern,
-            replacement,
-            out,
-            flags=re.IGNORECASE,
-        )
+    out = abbrev.expand_for_speech(out)
 
     return re.sub(
         r"\s+",

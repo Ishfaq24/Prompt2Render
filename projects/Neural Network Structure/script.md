@@ -1,6 +1,6 @@
 ---
-title: How Artificial Neural Networks Actually Represent Functions
-topic: artificial neural networks - biological inspiration vs mathematical abstraction, perceptrons and decision boundaries, multi-layer feedforward architecture, weight matrices and bias vectors, forward propagation, universal approximation theorem
+title: Inside the Feedforward Neural Network
+topic: feedforward neural networks, multi-layer perceptrons, node weights and biases, activation functions, matrix representation, forward propagation
 audience: undergraduate computer science
 ---
 
@@ -8,47 +8,44 @@ audience: undergraduate computer science
      Each "## N - Title" block is one section.
      The "> ANIM:" line is the brief `prompt2render scenes` storyboards against scenekit.
      Everything else is what YOU say. Write it in your own voice.
-     Aim ~140 spoken words per minute; ~13 min total = ~1820 words
-     across 8 section(s). This outline was AI-suggested -- add, remove or rename sections freely,
-     and every section still needs real narration before you build. -->
 
-## 1 - Why do we stack linear equations to recognize images?
-> ANIM: Draw a single 2D scatter plot with linearly inseparable points (XOR problem), showing that a single straight line fails to separate them, motivating the need for a multi-layered approach.
+     Aim ~140 spoken words per minute; ~11 min total = ~1540 words
+     across 7 section(s). This outline was AI-suggested -- add, remove or rename sections freely,
+     and every section still needs real narration before you build.
+-->
 
-Why do we stack linear equations to recognize images? If you plot a simple dataset where the positive and negative examples wrap around each other, a single straight line can never separate the two classes cleanly. One linear function gives you one flat cut through your data space. Real-world patterns like handwritten digits or faces are fundamentally intertwined, meaning any single line leaves massive classification errors on both sides. To solve this, we have to bend, warp, and fold our coordinate space, which requires combining multiple linear decisions into a richer, compound structure.
+## 1 - The Limits of Linear Classifiers
+> ANIM: A 2D scatter plot of the XOR problem with points at (0,0), (1,1) in red and (0,1), (1,0) in blue, showing a single straight decision boundary line rotating and failing to separate the classes.
 
-## 2 - The Single Neuron as a Weighted Sum and Threshold
-> ANIM: Build a single node taking inputs x1 and x2, multiplying them by weights w1 and w2, adding bias b, and passing the result through a step function to draw a single decision boundary line.
+How do we teach a computer to solve problems where a simple straight line is never enough? Consider the classic exclusive-or problem, where two red points sit at opposite corners and two blue points occupy the remaining corners. Try to draw a single straight decision boundary through this coordinate space, and you will find it fundamentally impossible. No matter how you rotate or shift that line, it will always lump at least one red point on the wrong side of the divide with the blue points. Linear classifiers fail completely here because the underlying data distribution is inherently non-linear. To solve this, we need a way to transform the input space itself rather than relying on a flat dividing line.
 
-At the absolute foundation of this architecture sits the artificial neuron, a direct mathematical abstraction of its biological counterpart. It takes incoming numerical signals, scales each one by a specific importance value known as a weight, and sums them all together alongside an added bias term that shifts the entire activation threshold. If that total weighted sum crosses a designated zero threshold, the neuron fires an active signal. Geometrically, this single computational unit acts as a linear boundary equation, slicing the input plane into a binary yes-or-no region.
+## 2 - Bending Space with Hidden Layers
+> ANIM: An animated diagram showing the 2D XOR input space morphing and stretching into a 3D space where a single flat plane can now cleanly separate the red and blue coordinates.
 
-## 3 - From Step Functions to Smooth Non-Linearities
-> ANIM: Show a side-by-side graph morphing a sharp step function into a smooth Sigmoid and ReLU activation function, explaining why gradients require differentiability.
+We solve the limitation of linear models by introducing hidden layers that actively warp and bend the input space. When we feed our tangled two-dimensional coordinates through these intermediate transformations, the geometry itself stretches and folds. This reshaping lifts the points into a higher dimensional space where the classes finally pull apart from one another. Once the space is properly curved, a single flat plane can slice right between the red and blue coordinates with complete separation. The hidden layers act as feature extractors, reshaping raw inputs into a representation where classification becomes a simple linear task.
 
-A hard binary step function works for basic logic, but it completely breaks down when we try to optimize our parameters automatically. Because its derivative is zero everywhere except at the exact threshold where it is undefined, gradient-based learning algorithms receive no directional feedback on how to adjust their parameters. To fix this, we replace the sharp step with a smooth, continuous non-linear activation function like the sigmoid or the rectified linear unit. This slight curvature ensures that tiny adjustments to our inputs produce smooth, measurable changes in the output, providing the crucial gradient slope that learning requires.
+## 3 - The Anatomy of a Single Neuron
+> ANIM: A detailed node diagram tracing inputs x1=0.5 and x2=-0.8 multiplying along weighted edges w1=1.2 and w2=-0.4, summing together with a bias b=+0.1 to produce an intermediate value z.
 
-## 4 - Mapping the Multi-Layer Architecture
-> ANIM: Draw a complete feedforward network diagram with an input layer (3 nodes), two hidden layers (4 nodes each), and an output layer (2 nodes), labeling weights w and biases b on connections.
+To understand how this transformation happens, we have to look inside the fundamental building block of the network, which is the individual artificial neuron. Imagine we have two specific inputs, where x1 is zero point five and x2 is negative zero point eight. Each incoming connection carries a weight that determines its importance. Here, the weight w1 is one point two, and the weight w2 is negative zero point four. Each input multiplies by its corresponding weight, and these products flow into the node together. A bias term, in this case b equals positive zero point one, is added directly to that sum. This combination produces a raw intermediate value known as z.
 
-When we wire many of these neurons together, we build a multi-layer feedforward network with distinct functional zones. Information enters through an input layer of three nodes, passes sequentially through two hidden layers containing four nodes each, and finally exits through a two-node output layer. Every single connection between adjacent nodes represents a trainable parameter, governed by specific weights and biases. Data flows strictly forward through this directed graph, with each successive layer transforming the representation handed to it by the previous one.
+## 4 - Breaking Linearity with Activations
+> ANIM: A split-screen graph showing how the raw sum z passes through a ReLU and Sigmoid curve to produce a squeezed, non-linear output activation value a.
 
-## 5 - Matrix Multiplication as Layer Transformation
-> ANIM: Display an input vector multiplied by a weight matrix W^{(1)} plus bias vector b^{(1)}, showing the dimension transformations from input space to hidden feature space.
+That raw intermediate sum z is still just a linear combination, which means stacking layers without something extra would collapse right back into a single linear function. To prevent this, the value passes through a non-linear activation function. If we route our sum through a Rectified Linear Unit, or ReLU, negative values drop to zero while positive values pass straight through. Alternatively, passing the sum through a Sigmoid curve squeezes that output into a smooth range between zero and one. In both cases, this operation transforms the raw sum into a final activation value a, injecting the non-linear capability required to bend our decision boundaries.
 
-Mathematically, moving information across a layer is nothing more than a series of linear algebra operations. We take our incoming feature vector, multiply it by a weight matrix, and add a bias vector to shift the coordinate origin. This matrix multiplication actively stretches, rotates, and shears the input space into a new dimensionality. Applying our non-linear activation function right after this matrix operation then bends that newly transformed space, allowing the network to capture complex geometric relationships.
+## 5 - Scaling to Matrices
+> ANIM: A transformation of individual node connection lines into a structured matrix-vector multiplication equation, highlighting the dimensions of the weight matrix W, bias vector b, and activation vector a.
 
-## 6 - Tracing a Single Forward Pass with Concrete Values
-> ANIM: Trace a specific input vector [0.5, -1.2] step-by-step through the network diagram, showing numeric values computed at each node up to the final output layer.
+When we scale these individual calculations across an entire network, we move from scalar equations to structured matrix-vector operations. Instead of tracking every single node connection by hand, we group the weights into a cohesive matrix W and combine the biases into a vector b. The incoming layer values form an input vector that multiplies directly with the weight matrix before the bias vector is added. This matrix representation allows modern processors to compute the operations for thousands of neurons simultaneously. The resulting output vector a holds the activations for the entire layer, ready to be passed forward as the input for the next stage.
 
-Let us trace this exact forward pass using concrete values, following an input vector of zero point five and negative one point two. We multiply these specific numbers by the first layer weight matrix, add our bias vector terms, and compute the resulting pre-activation sums. Passing those values through our non-linear activation function gives us a new coordinate vector of length four. We feed those intermediate results into the second hidden layer, apply the next weight matrix and bias vector, and propagate the transformed values all the way forward until the final output nodes yield our ultimate prediction scores.
+## 6 - Tracing the Forward Pass
+> ANIM: An animated schematic of a three-layer network where a concrete 2-element input vector flows left-to-right, lighting up nodes and updating vector values at each layer until a final prediction is output.
 
-## 7 - The Universal Approximation Theorem in Action
-> ANIM: Animate multiple piecewise linear decision boundaries combining in a 2D plane to approximate a complex circular region, illustrating how hidden layers warp space.
+Now we can trace this entire process as a forward pass through a complete three-layer network. We start with our concrete two-element input vector, where x1 is zero point five and x2 is negative zero point eight. These values flow from left to right across the weighted connections, updating the intermediate sums and activation values at every hidden node in sequence. The resulting vectors transform step by step as they move deeper into the architecture. By the time the signals reach the output layer, they have resolved into a final prediction vector that represents the network decision for that specific input.
 
-When you stack these linear transformations and non-linear bends together, the network implements the universal approximation theorem in practice. Each hidden layer adds another set of piecewise linear boundaries that carve up the input space into increasingly intricate polygonal regions. As you add more neurons and layers, these combined boundaries can tightly hug and approximate almost any continuous function of arbitrary complexity. The network is essentially learning a hierarchical coordinate transformation, gradually turning raw pixel intensities into cleanly separable semantic categories.
+## 7 - The Learning Problem
+> ANIM: A high-level view of the complete network structure with a sliding loss-function gauge on the right, pointing to the question of how to automatically tune the millions of weights to minimize error.
 
-## 8 - Summary and the Challenge of Learning
-> ANIM: Recap the forward pass mapping from inputs to outputs via stacked matrix operations, ending with a highlighted question mark over the weight values and the prompt: how do we automatically find the correct weights?
-
-Every prediction your network makes is just the end result of stacked matrix multiplications and smooth non-linear function activations cascading from inputs to outputs. But all of this machinery relies entirely on having the correct numerical values for every single weight and bias in the system. Right now, those crucial parameters are just arbitrary placeholders sitting in our matrices. How do we automatically find the correct weights that minimize our errors?
+We have built a system that can compute complex non-linear functions through weighted connections and activation transformations, but this leaves us with a massive optimization challenge. A practical network contains thousands or even millions of these weights and biases, and we cannot set them by hand. On the right side of our architecture, a loss function gauge measures the exact error of our current predictions against the true targets. This brings us to the central question of how we can automatically tune all of those interconnected parameters to drive the error down to zero.
 
