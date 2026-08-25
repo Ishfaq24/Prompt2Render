@@ -132,23 +132,34 @@ deterministic post-check of geometry (see §7, §14).
 
 ## 5. Renderer boundaries
 
-There is **no renderer capability model**. A repo-wide grep for
-`capability|capabilities|renderer_profile` in `harness/` returns nothing.
+**Resolved in Tier 2 Phase 8-9** (§17) — this section originally documented F12/F13 as live
+findings; kept below for history, corrected in place.
+
+There was **no renderer capability model**. A repo-wide grep for
+`capability|capabilities|renderer_profile` in `harness/` returns nothing (still true — Phase 8-9
+fixed the *mechanism* via config-driven effect-collision routing, not a new capability-profile
+abstraction; that remains a real gap for future "hybrid" routing per the target architecture).
 
 Backend selection is an all-or-nothing, process-wide swap enforced by an *effect-name
-collision*: `renderer_stills` and `renderer_manim` both declare `render_artifacts`, so the
-loader rejects the DAG if both are enabled (`config.yaml:88-92` documents this).
-The `--manim` flag (`prompt2render.py:251-300`) flips enablement and then **monkey-patches**
-`GeneratorManimPlugin` over `generator_code` after `build_plugins()` — that class is not in
-`REGISTRY` at all (`harness/plugins/__init__.py:73-142`).
+collision*: `renderer_stills`/`renderer_manim` (and, since Phase 8-9, `generator_code`/
+`generator_manim` and `renderer_finish`/`renderer_manim_finish`) each declare the same effect,
+so the loader rejects the DAG if both members of a pair are enabled. ~~The `--manim` flag flips
+enablement and then monkey-patches `GeneratorManimPlugin` over `generator_code` after
+`build_plugins()` — that class is not in `REGISTRY` at all.~~ **Fixed**: `generator_manim` (plus
+two new plugins) are now normal `REGISTRY` entries; `--manim` is pure config toggling, no
+post-hoc plugin-list surgery.
 
-`--manim` additionally disables `generator_timeline`, `renderer_encode`, `renderer_finish`,
-`generator_publish`, `verifier_audio` and `verifier_final_qc` — i.e. **the entire production
-tail. Manim mode cannot currently produce a final video and is an experimental branch, not a
-shippable path.**
+~~`--manim` additionally disables the entire production tail. Manim mode cannot currently
+produce a final video and is an experimental branch, not a shippable path.~~ **Fixed**: new
+`finish.finish_manim()` + `RendererManimFinishPlugin` assemble Manim's per-section clips
+straight into `out/final.mp4` (bypassing the stills-only `generator_timeline`/`renderer_encode`
+stages, which Manim's renderer never needed in the first place), verified by a new, deliberately
+smaller-scoped `VerifierManimFinalQcPlugin`. `--manim` remains experimental/opt-in (not the
+default), but it is no longer structurally incapable of shipping a final video.
 
 A real per-section routing heuristic *does* exist — `scenes.select_renderer` (`scenes.py:917-944`,
-tag + keyword based) — but it lives in the legacy path and is unreachable from the harness.
+tag + keyword based) — but it lives in the legacy path and is unreachable from the harness. Per-
+section *hybrid* routing (the target architecture's third renderer option) is still unbuilt.
 
 ---
 
@@ -475,6 +486,28 @@ DOCUMENT → CHECKPOINT.
     embeddings — F14's "not embedding-based" is an explicit, unchanged design choice), scoped
     entirely to `GeneratorManimPlugin`'s prompts, i.e. still inside the already-experimental
     `--manim` path; the shippable stills default is untouched.
+  - **Phase 8-9** (renderer capability routing, F12 + F13) — **Done, full fix.** F13:
+    `generator_manim`, and two new plugins (below), are now normal `REGISTRY` entries —
+    `prompt2render.py`'s `cmd_harness` no longer post-hoc splices plugin instances into an
+    already-resolved list; selecting `--manim` is pure config toggling, resolved by
+    `build_plugins()` itself via the same effect-collision mechanism that already governed
+    `renderer_stills`/`renderer_manim` (each Manim/stills pair now declares the same effect:
+    `code_artifacts`, `render_artifacts`, `final_video`). F12: root-caused this session —
+    `--manim` disabled the entire production tail because `timeline.py`/`encode.py`/`qc.py` are
+    built around the **stills** rendering model specifically (`timeline.build()` reads
+    `stills.manifest()`, a per-*frame* PNG manifest; `qc.check()` re-inspects stills-specific
+    `.py` scene modules via `stills.*` calls that don't exist in Manim mode) — none of it reuses
+    unchanged for Manim's one-complete-clip-per-section output. Fixed with new, purely additive
+    `finish.finish_manim()` (reuses `finish()`'s own renderer-agnostic building blocks —
+    `_concat`, `_check_master_audio`, `_mux_final`, `captions.write_srt` — none of which touch
+    `stills.*`, confirmed by reading them directly), a new `RendererManimFinishPlugin`
+    (bypasses `generator_timeline`/`renderer_encode` entirely — not needed, Manim's renderer
+    already produces complete per-section clips), and a new, deliberately smaller-scoped
+    `VerifierManimFinalQcPlugin` (stream presence + duration tolerance via ffprobe, not full
+    parity with `qc.check()`'s stills-specific suite — a known, documented gap, not an
+    oversight). `generator_publish`/`verifier_audio` no longer force-disabled for Manim mode —
+    both only needed `out/final.mp4` to exist, which `renderer_manim_finish` now produces
+    within the harness itself. `--manim` mode can now reach a real `out/final.mp4`.
 - **Tier 3 (Phases 10-15)** — unified multi-verifier; **closed-loop visual grounding** (F3,
   deterministic CV first, VLM only for semantic judgments); motion traces; reproducible weighted
   quality scoring; verifier-driven repair with regression detection; experience memory.

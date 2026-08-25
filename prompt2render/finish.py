@@ -707,6 +707,194 @@ def finish(
     return final
 
 
+def finish_manim(
+    proj: Path,
+    script: Script,
+    section_clips: dict[str, Path],
+    burn: bool = False,
+    style: str = "srt",
+) -> Path:
+    """Build and return ``out/final.mp4`` from Manim's own per-section clips.
+
+    Tier 2 Phase 8-9 (docs/ARCHITECTURE_AUDIT.md SS17, F12: "--manim disables
+    the production tail... not shippable"). Unlike ``finish()``, this does
+    not depend on ``timeline.load()``'s per-frame clip plan at all -- Manim
+    already renders one complete video per section, so there is no per-frame
+    Ken-Burns concatenation stage to run first (that stage, and the
+    ``stills.manifest()`` it reads, is exactly the piece that made the
+    production tail stills-only). Reuses the same renderer-agnostic building
+    blocks ``finish()`` itself already uses for its own final assembly --
+    ``_concat``, ``_check_master_audio``, ``captions.write_srt``,
+    ``_chapters``, and ``_mux_final`` -- confirmed by reading them directly:
+    none touch ``stills.*`` or the per-frame clip plan.
+
+    Deliberately smaller in scope than ``finish()``: no thumbnail extraction
+    (``_thumbnail`` needs the stills-specific per-frame ``rows``, which
+    doesn't exist here) -- a known, non-blocking gap, not an oversight.
+    """
+
+    cfg.need(
+        "ffmpeg",
+        "ffprobe",
+    )
+
+    out = proj / "out"
+    build = proj / "build"
+    out.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    for section in script.sections:
+        clip = section_clips.get(section.stem)
+
+        if clip is None or not clip.exists():
+            sys.exit(
+                f"[prompt2render] no rendered clip for section "
+                f"{section.stem} -- run the Manim renderer first"
+            )
+
+    master = build / "master.m4a"
+    _check_master_audio(
+        proj,
+        master,
+    )
+
+    # Manim clips live under scattered per-section directories
+    # (build/manim/videos/scene_<stem>/...); _concat's ffmpeg concat demuxer
+    # needs every input in one directory, so stage flat copies first -- the
+    # same "one flat directory of clips" shape build/clips/ already has for
+    # the stills pipeline.
+    stage = build / "manim_finish"
+    stage.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    filenames: list[str] = []
+
+    for section in script.sections:
+        destination = stage / f"{section.stem}.mp4"
+        shutil.copyfile(
+            section_clips[section.stem],
+            destination,
+        )
+        filenames.append(destination.name)
+
+    video = build / "video.mp4"
+    _concat(
+        filenames,
+        video,
+        stage,
+    )
+
+    srt = captions.write_srt(
+        proj,
+        script,
+        out / "captions.srt",
+    )
+
+    metadata = _chapters(
+        proj,
+        script,
+        build / "chapters.txt",
+    )
+
+    if not srt.exists() or srt.stat().st_size == 0:
+        cfg.warn(
+            "caption file is empty; final video will contain an empty "
+            "subtitle stream"
+        )
+
+    final_video = video
+
+    if burn:
+        normalized_style = style.lower().strip()
+
+        if normalized_style not in {
+            "srt",
+            "ass",
+        }:
+            raise ValueError(
+                f"unsupported caption style {style!r}; "
+                "expected 'srt' or 'ass'"
+            )
+
+        subtitle = (
+            captions.write_ass(
+                proj,
+                script,
+                out / "captions.ass",
+            )
+            if normalized_style == "ass"
+            else srt
+        )
+
+        if normalized_style == "ass":
+            vf = (
+                f"ass={cfg.filter_path(subtitle)}"
+            )
+        else:
+            vf = (
+                f"subtitles={cfg.filter_path(subtitle)}:"
+                "force_style='"
+                f"FontName={cfg.CAPTION_FONT},"
+                "FontSize=22,"
+                "PrimaryColour=&HFFFFFF&,"
+                "OutlineColour=&H80000000&,"
+                "BorderStyle=3,"
+                "Outline=1,"
+                "MarginV=40'"
+            )
+
+        burned = build / "video_burned.mp4"
+        burned.unlink(
+            missing_ok=True
+        )
+
+        cfg.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-i", str(video),
+                "-vf", vf,
+                *cfg.pick_vopts(),
+                str(burned),
+            ]
+        )
+
+        if not burned.exists() or burned.stat().st_size <= 2048:
+            raise RuntimeError(
+                f"caption burn-in produced an invalid video: {burned}"
+            )
+
+        final_video = burned
+
+    _mux_final(
+        final_video,
+        master,
+        srt,
+        metadata,
+        out / "final.mp4",
+    )
+
+    final = out / "final.mp4"
+
+    total = cfg.duration(
+        final
+    )
+
+    cfg.say(
+        f"final (manim): {final}  "
+        f"({total / 60:.2f} min)"
+    )
+
+    return final
+
+
 __all__ = [
     "finish",
+    "finish_manim",
 ]

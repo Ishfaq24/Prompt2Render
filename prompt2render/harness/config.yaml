@@ -79,11 +79,13 @@ generator_code:
   enabled: true            # real: wraps scenes.generate_all
   gate_override: null
 
-# generator_manim has no REGISTRY entry (F13, unfixed -- Tier 2 Phase 8-9's
-# job) -- it's hot-swapped in for generator_code by prompt2render.py's
-# --manim flag, which passes this block through. enabled/gate_override here
-# would go unread; only plugin-specific keys matter.
+# Tier 2 Phase 8-9: generator_manim is now a normal REGISTRY entry (F13
+# fixed). Alternative backend to generator_code; both declare code_artifacts,
+# so exactly one may be enabled at a time -- the same effect-collision
+# mechanism that already governs renderer_stills/renderer_manim below.
 generator_manim:
+  enabled: false
+  gate_override: null
   use_motion_compiler: false   # Tier 2 Phase 4: opt in to the deterministic
                                 # motion compiler instead of freehand LLM
                                 # choreography. Default off.
@@ -131,6 +133,24 @@ renderer_manim:
                           # the same render_artifacts effect, so exactly one may
                           # be enabled at a time (the CLI's --manim flag flips
                           # this on and renderer_stills off together)
+  gate_override: true
+
+# Tier 2 Phase 8-9 (F12): assembles Manim's per-section clips straight into
+# out/final.mp4 via finish.finish_manim -- bypasses generator_timeline/
+# renderer_encode entirely (those are stills-only: they plan/encode one clip
+# per still-image transition, a shape Manim's own renderer never produces).
+# Declares final_video, same as renderer_finish -- exactly one of the two
+# may be enabled at a time, same effect-collision mechanism as above.
+renderer_manim_finish:
+  enabled: false
+  gate_override: null
+  burn: false
+
+# Tier 2 Phase 8-9 (F12): deliberately smaller-scoped than verifier_final_qc
+# (qc.check() re-inspects stills-specific .py scene modules that don't exist
+# in Manim mode) -- checks out/final.mp4 exists with video+audio streams.
+verifier_manim_final_qc:
+  enabled: false
   gate_override: true
 
 

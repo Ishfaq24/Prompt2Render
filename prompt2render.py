@@ -247,75 +247,44 @@ def cmd_harness(a):
         cfg_dict["renderer_finish"] = {}
     cfg_dict["renderer_finish"]["burn"] = getattr(a, "burn", False)
 
+    # Tier 2 Phase 8-9 (F13 fix): generator_manim/renderer_manim_finish/
+    # verifier_manim_final_qc are now normal REGISTRY entries, so selecting
+    # Manim mode is pure config toggling resolved by build_plugins() itself
+    # -- no post-hoc plugin-list splicing needed. Each Manim/stills pair
+    # declares the same effect (code_artifacts / render_artifacts /
+    # final_video), so the loader's existing effect-collision rejection is
+    # what enforces "exactly one enabled at a time", the same mechanism
+    # that already governed renderer_stills/renderer_manim before this fix.
+    #
     # A stale config from an earlier experimental run must not inject Manim
     # into ordinary --harness builds. Only an explicit --manim opts in.
     if not getattr(a, "manim", False):
+        cfg_dict.setdefault("generator_manim", {})["enabled"] = False
         cfg_dict.setdefault("renderer_manim", {})["enabled"] = False
+        cfg_dict.setdefault("renderer_manim_finish", {})["enabled"] = False
+        cfg_dict.setdefault("verifier_manim_final_qc", {})["enabled"] = False
     else:
-        # Manim produces opaque section clips, not still manifests.
-        # Disable the still renderer before build_plugins() resolves the DAG;
-        # otherwise both renderer_stills and renderer_manim claim the shared
-        # render_artifacts field and the loader correctly rejects the graph.
+        cfg_dict.setdefault("generator_code", {})["enabled"] = False
+        cfg_dict.setdefault("generator_manim", {})["enabled"] = True
         cfg_dict.setdefault("renderer_stills", {})["enabled"] = False
         cfg_dict.setdefault("renderer_manim", {})["enabled"] = True
+        cfg_dict.setdefault("renderer_finish", {})["enabled"] = False
+        cfg_dict.setdefault("renderer_manim_finish", {})["enabled"] = True
+        cfg_dict.setdefault("verifier_final_qc", {})["enabled"] = False
+        cfg_dict.setdefault("verifier_manim_final_qc", {})["enabled"] = True
+        # Manim produces one complete clip per section directly -- the
+        # stills-only per-frame Ken-Burns plan/encode stages (F12: this used
+        # to mean the whole production tail was disabled and --manim could
+        # never reach a shippable final video) are simply not needed.
         cfg_dict.setdefault("generator_timeline", {})["enabled"] = False
         cfg_dict.setdefault("renderer_encode", {})["enabled"] = False
-        cfg_dict.setdefault("renderer_finish", {})["enabled"] = False
-        cfg_dict.setdefault("generator_publish", {})["enabled"] = False
-        # We also disable verifier_audio because it expects out/final.mp4 which won't exist yet
-        # (assemble runs *after* the harness).
-        cfg_dict.setdefault("verifier_audio", {})["enabled"] = False
-        cfg_dict.setdefault("verifier_final_qc", {})["enabled"] = False
-    
-    plugins = build_plugins(config=cfg_dict)
-    
-    # Hot-swap plugins if --manim is requested
-    if getattr(a, "manim", False):
-        from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin, RendererManimPlugin
-        # Replace generator_code with generator_manim. Pass its config.yaml
-        # block through (e.g. use_motion_compiler) -- a bare GeneratorManimPlugin()
-        # would silently ignore any config for it.
-        plugins = [
-            GeneratorManimPlugin(cfg_dict.get("generator_manim", {})) if p.name == "generator_code" else p
-            for p in plugins
-        ]
-        # Keep an already-enabled renderer_manim, or replace renderer_stills
-        # when an older configuration supplied only the still renderer.
-        new_plugins = []
-        manim_renderer_seen = False
-        for p in plugins:
-            if p.name == "renderer_stills":
-                if not manim_renderer_seen:
-                    new_plugins.append(
-                        RendererManimPlugin({"enabled": True, "gate_override": True})
-                    )
-                    manim_renderer_seen = True
-            elif p.name == "renderer_manim":
-                new_plugins.append(p)
-                manim_renderer_seen = True
-            else:
-                new_plugins.append(p)
-
-        if not manim_renderer_seen:
-            new_plugins.append(
-                RendererManimPlugin({"enabled": True, "gate_override": True})
-            )
-                
-        # Ensure verifier_temporal is enabled in Manim mode and runs after the renderer
-        if not any(p.name == "verifier_temporal" for p in new_plugins):
-            from prompt2render.harness.plugins.verifier_temporal import VerifierTemporalPlugin
-            # Insert right after renderer_manim
-            idx = next((i for i, p in enumerate(new_plugins) if p.name == "renderer_manim"), len(new_plugins))
-            new_plugins.insert(idx + 1, VerifierTemporalPlugin({"enabled": True, "gate_override": True}))
-        # Manim produces section-level MP4 clips, not scenekit still manifests.
-        # Never allow still-based timeline/encode/finish plugins into this graph,
-        # even if a stale config file enabled them.
-        incompatible = {
-            "generator_timeline", "renderer_encode", "renderer_finish",
-            "verifier_audio", "verifier_final_qc", "generator_publish",
-        }
-        plugins = [p for p in new_plugins if p.name not in incompatible]
+        # generator_publish/verifier_audio no longer force-disabled: both
+        # only need out/final.mp4 to exist, which renderer_manim_finish now
+        # produces within the harness itself (verifier_audio's old comment,
+        # "assemble runs *after* the harness", no longer applies).
         cfg.say("harness: running in experimental --manim mode")
+
+    plugins = build_plugins(config=cfg_dict)
     repair_router = build_repair_router(config=cfg_dict)
     
     log_path = d / "build" / "harness" / "log.jsonl"

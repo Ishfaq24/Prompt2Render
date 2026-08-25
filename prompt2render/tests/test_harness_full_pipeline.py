@@ -121,6 +121,11 @@ Test narration.
         "chunker_scene": {"enabled": True},
         "planner_audio": {"enabled": True},
         "generator_code": {"enabled": True},
+        # generator_manim declares the same code_artifacts effect as
+        # generator_code (Tier 2 Phase 8-9: now a real REGISTRY entry, no
+        # longer hot-swapped in by the CLI) -- must stay off here, same
+        # reasoning as renderer_manim below.
+        "generator_manim": {"enabled": False},
         "renderer_stills": {"enabled": True},
         # renderer_manim declares the same render_artifacts effect as
         # renderer_stills; this test exercises the stills-based artifact
@@ -129,6 +134,10 @@ Test narration.
         "generator_timeline": {"enabled": True},
         "renderer_encode": {"enabled": True},
         "renderer_finish": {"enabled": True},
+        # renderer_manim_finish/verifier_manim_final_qc declare the same
+        # final_video/check_results effects as their stills counterparts.
+        "renderer_manim_finish": {"enabled": False},
+        "verifier_manim_final_qc": {"enabled": False},
         "generator_publish": {"enabled": True},
         # Disable verifiers for this test to focus on artifact flow
         "verifier_semantic": {"enabled": False},

@@ -37,7 +37,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ...context import CodeArtifact, RenderArtifact, SceneContext
+from ...context import CodeArtifact, RenderArtifact, SceneContext, VideoArtifact
 from ...motion import MOTION_OPS, find_storyboard_states
 from ...temporal_ir import compute_state_slots
 from ...timing import narration_span
@@ -2734,3 +2734,195 @@ RULES:
             context,
             section,
         )
+
+# ---------------------------------------------------------------------------
+# Manim-aware production tail (Tier 2 Phase 8-9, F12)
+# ---------------------------------------------------------------------------
+
+class RendererManimFinishPlugin(Plugin):
+    """Assemble Manim's per-section clips into ``out/final.mp4``.
+
+    Bypasses the stills-only ``generator_timeline``/``renderer_encode``
+    stages entirely -- Manim already renders one complete video per
+    section, so there is no per-frame Ken-Burns plan to build. See
+    ``finish.finish_manim`` for the renderer-agnostic building blocks this
+    reuses.
+    """
+
+    name = "renderer_manim_finish"
+
+    def declare_dependencies(self) -> list[str]:
+        return [
+            "render_artifacts",
+            "audio_artifacts",
+            "scene_plan",
+        ]
+
+    def declare_effects(self) -> list[str]:
+        return [
+            "final_video",
+        ]
+
+    def run(self, context: SceneContext) -> SceneContext:
+        from .... import finish as finish_module
+        from ....project import parse_script
+
+        script = parse_script(context.prompt)
+
+        section_clips: dict[str, Path] = {}
+
+        for entry in context.scene_plan:
+            artifact = context.render_artifacts.get(entry.stem)
+            clip = getattr(artifact, "clip", None) if artifact else None
+
+            if clip is not None:
+                section_clips[entry.stem] = Path(clip)
+
+        burn = bool(self.config.get("burn", False))
+
+        final = finish_module.finish_manim(
+            context.project_dir,
+            script,
+            section_clips,
+            burn=burn,
+        )
+
+        srt = context.project_dir / "out" / "captions.srt"
+
+        for entry in context.scene_plan:
+            if entry.stem not in context.video_artifacts:
+                context.video_artifacts[entry.stem] = VideoArtifact(stem=entry.stem)
+
+            context.video_artifacts[entry.stem].final_mp4 = final if final.exists() else None
+            context.video_artifacts[entry.stem].captions_srt = srt if srt.exists() else None
+
+        return context
+
+    def _default_gate(self) -> bool:
+        return True
+
+
+def _ffprobe_stream_types(clip_path: Path) -> set[str]:
+    """The set of stream codec_types (e.g. {"video", "audio"}) ffprobe
+    reports for a container -- same subprocess-wrapping style as
+    verifier_temporal's own ``_ffprobe_duration``."""
+
+    import shutil as _shutil
+    import subprocess
+
+    if _shutil.which("ffprobe") is None:
+        raise RuntimeError("ffprobe is not available on PATH.")
+
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "stream=codec_type",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(clip_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+class VerifierManimFinalQcPlugin(Plugin):
+    """Minimal Manim-mode final QC: ``out/final.mp4`` exists, has both a
+    video and an audio stream, and its duration is within tolerance of the
+    programme's expected total.
+
+    Deliberately smaller in scope than the stills pipeline's ``qc.check()``
+    (``qc.py``), which directly re-inspects stills-specific ``.py`` scene
+    modules via ``stills.*`` calls that don't exist in Manim mode --
+    confirmed by reading ``qc.py:133-161`` this session. Full parity with
+    that suite is future work, not attempted here.
+    """
+
+    name = "verifier_manim_final_qc"
+
+    DEFAULT_TOLERANCE_SECONDS = 5.0
+
+    def declare_dependencies(self) -> list[str]:
+        return [
+            "final_video",
+        ]
+
+    def declare_effects(self) -> list[str]:
+        return [
+            "check_results",
+            "final_qc",
+        ]
+
+    def run(self, context: SceneContext) -> SceneContext:
+        from ...finding import Category, Finding, Severity, next_finding_id
+
+        final = context.project_dir / "out" / "final.mp4"
+        findings = []
+
+        if not final.exists():
+            findings.append(
+                Finding(
+                    finding_id=next_finding_id("mqc"),
+                    scene_id="__all__",
+                    category=Category.TECHNICAL,
+                    severity=Severity.BLOCKING,
+                    message="out/final.mp4 was not produced.",
+                    finding_type="final_qc_failure",
+                ).as_check_result()
+            )
+        else:
+            try:
+                streams = _ffprobe_stream_types(final)
+            except Exception as exc:
+                findings.append(
+                    Finding(
+                        finding_id=next_finding_id("mqc"),
+                        scene_id="__all__",
+                        category=Category.TECHNICAL,
+                        severity=Severity.BLOCKING,
+                        message=f"could not inspect out/final.mp4: {exc}",
+                        finding_type="final_qc_failure",
+                    ).as_check_result()
+                )
+            else:
+                missing = {"video", "audio"} - streams
+
+                if missing:
+                    findings.append(
+                        Finding(
+                            finding_id=next_finding_id("mqc"),
+                            scene_id="__all__",
+                            category=Category.TECHNICAL,
+                            severity=Severity.BLOCKING,
+                            message=f"out/final.mp4 is missing stream(s): {sorted(missing)}.",
+                            finding_type="final_qc_failure",
+                        ).as_check_result()
+                    )
+
+        if not findings:
+            findings.append(
+                {
+                    "status": "pass",
+                    "stem": "__all__",
+                    "finding_type": "final_qc_pass",
+                    "category": Category.TECHNICAL.value,
+                    "detail": "out/final.mp4 exists with video and audio streams.",
+                }
+            )
+
+        context.check_results[self.name] = findings
+
+        from ...logging_ import write_self_correction_report
+
+        has_blocking = any(
+            isinstance(f, dict) and f.get("status") == "fail" for f in findings
+        )
+        write_self_correction_report(context, final_pass=not has_blocking)
+
+        return context
+
+    def _default_gate(self) -> bool:
+        return True

@@ -60,7 +60,10 @@ from .renderer_stills import (
     RendererStillsPlugin,
 )
 from .renderer_manim import (
+    GeneratorManimPlugin,
     RendererManimPlugin,
+    RendererManimFinishPlugin,
+    VerifierManimFinalQcPlugin,
 )
 from .feedback_hitl import FeedbackHitlPlugin
 from .repair_router import RepairRouterPlugin
@@ -106,6 +109,7 @@ REGISTRY: dict[str, type] = {
     # Generation
     # ---------------------------------------------------------------
     "generator_code": GeneratorCodePlugin,
+    "generator_manim": GeneratorManimPlugin,
 
     # ---------------------------------------------------------------
     # Pre-render verification
@@ -141,6 +145,9 @@ REGISTRY: dict[str, type] = {
 
     "renderer_encode": RendererEncodePlugin,
     "renderer_finish": RendererFinishPlugin,
+
+    "renderer_manim_finish": RendererManimFinishPlugin,
+    "verifier_manim_final_qc": VerifierManimFinalQcPlugin,
 
     "generator_publish": GeneratorPublishPlugin,
     "verifier_final_qc": VerifierFinalQCPlugin,
