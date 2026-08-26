@@ -207,13 +207,20 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
         "--media_dir", str(work), str(py_file), scene,
     ]
 
+    timeout = cfg.env_int("P2R_MANIM_TIMEOUT", 360)
+
     try:
         # Capture output because the repair router can use the actual Manim
         # diagnostics rather than a generic "render failed" message.
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         cfg.need("manim")
         raise
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"Manim render for {scene} timed out after {timeout}s "
+            "(set P2R_MANIM_TIMEOUT to raise this)"
+        )
 
     if res.returncode != 0:
         diagnostics = (res.stderr or res.stdout or "").strip()

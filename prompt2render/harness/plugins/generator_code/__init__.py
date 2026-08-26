@@ -49,7 +49,7 @@ MAX_REPAIR_FEEDBACK = 6000
 #: own preflight validator; this is only a safety net for defects that only
 #: the harness's own check (e.g. Manim-vs-SceneKit backend detection) would
 #: catch.
-MAX_HARNESS_CHECK_RETRIES = 1
+MAX_HARNESS_CHECK_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------

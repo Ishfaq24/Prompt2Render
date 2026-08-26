@@ -91,7 +91,7 @@ MAX_REPAIR_FEEDBACK = 6000
 #: One initial attempt plus this many local regenerate-and-recheck attempts
 #: before a scene's harness check failure is logged and generation moves on
 #: to the next scene. See ``generator_code``'s identical constant/pattern.
-MAX_HARNESS_CHECK_RETRIES = 1
+MAX_HARNESS_CHECK_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -2209,7 +2209,7 @@ RULES:
         ):
             code = llm.complete(
                 prompt,
-                max_tokens=5000,
+                max_tokens=20000,
                 model_env="P2R_SCENE_MODEL",
                 default_model=os.environ.get(
                     "P2R_SCENE_MODEL",
