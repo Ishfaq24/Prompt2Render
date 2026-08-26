@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ... import lineage
 from ...context import RenderArtifact, SceneContext
 from ...plugin import Plugin
 from .... import align, stills
@@ -198,6 +199,13 @@ def _record_render_artifact(
                 outdir,
             ),
             audit=_audit(outdir),
+            # The stills renderer emits a per-frame manifest rather than a
+            # single clip, so `clip` stays None here by design -- the
+            # per-frame plan is assembled downstream by timeline/encode.
+            source_revision=lineage.current_revision(
+                context,
+                stem,
+            ),
         )
     )
 

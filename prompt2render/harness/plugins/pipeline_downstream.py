@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from .. import lineage
 from ..context import AudioArtifact, SceneContext, VideoArtifact
 from ..plugin import Plugin
 from ... import align, encode, finish, publish, timeline, voice
@@ -165,7 +166,18 @@ class RendererFinishPlugin(Plugin):
                 context.video_artifacts[entry.stem] = VideoArtifact(stem=entry.stem)
             context.video_artifacts[entry.stem].final_mp4 = final if final.exists() else None
             context.video_artifacts[entry.stem].captions_srt = srt if srt.exists() else None
-            
+
+        # Program-level artifact, stamped with the scene revisions it was
+        # built from -- this is what makes a later scene repair invalidate
+        # out/final.mp4 automatically instead of leaving a stale file
+        # looking authoritative.
+        lineage.record_program(
+            context,
+            final_mp4=final,
+            captions_srt=srt,
+            chapters=context.project_dir / "build" / "chapters.txt",
+        )
+
         return context
 
 

@@ -37,7 +37,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ... import hitl
+from ... import hitl, lineage
 from ...context import CodeArtifact, RenderArtifact, SceneContext, VideoArtifact
 from ...motion import MOTION_OPS, find_storyboard_states
 from ...temporal_ir import compute_state_slots
@@ -367,12 +367,16 @@ def _record_code_artifact(
         and path.is_file()
     )
 
+    if exists:
+        lineage.ensure_tracked(context, stem)
+
     context.code_artifacts[stem] = CodeArtifact(
         stem=stem,
         path=path if exists else None,
         accepted=bool(
             accepted and exists
         ),
+        revision=lineage.current_revision(context, stem),
     )
 
 
@@ -1279,12 +1283,22 @@ class RendererManimPlugin(Plugin):
                 RenderArtifact(
                     stem=stem,
                     outdir=out.parent,
+                    # `clip` is what RendererManimFinishPlugin reads to
+                    # assemble the programme. It used to be left unset here
+                    # while only the manifest carried the path, so the
+                    # finish stage always saw an empty clip map and could
+                    # never produce out/final.mp4. Both are written now.
+                    clip=out,
                     manifest=[
                         {
                             "png": None,
                             "mp4": str(out),
                         }
                     ],
+                    source_revision=lineage.current_revision(
+                        context,
+                        stem,
+                    ),
                 )
             )
 
@@ -1371,12 +1385,17 @@ class RendererManimPlugin(Plugin):
                 RenderArtifact(
                     stem=stem,
                     outdir=out.parent,
+                    clip=out,
                     manifest=[
                         {
                             "png": None,
                             "mp4": str(out),
                         }
                     ],
+                    source_revision=lineage.current_revision(
+                        context,
+                        stem,
+                    ),
                 )
             )
 
@@ -2757,7 +2776,11 @@ class RendererManimFinishPlugin(Plugin):
 
         for entry in context.scene_plan:
             artifact = context.render_artifacts.get(entry.stem)
-            clip = getattr(artifact, "clip", None) if artifact else None
+
+            # RenderArtifact.clip_path() tolerates either the explicit
+            # `clip` field or the manifest's "mp4" entry, so a context
+            # produced by an older run still resolves.
+            clip = artifact.clip_path() if artifact is not None else None
 
             if clip is not None:
                 section_clips[entry.stem] = Path(clip)
@@ -2779,6 +2802,13 @@ class RendererManimFinishPlugin(Plugin):
 
             context.video_artifacts[entry.stem].final_mp4 = final if final.exists() else None
             context.video_artifacts[entry.stem].captions_srt = srt if srt.exists() else None
+
+        lineage.record_program(
+            context,
+            final_mp4=final,
+            captions_srt=srt,
+            chapters=context.project_dir / "build" / "chapters.txt",
+        )
 
         return context
 

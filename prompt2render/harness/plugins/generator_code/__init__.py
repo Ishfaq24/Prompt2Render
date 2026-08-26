@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from ... import lineage
 from ...context import CodeArtifact, SceneContext
 from ...plugin import Plugin
 from ..verifier_execution import check_scene_artifact
@@ -156,7 +157,12 @@ def _record_artifact(
     context: SceneContext,
     stem: str,
 ) -> None:
-    """Synchronise the in-memory artifact record with disk."""
+    """Synchronise the in-memory artifact record with disk.
+
+    Also seeds artifact lineage: a scene that exists on disk is at least
+    revision 1, so a later repair produces revision 2 and "no artifact"
+    stays distinguishable from "the original artifact".
+    """
 
     path = scene_path(
         context.project_dir,
@@ -168,10 +174,14 @@ def _record_artifact(
         and path.is_file()
     )
 
+    if exists:
+        lineage.ensure_tracked(context, stem)
+
     context.code_artifacts[stem] = CodeArtifact(
         stem=stem,
         path=path if exists else None,
         accepted=exists,
+        revision=lineage.current_revision(context, stem),
     )
 
 
