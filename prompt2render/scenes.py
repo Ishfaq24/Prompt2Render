@@ -605,6 +605,59 @@ def _check_manim_kwarg_signatures(tree: ast.AST) -> list[str]:
     return errors
 
 
+def _check_play_raw_mobject(tree: ast.AST) -> list[str]:
+    """Flag a bare Mobject constructed directly inside ``self.play(...)``.
+
+    ``self.play()`` takes Animations, not Mobjects — ``self.play(Circle())``
+    fails with "X cannot be converted to an animation" only once Manim is
+    already mid-render. A model that reaches for e.g. ``SurroundingRectangle``
+    to highlight something and forgets to wrap it in ``Create(...)``/
+    ``Indicate(...)``/etc. produces exactly this, and since the object
+    resolves fine syntactically the generic checks above don't catch it.
+    Checked against the real installed manim classes so it only fires on an
+    actual Mobject (never on legitimate Animation calls like ``FadeIn``).
+    """
+    manim = _manim_module()
+    if manim is None:
+        return []
+
+    import inspect
+
+    mobject_cls = getattr(manim, "Mobject", None)
+    animation_cls = getattr(manim, "Animation", None)
+    if mobject_cls is None or animation_cls is None:
+        return []
+
+    errors: list[str] = []
+
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "play"
+        ):
+            continue
+
+        for arg in node.args:
+            if not (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name)):
+                continue
+            candidate = getattr(manim, arg.func.id, None)
+            if not inspect.isclass(candidate):
+                continue
+            if (
+                issubclass(candidate, mobject_cls)
+                and not issubclass(candidate, animation_cls)
+            ):
+                errors.append(
+                    f"self.play() was passed {arg.func.id}(...) directly — "
+                    f"{arg.func.id} is a Mobject, not an Animation; wrap it "
+                    f"(e.g. Create({arg.func.id}(...)), Indicate(...), "
+                    f".animate) (line {arg.lineno})"
+                )
+
+    return errors
+
+
 def validate_manim_source(code: str) -> list[str]:
     """Validate generated Manim code before rendering.
 
@@ -714,7 +767,7 @@ def validate_manim_source(code: str) -> list[str]:
             # generic "unexpected keyword argument" crashes at runtime.
             if func_name in {"Text", "MathTex", "Tex", "VGroup", "Line", "Arrow", "Circle", "Square", "Rectangle", "Dot"}:
                 for kw in node.keywords:
-                    if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment"}:
+                    if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment", "word_wrap_width", "multiline"}:
                         errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim {_target} (line {node.lineno})")
 
             # MathTex/Tex hand the string straight to LaTeX. A raw, unescaped
@@ -795,6 +848,7 @@ def validate_manim_source(code: str) -> list[str]:
     # using the real API surface instead of a fixed blocklist.
     errors.extend(_check_undefined_manim_names(tree))
     errors.extend(_check_manim_kwarg_signatures(tree))
+    errors.extend(_check_play_raw_mobject(tree))
 
     return list(dict.fromkeys(errors))
 

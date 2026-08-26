@@ -531,6 +531,15 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
 
     backend, pauses = opts["backend"], opts["pauses"]
     used_own = False
+    # Whether any section actually needed (re)synthesis this run. Remastering
+    # touches build/master.wav's mtime, which both align.py's per-section
+    # staleness signature (_section_sig) and generator_manim's cache check
+    # treat as "the audio changed" -- if every section was cache-skipped but
+    # the master gets rebuilt anyway, that mtime bump falsely invalidates
+    # every section's alignment, which then falsely invalidates every
+    # section's already-generated Manim code, cascading into a full
+    # regenerate-everything run for a no-op rerun.
+    changed = False
 
     for sec in script.sections:
         if only and sec.stem != only:
@@ -551,6 +560,7 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
                     and json.loads(meta_f.read_text()) == want:
                 cfg.say(f"section {sec.stem}: recording unchanged, skipping")
                 continue
+            changed = True
             cfg.say(f"section {sec.stem}: using your recording ({own.name})")
             _decode_recording(own, raw)
             # No exact cues: alignment falls to the ASR rank of the chain.
@@ -575,6 +585,7 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
                 cfg.say(f"section {sec.stem}: cached, skipping")
                 continue
 
+        changed = True
         cfg.say(f"section {sec.stem}: {len(sents)} sentences "
                 f"({opts['voice']} @ {opts['speed']:g}x)")
         pcm, cues = synthesise(sents, opts["voice"], opts["speed"], pauses)
@@ -604,6 +615,11 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
                 f"[prompt2render] voice --only {only} produced no full master; "
                 f"missing section audio: {', '.join(missing)}"
             )
+
+    master_wav = proj / "build" / "master.wav"
+    if not changed and not force and master_wav.exists():
+        cfg.say("programme master unchanged, skipping remaster")
+        return master_wav
 
     return _assemble_master(proj, script, opts, used_own)
 

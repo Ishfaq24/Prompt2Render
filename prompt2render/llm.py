@@ -199,7 +199,19 @@ def is_not_found(
 def is_rate_limited(
     error: BaseException,
 ) -> bool:
-    """Recognize provider quota/rate-limit errors."""
+    """Recognize provider quota/rate-limit *and* transient-unavailable errors.
+
+    Both cases are "this key/model can't serve this request right now, but
+    another key or model probably can" -- the retry loop treats them
+    identically (rotate to the next key/model rather than raising). Without
+    this, a plain 503 "model is currently experiencing high demand, try
+    again later" -- textbook transient, and literally telling the caller to
+    retry -- fell through to the "genuine request/programming error" branch
+    below and was raised on the very first attempt, with none of the other
+    11 key/model combinations ever tried. Upstream that surfaced as e.g.
+    verifier_semantic turning one momentary overload into a hard BLOCKING
+    finding that failed the whole harness gate.
+    """
     if type(error).__name__ == "RateLimitError":
         return True
 
@@ -209,7 +221,7 @@ def is_rate_limited(
         None,
     )
 
-    if status == 429:
+    if status in (429, 500, 502, 503, 504):
         return True
 
     response = getattr(
@@ -222,7 +234,7 @@ def is_rate_limited(
         response,
         "status_code",
         None,
-    ) == 429:
+    ) in (429, 500, 502, 503, 504):
         return True
 
     text = str(error).lower()
@@ -237,6 +249,16 @@ def is_rate_limited(
             "quota exceeded",
             "quota_exceeded",
             "too many requests",
+            "503",
+            "500",
+            "502",
+            "504",
+            "unavailable",
+            "high demand",
+            "overloaded",
+            "server error",
+            "try again later",
+            "internal error",
         )
     )
 

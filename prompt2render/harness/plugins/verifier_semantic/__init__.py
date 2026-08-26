@@ -556,6 +556,7 @@ def _regenerate_preview(
         return None
 
     try:
+        from ....project import parse_script
         from ....visuals import manim_scene
 
         preview.unlink(
@@ -564,6 +565,7 @@ def _regenerate_preview(
 
         manim_scene(
             context.project_dir,
+            parse_script(context.prompt),
             scene_file,
             f"Scene{entry.stem}",
             entry.index,
@@ -855,86 +857,118 @@ class VerifierSemanticPlugin(Plugin):
             # below and became a hard BLOCKING semantic_mismatch finding,
             # gating the whole pipeline on what was actually a quota hiccup.
 
-            try:
-                content = llm.complete(
-                    prompt,
-                    max_tokens=1400,
-                    model_env="P2R_SCENE_MODEL",
-                    default_model=model,
-                    label="semantic",
-                    image_base64=image_base64,
-                    json_object=True,
-                )
+            # A single transient hiccup -- a malformed/truncated critic
+            # response, or an LLM call that raised despite llm.complete()'s
+            # own key/model rotation -- used to become a permanent BLOCKING
+            # finding on the first try, fail-closed with no second chance.
+            # That is the right call once it's actually reproduced (see
+            # "fail closed" below), but not on a one-off blip: it turned a
+            # momentary overload into a hard gate failure for the whole
+            # harness run. One silent retry before recording anything gives
+            # a blip a chance to clear while still failing closed if the
+            # problem repeats.
+            result = None
+            gave_up = False
 
-                result = _normalize_result(
-                    _extract_json(
-                        str(
-                            content or ""
-                        )
+            for attempt in (1, 2):
+                try:
+                    content = llm.complete(
+                        prompt,
+                        max_tokens=1400,
+                        model_env="P2R_SCENE_MODEL",
+                        default_model=model,
+                        label="semantic",
+                        image_base64=image_base64,
+                        json_object=True,
                     )
-                )
 
-                # ------------------------------------------------------
-                # Fail closed on malformed critic output.
-                # ------------------------------------------------------
-
-                if result is None:
-                    findings.append(
-                        _make_finding(
-                            stem=entry.stem,
-                            gate=gate,
-                            result={
-                                "status": "fail",
-                                "reason": (
-                                    "Semantic critic returned "
-                                    "invalid structured output; "
-                                    "verification could not establish "
-                                    "semantic correctness."
-                                ),
-                            },
+                    parsed = _normalize_result(
+                        _extract_json(
+                            str(
+                                content or ""
+                            )
                         )
                     )
 
-                    continue
+                    if parsed is not None:
+                        result = parsed
+                        break
 
-                if result[
-                    "status"
-                ] == "fail":
-                    # Diagnosis-driven routing: do not misclassify geometric/layout evidence as semantic
-                    # merely because the VLM happened to discover it during semantic review.
-                    if _is_layout_defect(result):
+                    # ------------------------------------------------------
+                    # Fail closed on malformed critic output.
+                    # ------------------------------------------------------
+                    if attempt == 2:
+                        findings.append(
+                            _make_finding(
+                                stem=entry.stem,
+                                gate=gate,
+                                result={
+                                    "status": "fail",
+                                    "reason": (
+                                        "Semantic critic returned "
+                                        "invalid structured output; "
+                                        "verification could not establish "
+                                        "semantic correctness."
+                                    ),
+                                },
+                            )
+                        )
+                        gave_up = True
+                    else:
                         cfg.warn(
-                            f"Semantic verifier suppressed layout-like finding for {entry.stem}: "
-                            f"{result.get('reason','')[:120]} -- delegated to verifier_layout"
+                            f"Semantic verifier got malformed output for "
+                            f"{entry.stem}; retrying once"
                         )
-                        continue
-                    findings.append(
-                        _make_finding(
-                            stem=entry.stem,
-                            gate=gate,
-                            result=result,
+
+                except Exception as exc:
+                    # A semantic verifier that crashes should not silently
+                    # turn into PASS. It is recorded as a verification
+                    # failure -- but only once a retry has also failed.
+                    if attempt == 2:
+                        cfg.warn(
+                            f"Semantic verification failed "
+                            f"for {entry.stem}: {exc}"
                         )
+
+                        findings.append(
+                            _make_finding(
+                                stem=entry.stem,
+                                gate=gate,
+                                result={
+                                    "status": "fail",
+                                    "reason": (
+                                        "Semantic verification "
+                                        f"failed: {exc}"
+                                    ),
+                                },
+                            )
+                        )
+                        gave_up = True
+                    else:
+                        cfg.warn(
+                            f"Semantic verification transiently failed "
+                            f"for {entry.stem}: {exc}; retrying once"
+                        )
+
+            if gave_up or result is None:
+                continue
+
+            if result[
+                "status"
+            ] == "fail":
+                # Diagnosis-driven routing: do not misclassify geometric/layout evidence as semantic
+                # merely because the VLM happened to discover it during semantic review.
+                if _is_layout_defect(result):
+                    cfg.warn(
+                        f"Semantic verifier suppressed layout-like finding for {entry.stem}: "
+                        f"{result.get('reason','')[:120]} -- delegated to verifier_layout"
                     )
-
-            except Exception as exc:
-                # A semantic verifier that crashes should not silently turn
-                # into PASS. It is recorded as a verification failure.
-                cfg.warn(
-                    f"Semantic verification failed "
-                    f"for {entry.stem}: {exc}"
-                )
-
+                    continue
                 findings.append(
                     _make_finding(
                         stem=entry.stem,
                         gate=gate,
-                        result={
-                            "status": "fail",
-                            "reason": (
-                                "Semantic verification "
-                                f"failed: {exc}"
-                            ),
-                        },
+                        result=result,
                     )
                 )
 
