@@ -1,35 +1,44 @@
-"""Stage 4: event-driven repair router for Prompt2Render.
+"""Repair strategy provider for Prompt2Render.
 
-The repair router is not an ordinary pipeline stage. It is attached to the
-harness event bus and reacts synchronously to ``check.failed`` events.
+**This module routes and executes repairs. It does not decide whether a
+repair succeeded.** That distinction is the whole point of its current
+shape.
 
-Responsibilities
-----------------
-* Map verifier findings to repair-capable plugins.
-* Maintain a per-scene/per-finding repair budget.
-* Preserve repair diagnostics for downstream generators.
-* Revert and regenerate only the affected scene when supported.
-* Emit repair lifecycle events.
-* Record auditable repair history.
-* Keep hard-gate and soft-gate behaviour distinct.
+Previously this class owned the repair lifecycle: it subscribed to
+``check.failed``, looped over its own budget, invoked repair targets, and
+then declared victory by rewriting the finding's ``status`` to
+``"resolved"`` whenever the repair call did not raise. Since
+``HarnessRunner._failures()`` counts only ``status == "fail"``, that
+rewrite made the finding invisible to the gate -- so a repair that produced
+*worse* code still cleared it. Its own docstring conceded the point:
+*"'attempted' means the repair operation completed without crashing. It
+does NOT mean the finding is semantically fixed."*
 
-The router does not claim that a repair is semantically successful merely
-because generation did not crash. The runner must re-run the originating
-verifier after the repair and prove that the finding is gone.
+Meanwhile the runner ran a second, competing loop (rewind + re-verify) that
+communicated with this one only through mutations to ``SceneContext``, with
+neither able to see the other's budget.
+
+Now there is exactly one controller --
+:class:`prompt2render.harness.repair_controller.RepairController` -- and this
+class provides it with two things:
+
+    plan(finding, source)  -> RepairPlan | None   (routing only)
+    execute(plan, context) -> RepairExecution     (perform the mutation)
+
+Acceptance, quality comparison, budget, rollback and logging all belong to
+the controller. Nothing here inspects or rewrites a finding's status.
+
+The routing policy itself (``policy.py``) is unchanged.
 """
 
 from __future__ import annotations
 
-import dataclasses
-import json
-import time
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 
 from ...context import SceneContext
-from ...events import Event, EventBus
+from ...events import EventBus
 from ...plugin import Plugin
-from .... import cfg
 from .policy import RoutingPolicy, StaticTableRoutingPolicy
 
 
@@ -53,21 +62,6 @@ _DEFAULT_FINDING_TYPE: dict[str, str] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _safe_int(
-    value: Any,
-    default: int,
-    minimum: int = 0,
-) -> int:
-    """Safely parse an integer configuration value."""
-
-    try:
-        result = int(value)
-    except (TypeError, ValueError):
-        return default
-
-    return max(minimum, result)
-
-
 def _detail(finding: dict[str, Any]) -> str:
     """Extract a stable human-readable diagnostic from a finding."""
 
@@ -84,7 +78,13 @@ def _detail(finding: dict[str, Any]) -> str:
 
 
 def _scene_id(finding: dict[str, Any]) -> str:
-    """Resolve the affected scene identifier."""
+    """Resolve the affected scene identifier.
+
+    ``"__all__"`` is the deliberate fallback for whole-video findings
+    (verifier_audio, verifier_pedagogy). The controller filters those out of
+    scene repair -- there is no single scene to regenerate, and every
+    ``revert_scene`` implementation raises ``KeyError`` on it.
+    """
 
     value = (
         finding.get("stem")
@@ -95,12 +95,67 @@ def _scene_id(finding: dict[str, Any]) -> str:
     return str(value)
 
 
+def finding_type_of(
+    finding: dict[str, Any],
+    source: str,
+) -> str:
+    """The routing key for one finding."""
+
+    return str(
+        finding.get("finding_type")
+        or _DEFAULT_FINDING_TYPE.get(source, source)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Plan / execution records
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RepairPlan:
+    """What the router proposes doing about one finding."""
+
+    stem: str
+    finding_type: str
+    source_plugin: str
+    targets: list[str]
+    diagnostic: str = ""
+    mismatch_subtype: Any = None
+
+    @property
+    def routable(self) -> bool:
+        return bool(self.targets)
+
+
+@dataclass
+class RepairExecution:
+    """What actually happened when a plan was carried out.
+
+    ``ok`` means *the repair operation ran without raising* -- nothing more.
+    Whether the result is acceptable is the controller's judgement, made
+    from re-verification evidence, not from this flag.
+    """
+
+    ok: bool = True
+    targets_run: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    def add_error(self, message: str) -> None:
+        self.ok = False
+        self.errors.append(message)
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
 class RepairRouterPlugin(Plugin):
-    """Event-driven, policy-based repair router."""
+    """Policy-based repair routing and execution.
+
+    Still a ``Plugin`` subclass so the existing loader path
+    (``build_repair_router``) and ``NON_PIPELINE`` exclusion keep working
+    unchanged, but it is not a pipeline stage: ``run()`` is a passthrough.
+    """
 
     name = "repair_router"
 
@@ -110,15 +165,6 @@ class RepairRouterPlugin(Plugin):
     ):
         super().__init__(config)
 
-        self.max_repair_cycles = _safe_int(
-            self.config.get(
-                "max_repair_cycles",
-                3,
-            ),
-            default=3,
-            minimum=0,
-        )
-
         self.policy: RoutingPolicy = (
             StaticTableRoutingPolicy(
                 self.config.get(
@@ -127,23 +173,7 @@ class RepairRouterPlugin(Plugin):
             )
         )
 
-        # Budget is intentionally keyed by scene + finding type + source.
-        # This prevents an unrelated finding from consuming another finding's
-        # repair budget.
-        self._cycles_used: dict[
-            str,
-            int,
-        ] = {}
-
-        self._plugins_by_name: dict[
-            str,
-            Plugin,
-        ] = {}
-
-        self._log_path: Path | None = None
-        self._cycle_id = 0
-        self.history: list[Any] = []
-        self._active_context: SceneContext | None = None
+        self._plugins_by_name: dict[str, Plugin] = {}
         self._bus: EventBus | None = None
 
     # ------------------------------------------------------------------
@@ -163,133 +193,88 @@ class RepairRouterPlugin(Plugin):
         self,
         context: SceneContext,
     ) -> SceneContext:
-        # The router is attached to the event bus and is deliberately not
-        # executed as a normal pipeline stage.
+        # Not a pipeline stage -- the controller drives repair explicitly.
         return context
 
     def _default_gate(self) -> bool:
         return False
 
     # ------------------------------------------------------------------
-    # Event-bus wiring
+    # Wiring
     # ------------------------------------------------------------------
 
     def attach(
         self,
         *,
-        bus: EventBus,
-        plugins_by_name: dict[str, Plugin],
-        log_path: Path,
+        bus: EventBus | None = None,
+        plugins_by_name: dict[str, Plugin] | None = None,
+        log_path: Any = None,
     ) -> None:
-        """Attach the router to a live harness run."""
+        """Register the plugin instances repairs can be routed to.
 
-        self._plugins_by_name = dict(
-            plugins_by_name
-        )
+        No longer subscribes to ``check.failed``: repair is initiated by the
+        runner through :class:`RepairController`, not by an event handler
+        racing the runner's own control flow. ``bus`` is retained so
+        lifecycle events can still be emitted, and ``log_path`` is accepted
+        (and ignored) so existing callers keep working -- the controller
+        owns the decision log now.
+        """
 
-        self._log_path = log_path
-        self._bus = bus
+        if plugins_by_name is not None:
+            self._plugins_by_name = dict(plugins_by_name)
 
-        bus.subscribe(
-            "check.failed",
-            self._on_check_failed,
-        )
+        if bus is not None:
+            self._bus = bus
 
     def subscribe(
         self,
         bus: EventBus,
     ) -> None:
-        """Compatibility hook.
+        """Compatibility hook. Deliberately does not subscribe."""
 
-        ``attach()`` is preferred because the router also needs access to
-        plugin instances and the repair log path.
-        """
-
-        # Intentionally do not subscribe here. Subscribing both here and in
-        # attach() would process each failure twice.
         return
 
-    # ------------------------------------------------------------------
-    # Event handling
-    # ------------------------------------------------------------------
-
-    def _on_check_failed(
-        self,
-        event: Event,
-    ) -> None:
-        """Handle one verifier failure event."""
-
-        payload = event.payload or {}
-
-        source = str(
-            payload.get(
-                "plugin",
-                "unknown",
-            )
-        )
-
-        ctx = payload.get(
-            "context"
-        )
-
-        findings = payload.get(
-            "findings",
-            [],
-        )
-
-        source_is_gate = bool(
-            payload.get(
-                "is_gate",
-                True,
-            )
-        )
-
-        if not isinstance(
-            ctx,
-            SceneContext,
-        ):
-            return
-
-        if not isinstance(
-            findings,
-            list,
-        ):
-            findings = [findings]
-
-        self._active_context = ctx
-
-        try:
-            for finding in findings:
-
-                if not isinstance(
-                    finding,
-                    dict,
-                ):
-                    continue
-
-                self._repair_one(
-                    source,
-                    finding,
-                    ctx,
-                    source_is_gate,
-                )
-        finally:
-            self._active_context = None
+    @property
+    def plugins_by_name(self) -> dict[str, Plugin]:
+        return self._plugins_by_name
 
     # ------------------------------------------------------------------
     # Routing
     # ------------------------------------------------------------------
 
+    def plan(
+        self,
+        finding: dict[str, Any],
+        source: str,
+    ) -> RepairPlan:
+        """Decide what to do about one finding. Pure -- mutates nothing."""
+
+        finding_type = finding_type_of(finding, source)
+        stem = _scene_id(finding)
+
+        routed = {
+            **finding,
+            "finding_type": finding_type,
+            "scene_id": stem,
+            "source_plugin": source,
+        }
+
+        return RepairPlan(
+            stem=stem,
+            finding_type=finding_type,
+            source_plugin=source,
+            targets=self._resolve_targets(routed),
+            diagnostic=_detail(finding),
+            mismatch_subtype=finding.get("mismatch_subtype"),
+        )
+
     def _resolve_targets(
         self,
-        source: str,
         routed_finding: dict[str, Any],
     ) -> list[str]:
         """Resolve repair targets, including the Manim backend alias."""
 
-        targets = self.policy.decide(
-            routed_finding
-        )
+        targets = self.policy.decide(routed_finding)
 
         if not targets:
             return []
@@ -300,443 +285,110 @@ class RepairRouterPlugin(Plugin):
             if str(target).strip()
         ]
 
-        # In --manim mode the live backend is generator_manim, while the
-        # shared routing policy normally names generator_code.
+        # The canonical table names generator_code; when Manim is the
+        # active backend that role is filled by generator_manim.
         if (
-            "generator_code"
-            not in self._plugins_by_name
-            and "generator_manim"
-            in self._plugins_by_name
+            "generator_code" not in self._plugins_by_name
+            and "generator_manim" in self._plugins_by_name
         ):
             targets = [
-                (
-                    "generator_manim"
-                    if target == "generator_code"
-                    else target
-                )
+                "generator_manim" if target == "generator_code" else target
                 for target in targets
             ]
 
-        # Preserve policy order while removing duplicates.
-        return list(
-            dict.fromkeys(targets)
-        )
+        return list(dict.fromkeys(targets))
 
-    def _cycles_key(
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
+    def execute(
         self,
-        scene_id: str,
-        finding_type: str,
-        source: str,
-    ) -> str:
-        return (
-            f"{scene_id}:"
-            f"{finding_type}:"
-            f"{source}"
-        )
+        plan: RepairPlan,
+        context: SceneContext,
+    ) -> RepairExecution:
+        """Carry out a plan against the context.
 
-    def _repair_one(
-        self,
-        source: str,
-        finding: dict[str, Any],
-        ctx: SceneContext,
-        source_is_gate: bool,
-    ) -> None:
-        """Attempt repair for one finding."""
+        Records the triggering diagnostic into ``repair_context`` first so
+        the generator's prompt can see why it is being asked to try again,
+        then invokes each target.
 
-        finding_type = (
-            finding.get("finding_type")
-            or _DEFAULT_FINDING_TYPE.get(
-                source,
-                source,
-            )
-        )
+        Scene-scoped repair (``revert_scene`` + ``regenerate_one``) is
+        preferred. A target implementing neither degrades to a full
+        ``run(ctx)``, which is not scene-scoped and may touch other stems --
+        the controller detects that separately via revision comparison.
+        """
 
-        finding_type = str(
-            finding_type
-        )
+        execution = RepairExecution()
 
-        scene_id = _scene_id(
-            finding
-        )
+        if plan.diagnostic:
+            history = context.repair_context.setdefault(plan.stem, [])
 
-        routed_finding = {
-            **finding,
-            "finding_type": finding_type,
-            "scene_id": scene_id,
-            "source_plugin": source,
-        }
+            # Deduplicate: the same diagnostic re-appended on every attempt
+            # used to grow the prompt without adding information, and both
+            # generators truncate the feedback to its trailing 6000 chars.
+            if plan.diagnostic not in history:
+                history.append(plan.diagnostic)
 
-        targets = self._resolve_targets(
-            source,
-            routed_finding,
-        )
+        for target_name in plan.targets:
+            target = self._plugins_by_name.get(target_name)
 
-        cycles_key = self._cycles_key(
-            scene_id,
-            finding_type,
-            source,
-        )
-
-        used_so_far = self._cycles_used.get(
-            cycles_key,
-            0,
-        )
-
-        # --------------------------------------------------------------
-        # No route
-        # --------------------------------------------------------------
-
-        if not targets:
-            self._log_cycle(
-                scene_id,
-                finding_type,
-                routed_finding.get(
-                    "mismatch_subtype"
-                ),
-                routed_to=[],
-                diagnostic_message=_detail(
-                    finding
-                ),
-                pre_hash=_hash(ctx),
-                post_hash=_hash(ctx),
-                outcome="unresolved",
-                cycles_used=used_so_far,
-            )
-
-            return
-
-        # --------------------------------------------------------------
-        # Repair cycles
-        # --------------------------------------------------------------
-
-        while (
-            self._cycles_used.get(
-                cycles_key,
-                0,
-            )
-            < self.max_repair_cycles
-        ):
-            used = (
-                self._cycles_used.get(
-                    cycles_key,
-                    0,
+            if target is None:
+                execution.add_error(
+                    f"repair target {target_name!r} is not registered"
                 )
-                + 1
-            )
+                continue
 
-            self._cycles_used[
-                cycles_key
-            ] = used
+            try:
+                if (
+                    hasattr(target, "revert_scene")
+                    and hasattr(target, "regenerate_one")
+                ):
+                    target.revert_scene(context, plan.stem)
+                    target.regenerate_one(context, plan.stem)
+                else:
+                    target.run(context)
 
-            self._emit(
-                "repair.started",
-                scene_id=scene_id,
-                finding_type=finding_type,
-                cycle=used,
-                max_cycles=self.max_repair_cycles,
-                routed_to=targets,
-            )
+                execution.targets_run.append(target_name)
 
-            pre_hash = _hash(
-                ctx
-            )
+            except (Exception, SystemExit) as exc:
+                message = (
+                    f"{target_name} repair failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
-            diagnostic = _detail(
-                finding
-            )
+                execution.add_error(message)
 
-            if diagnostic:
-                ctx.repair_context.setdefault(
-                    scene_id,
+                context.repair_context.setdefault(
+                    plan.stem,
                     [],
-                ).append(
-                    diagnostic
-                )
+                ).append(message)
 
-            attempt_ok = True
-            attempted_targets: list[str] = []
-
-            # ----------------------------------------------------------
-            # Execute the route.
-            # ----------------------------------------------------------
-
-            for target_name in targets:
-
-                target = (
-                    self._plugins_by_name.get(
-                        target_name
-                    )
-                )
-
-                if target is None:
-                    attempt_ok = False
-                    continue
-
-                attempted_targets.append(
-                    target_name
-                )
-
-                try:
-                    if (
-                        hasattr(
-                            target,
-                            "revert_scene",
-                        )
-                        and hasattr(
-                            target,
-                            "regenerate_one",
-                        )
-                    ):
-                        target.revert_scene(
-                            ctx,
-                            scene_id,
-                        )
-
-                        target.regenerate_one(
-                            ctx,
-                            scene_id,
-                        )
-
-                    else:
-                        # Generic fallback for plugins that cannot perform
-                        # scene-level repair.
-                        target.run(
-                            ctx
-                        )
-
-                except (
-                    Exception,
-                    SystemExit,
-                ) as exc:
-                    attempt_ok = False
-
-                    # Keep the failure available to the next cycle rather
-                    # than silently discarding it.
-                    ctx.repair_context.setdefault(
-                        scene_id,
-                        [],
-                    ).append(
-                        (
-                            f"{target_name} repair attempt "
-                            f"{used} failed: {exc}"
-                        )
-                    )
-
-            post_hash = _hash(
-                ctx
-            )
-
-            # IMPORTANT:
-            # "attempted" means the repair operation completed without
-            # crashing. It does NOT mean the finding is semantically fixed.
-            # The runner must re-run the verifier.
-            outcome = (
-                "attempted"
-                if attempt_ok
-                else "unresolved"
-            )
-
-            self._log_cycle(
-                scene_id,
-                finding_type,
-                routed_finding.get(
-                    "mismatch_subtype"
-                ),
-                routed_to=attempted_targets,
-                diagnostic_message=diagnostic,
-                pre_hash=pre_hash,
-                post_hash=post_hash,
-                outcome=outcome,
-                cycles_used=used,
-            )
-
-            if attempt_ok:
-                # Mark this finding as resolved provisionally. The runner's
-                # post-repair verifier is the authoritative proof.
-                finding["status"] = "resolved"
-
-                self._emit(
-                    "repair.finished",
-                    scene_id=scene_id,
-                    finding_type=finding_type,
-                    cycle=used,
-                    outcome="attempted",
-                )
-
-                return
-
-            self._emit(
-                "repair.finished",
-                scene_id=scene_id,
-                finding_type=finding_type,
-                cycle=used,
-                outcome="unresolved",
-            )
-
-        # --------------------------------------------------------------
-        # Budget exhausted
-        # --------------------------------------------------------------
-
-        self._log_cycle(
-            scene_id,
-            finding_type,
-            routed_finding.get(
-                "mismatch_subtype"
-            ),
-            routed_to=targets,
-            diagnostic_message=_detail(
-                finding
-            ),
-            pre_hash=_hash(ctx),
-            post_hash=_hash(ctx),
-            outcome="gave_up",
-            cycles_used=self._cycles_used.get(
-                cycles_key,
-                0,
-            ),
-        )
-
-        # A finding explicitly marked "cosmetic" (e.g. verifier_semantic's
-        # layout-only nits, as opposed to a domain/correctness failure) must
-        # not carry hard-gate weight just because its source plugin is a
-        # hard gate overall. Repair was already attempted up to the budget;
-        # if it never resolved, ship the video with the known imperfection
-        # rather than aborting the entire multi-scene pipeline over it.
-        if not source_is_gate or bool(finding.get("cosmetic")):
-            # Soft gate (or a cosmetic-only hard-gate finding): preserve the
-            # defect as an open issue without allowing it to halt the scene.
-            finding["status"] = (
-                "open_defect"
-            )
-
-        else:
-            # Hard gate: leave status untouched so the runner can halt.
-            finding["status"] = finding.get(
-                "status",
-                "fail",
-            )
+        return execution
 
     # ------------------------------------------------------------------
-    # Event emission
+    # Events
     # ------------------------------------------------------------------
 
-    def _emit(
+    def emit(
         self,
-        event_name: str,
+        event: str,
         **payload: Any,
     ) -> None:
+        """Emit a repair lifecycle event, never raising on failure."""
+
         if self._bus is None:
             return
 
         try:
-            self._bus.emit(
-                event_name,
-                **payload,
-            )
-        except ValueError as exc:
-            # A ValueError here means the event name is not in the bus's
-            # VALID_EVENTS -- a contract break between this module and
-            # harness/events.py, not a subscriber problem. That is a bug we
-            # want to hear about: swallowing it silently is exactly why
-            # repair.started/repair.finished went undelivered for so long.
-            # Still non-fatal (a broken event must not abort a repair), but
-            # no longer invisible.
-            cfg.warn(
-                f"repair_router: cannot emit {event_name!r} — {exc}"
-            )
-        except Exception as exc:
-            # A subscriber raised. Isolate it: one bad listener must never
-            # crash the repair it is observing.
-            cfg.warn(
-                f"repair_router: subscriber for {event_name!r} raised "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-    # ------------------------------------------------------------------
-    # Logging
-    # ------------------------------------------------------------------
-
-    def _log_cycle(
-        self,
-        scene_id: str,
-        finding_type: str,
-        mismatch_subtype: Any,
-        *,
-        routed_to: list[str],
-        diagnostic_message: str,
-        pre_hash: str,
-        post_hash: str,
-        outcome: str,
-        cycles_used: int,
-    ) -> None:
-        """Persist one auditable repair-cycle record."""
-
-        if self._log_path is None:
+            self._bus.emit(event, **payload)
+        except Exception:
             return
 
-        self._cycle_id += 1
 
-        from ...logging_ import RepairRecord
-
-        record = RepairRecord(
-            cycle_id=self._cycle_id,
-            scene_id=scene_id,
-            finding_type=finding_type,
-            mismatch_subtype=mismatch_subtype,
-            routed_to=routed_to,
-            diagnostic_message=diagnostic_message,
-            pre_repair_context_hash=pre_hash,
-            post_repair_context_hash=post_hash,
-            outcome=outcome,
-            cycles_used=cycles_used,
-            timestamp=time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ",
-                time.gmtime(),
-            ),
-        )
-
-        self.history.append(
-            record
-        )
-
-        if self._active_context is not None:
-            self._active_context.repair_records.append(
-                dataclasses.asdict(
-                    record
-                )
-            )
-
-        self._log_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        with self._log_path.open(
-            "a",
-            encoding="utf-8",
-        ) as handle:
-            handle.write(
-                json.dumps(
-                    dataclasses.asdict(
-                        record
-                    ),
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-
-
-# ---------------------------------------------------------------------------
-# Context hashing
-# ---------------------------------------------------------------------------
-
-def _hash(
-    ctx: SceneContext,
-) -> str:
-    """Return the canonical context hash used by repair provenance."""
-
-    from ...logging_ import context_hash
-
-    return context_hash(
-        ctx
-    )
+__all__ = [
+    "RepairExecution",
+    "RepairPlan",
+    "RepairRouterPlugin",
+    "finding_type_of",
+]

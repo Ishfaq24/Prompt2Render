@@ -514,6 +514,72 @@ def build_repair_router(
     )
 
 
+def build_repair_controller(
+    plugins: list[Plugin],
+    *,
+    config: dict[str, Any] | None = None,
+    config_path: Path | None = None,
+    logger: Any = None,
+    log_path: Path | None = None,
+):
+    """Assemble the authoritative repair controller for a pipeline.
+
+    Returns ``None`` when ``repair_router`` is disabled -- a run with no
+    router simply does not repair, and every gate behaves as it would have
+    without one.
+
+    Budget keys live under ``repair_router`` in config.yaml so the whole
+    repair subsystem stays configured in one place.
+    """
+
+    from .repair_controller import (
+        DEFAULT_MAX_REPAIRS_PER_SCENE,
+        DEFAULT_MAX_TOTAL_REPAIRS,
+        RepairController,
+    )
+
+    router = build_repair_router(
+        config=config,
+        config_path=config_path,
+    )
+
+    if router is None:
+        return None
+
+    plugins_by_name = {
+        plugin.name: plugin
+        for plugin in plugins
+    }
+
+    router.attach(
+        plugins_by_name=plugins_by_name,
+        log_path=log_path,
+    )
+
+    settings = router.config or {}
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return max(0, int(settings.get(key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    return RepairController(
+        router=router,
+        plugins_by_name=plugins_by_name,
+        logger=logger,
+        log_path=log_path,
+        max_repairs_per_scene=_int(
+            "max_repairs_per_scene",
+            DEFAULT_MAX_REPAIRS_PER_SCENE,
+        ),
+        max_total_repairs=_int(
+            "max_total_repairs",
+            DEFAULT_MAX_TOTAL_REPAIRS,
+        ),
+    )
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "PRESEEDED_FIELDS",
@@ -522,5 +588,6 @@ __all__ = [
     "resolve_order",
     "load_config",
     "build_plugins",
+    "build_repair_controller",
     "build_repair_router",
 ]

@@ -186,7 +186,13 @@ class RepairRecord:
 
 @dataclasses.dataclass
 class SelfCorrectionReport:
-    """Machine-readable final summary of one self-correction run."""
+    """Machine-readable final summary of one self-correction run.
+
+    ``repair_outcomes`` is the field that makes this report honest. A
+    correction only *succeeded* when a candidate was actually accepted --
+    not merely because an LLM produced replacement code, which is all the
+    old ``repairs`` list could attest to.
+    """
 
     project: str
     final_pass: bool
@@ -201,6 +207,29 @@ class SelfCorrectionReport:
         str,
         int,
     ]
+
+    #: Counts per repair decision: accepted / regression_rejected /
+    #: verifier_failed / target_defect_unresolved / repair_budget_exhausted
+    #: / not_routable / repair_errored.
+    repair_outcomes: dict[str, int] = dataclasses.field(
+        default_factory=dict
+    )
+
+    #: Repairs whose candidate was accepted, i.e. genuine self-corrections.
+    repairs_accepted: int = 0
+
+    #: Repairs rejected because the candidate was worse than what was
+    #: already accepted. A high number here is a healthy signal: the
+    #: harness is protecting quality, not failing.
+    repairs_rejected_regression: int = 0
+
+    repairs_failed_verification: int = 0
+    repairs_budget_exhausted: int = 0
+
+    #: One entry per repair cycle, fully explaining the decision.
+    repair_decisions: list[dict[str, Any]] = dataclasses.field(
+        default_factory=list
+    )
 
 
 def _utc_timestamp() -> str:
@@ -223,13 +252,22 @@ from datetime import timezone
 
 def _count_iterations(
     ctx: SceneContext,
+    repair_controller: Any = None,
 ) -> int:
-    """Count actual recorded execution/repair events.
+    """Number of repair cycles actually attempted.
 
-    Prefer explicit repair records plus history entries. This preserves the
-    existing evidence model while avoiding the misleading implication that
-    every history entry is a repair iteration.
+    Previously this returned ``len(history) + len(repair_records)`` -- a sum
+    of two heterogeneous event streams that was neither a repair count nor a
+    pipeline-pass count. History grows once per stage (plus once per
+    re-verification, plus again on every rewind), and repair_records
+    included no-route and gave-up entries where no repair was attempted at
+    all. When a controller is available its decision count is the real
+    answer; otherwise fall back to the historical sum so callers without one
+    keep getting a number.
     """
+
+    if repair_controller is not None:
+        return len(getattr(repair_controller, "decisions", []))
 
     return len(
         ctx.history
@@ -241,8 +279,14 @@ def _count_iterations(
 def write_self_correction_report(
     ctx: SceneContext,
     final_pass: bool,
+    repair_controller: Any = None,
 ) -> Path:
-    """Persist the complete machine-readable self-correction report."""
+    """Persist the complete machine-readable self-correction report.
+
+    ``repair_controller`` supplies the repair decisions. Without it the
+    report still writes, but with empty outcome counts -- it cannot claim
+    anything about whether corrections succeeded.
+    """
 
     all_findings: list[
         dict[str, Any]
@@ -297,13 +341,28 @@ def write_self_correction_report(
         else "unknown"
     )
 
+    outcomes: dict[str, int] = {}
+    decisions: list[dict[str, Any]] = []
+
+    if repair_controller is not None:
+        try:
+            outcomes = dict(repair_controller.summary())
+            decisions = [
+                record.to_dict()
+                for record in repair_controller.decisions
+            ]
+        except Exception:
+            outcomes = {}
+            decisions = []
+
     report = SelfCorrectionReport(
         project=project,
         final_pass=bool(
             final_pass
         ),
         iterations=_count_iterations(
-            ctx
+            ctx,
+            repair_controller,
         ),
         detected_issues=all_findings,
         repairs=[
@@ -331,6 +390,20 @@ def write_self_correction_report(
                 findings_by_category.items()
             )
         ),
+        repair_outcomes=dict(sorted(outcomes.items())),
+        repairs_accepted=outcomes.get("accepted", 0),
+        repairs_rejected_regression=outcomes.get(
+            "regression_rejected", 0
+        ),
+        repairs_failed_verification=(
+            outcomes.get("verifier_failed", 0)
+            + outcomes.get("target_defect_unresolved", 0)
+            + outcomes.get("repair_errored", 0)
+        ),
+        repairs_budget_exhausted=outcomes.get(
+            "repair_budget_exhausted", 0
+        ),
+        repair_decisions=decisions,
     )
 
     out = (

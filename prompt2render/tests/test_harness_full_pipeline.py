@@ -65,7 +65,10 @@ def mock_pipeline(monkeypatch):
         
     def mock_finish(proj, script, **kwargs):
         (proj / "out").mkdir(parents=True, exist_ok=True)
-        (proj / "out" / "final.mp4").touch()
+        # A plausible-sized file, not touch(): this stands in for a real
+        # encode, and the runner's reachability invariant rightly refuses
+        # to call a 0-byte out/final.mp4 a finished programme.
+        (proj / "out" / "final.mp4").write_bytes(b"0" * 8192)
         (proj / "out" / "captions.srt").touch()
         return proj / "out" / "final.mp4"
         
@@ -194,3 +197,18 @@ Test narration.
     assert "generator_voice" in history_plugins
     assert "generator_timeline" in history_plugins
     assert "renderer_finish" in history_plugins
+
+    # The programme is recorded at PROGRAM level, stamped with the scene
+    # revisions it was built from -- reaching this line at all also proves
+    # the runner's final-video reachability invariant was satisfied.
+    assert ctx.program is not None
+    assert ctx.program.final_mp4 == tmp_path / "out" / "final.mp4"
+    assert ctx.program.source_revisions == ctx.scene_versions
+    assert ctx.program.source_fingerprint
+
+    from prompt2render.harness import lineage
+
+    assert not lineage.program_is_stale(ctx)
+    # ...and a later scene repair would make it stale automatically.
+    lineage.bump(ctx, "01")
+    assert lineage.program_is_stale(ctx)

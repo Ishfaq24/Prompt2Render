@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from prompt2render.harness import regression
+from prompt2render.harness import lineage, regression
 from prompt2render.harness.context import ScenePlanEntry, SceneContext
 from prompt2render.harness.events import EventBus
 from prompt2render.harness.logging_ import StructuredLogger
@@ -183,39 +183,69 @@ class _WholeScriptReviser(Plugin):
         return context
 
 
-def test_silent_whole_script_repair_triggers_rewind_of_unrelated_stem(tmp_path):
+def test_a_whole_scope_repair_target_still_runs_and_is_observable(tmp_path):
+    """A repair target without regenerate_one/revert_scene degrades to a
+    full run(ctx), which can touch stems other than the one being repaired.
+
+    This used to be detected by a heuristic rewind: the runner compared
+    scene-plan text fingerprints before and after every stage and jumped the
+    plugin index backwards when they differed. That heuristic is gone --
+    staleness is now a revision comparison, and the controller re-verifies
+    the repaired scene directly.
+
+    What is still asserted here is the part that remains true and matters:
+    such a target genuinely executes, its side effect on an unrelated stem
+    is visible in the context, and the fingerprint helpers can see it -- so
+    the evidence a future policy would need is available rather than silently
+    lost.
+    """
+
+    from prompt2render.harness.repair_controller import RepairController
+
     ctx = _ctx_with(
         [
             ("01", "One", "original one"),
             ("02", "Two", "original two"),
         ]
     )
+    ctx.project_dir = tmp_path
 
-    gen = _FakeCodeGen()
-    observer = _StemTwoObserver()
-    verifier = _FailOnceVerifier()
     reviser = _WholeScriptReviser()
 
-    logger = StructuredLogger(tmp_path / "log.jsonl")
-    bus = EventBus()
-    router = RepairRouterPlugin({"max_repair_cycles": 3})
-    router.attach(
-        bus=bus,
+    before = regression.scene_fingerprints(ctx)
+
+    router = RepairRouterPlugin()
+    router.attach(plugins_by_name={"reviser_script": reviser})
+
+    controller = RepairController(
+        router=router,
         plugins_by_name={"reviser_script": reviser},
         log_path=tmp_path / "repair_log.jsonl",
     )
 
-    runner = HarnessRunner([gen, observer, verifier], logger, bus)
-    ctx = runner.run(ctx)
+    record = controller.repair_scene(
+        ctx,
+        "01",
+        [
+            {
+                "status": "fail",
+                "finding_type": "pedagogy_review",
+                "stem": "01",
+                "detail": "needs revision",
+            }
+        ],
+        "verifier_pedagogy",
+    )
 
-    # The repair silently rewrote stem 02's narration.
+    # The target ran, and its incidental rewrite of stem 02 happened.
     stem_02 = next(e for e in ctx.scene_plan if e.stem == "02")
     assert stem_02.narration_text == "REVISED by whole-script repair"
 
-    # Without Phase 14's widening, the observer would have run exactly once
-    # (before the repair) and never learned about the silent rewrite.
-    assert observer.calls == 2
-    assert observer.seen_narration == ["original two", "REVISED by whole-script repair"]
+    # That collateral change is detectable from the fingerprints.
+    after = regression.scene_fingerprints(ctx)
+    assert regression.changed_stems(before, after) == {"02"}
 
-    # The originally-failing verifier resolved too.
-    assert ctx.check_results["fail_once_verifier"][0]["status"] == "pass"
+    # And because no verifier could confirm the candidate was at least as
+    # good, the repair was NOT accepted -- scene 01 stays at its revision.
+    assert record.accepted is False
+    assert lineage.current_revision(ctx, "01") == 0

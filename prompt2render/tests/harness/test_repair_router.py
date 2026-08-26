@@ -1,9 +1,19 @@
-"""repair_router tests — dummy plugins only, no real prompt2render.scenes/LLM calls (max_repair_cycles=3
-default keeps this fast and offline, per the same "no Manim/LLM/network" constraint as the core
-tests)."""
+"""repair_router tests -- dummy plugins only, no real scenes/LLM calls.
+
+The routing-policy tests at the top are unchanged: the policy table is not
+affected by the controller redesign.
+
+The lifecycle tests below were rewritten. They used to assert the router's
+own outcome vocabulary ("attempted"/"gave_up") and its habit of rewriting a
+finding's status to "resolved", both of which were the mechanism by which a
+repair that merely *ran* was treated as a repair that *worked*. The router
+is now a strategy provider -- plan() and execute() -- and acceptance belongs
+to RepairController (see test_repair_acceptance.py). What is asserted here
+is the router's remaining contract: correct routing, correct target
+invocation, feedback plumbing, and honest error reporting.
+"""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -12,15 +22,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from prompt2render.harness.context import SceneContext
-from prompt2render.harness.events import EventBus
-from prompt2render.harness.logging_ import StructuredLogger
 from prompt2render.harness.plugin import Plugin
-from prompt2render.harness.plugins.repair_router import RepairRouterPlugin
-from prompt2render.harness.plugins.repair_router.policy import StaticTableRoutingPolicy
-from prompt2render.harness.runner import GateFailure, HarnessRunner
+from prompt2render.harness.plugins.repair_router import (
+    RepairRouterPlugin,
+    finding_type_of,
+)
+from prompt2render.harness.plugins.repair_router.policy import (
+    StaticTableRoutingPolicy,
+)
 
 
-# ------------------------------------------------------------------------------ routing policy --
+# ------------------------------------------------------------------ policy --
 
 def test_static_table_routes_known_finding_types():
     policy = StaticTableRoutingPolicy()
@@ -47,68 +59,19 @@ def test_static_table_routes_vlm_post_render_defect_by_category():
                           "category": "AUDIO"}) == ["verifier_audio"]
 
 
-# -------------------------------------------------------------------------------- dummy plugins --
+# ----------------------------------------------------------- dummy targets --
 
-class DummyVerifier(Plugin):
-    name = "dummy_verifier"
+class RepairableTarget(Plugin):
+    """A scene-scoped repair target, named to match the routing table."""
 
-    def declare_dependencies(self):
-        return []
-
-    def declare_effects(self):
-        return ["check_results"]
-
-    def run(self, context):
-        cycle = len(context.repair_context.get("01", []))
-        fail_until = int(self.config.get("fail_until", 1))
-        
-        if cycle < fail_until:
-            context.check_results[self.name] = [{
-                "status": "fail", "finding_type": "spatial_conflict", "stem": "01",
-                "detail": "collision at (1,2)",
-            }]
-        else:
-            context.check_results[self.name] = [{
-                "status": "pass", "finding_type": "spatial_conflict", "stem": "01",
-                "detail": "clean",
-            }]
-        return context
-
-
-class SoftDummyVerifier(DummyVerifier):
-    name = "soft_dummy_verifier"
-
-    def _default_gate(self):
-        return False
-
-    def run(self, context):
-        cycle = len(context.repair_context.get("01", []))
-        fail_until = int(self.config.get("fail_until", 99))
-        if cycle < fail_until:
-            context.check_results[self.name] = [{
-                "status": "fail", "finding_type": "spatial_conflict", "stem": "01",
-                "detail": "collision at (1,2)",
-            }]
-        else:
-            context.check_results[self.name] = [{
-                "status": "pass", "finding_type": "spatial_conflict", "stem": "01",
-                "detail": "clean",
-            }]
-        return context
-
-
-class DummyGeneratorCode(Plugin):
-    """Stands in for the real generator_code — fails `fail_until` regenerate_one() calls, then
-    succeeds. Named "generator_code" to match StaticTableRoutingPolicy's default table.
-    """
     name = "generator_code"
 
-    def __init__(self, config=None, fail_until: int = 0):
+    def __init__(self, config=None, raise_on_regenerate: bool = False):
         super().__init__(config)
-        self.fail_until = fail_until
+        self.raise_on_regenerate = raise_on_regenerate
         self.calls = 0
-        self.reverted = []
-        self.seen_repair_context = []
+        self.reverted: list[str] = []
+        self.seen_repair_context: list[list[str]] = []
 
     def declare_dependencies(self):
         return []
@@ -124,129 +87,238 @@ class DummyGeneratorCode(Plugin):
 
     def regenerate_one(self, context, stem):
         self.calls += 1
-        self.seen_repair_context.append(list(context.repair_context.get(stem, [])))
+        self.seen_repair_context.append(
+            list(context.repair_context.get(stem, []))
+        )
+
+        if self.raise_on_regenerate:
+            raise SystemExit(f"section {stem} rejected (simulated)")
+
+
+class WholeStageTarget(Plugin):
+    """A target implementing neither method -- must degrade to run(ctx)."""
+
+    name = "reviser_script"
+
+    def __init__(self, config=None):
+        super().__init__(config)
+        self.runs = 0
+
+    def declare_dependencies(self):
+        return []
+
+    def declare_effects(self):
+        return ["script_revision"]
+
+    def run(self, context):
+        self.runs += 1
         return context
-        if self.calls <= self.fail_until:
-            raise SystemExit(f"[prompt2render] section {stem} rejected (simulated)")
 
 
-# ------------------------------------------------------------------------------------- helpers --
-
-def _wire(verifier: Plugin, generator: DummyGeneratorCode, tmp_path: Path, *,
-         max_repair_cycles: int = 3):
-    logger = StructuredLogger(tmp_path / "log.jsonl")
-    bus = EventBus()
-    router = RepairRouterPlugin({"max_repair_cycles": max_repair_cycles})
-    router.attach(bus=bus, plugins_by_name={"generator_code": generator},
-                 log_path=tmp_path / "repair_log.jsonl")
-    runner = HarnessRunner([verifier], logger, bus)
-    return runner, router
+def _router(**targets) -> RepairRouterPlugin:
+    router = RepairRouterPlugin()
+    router.attach(plugins_by_name=targets)
+    return router
 
 
-# ------------------------------------------------------------------------------------- resolves --
+# -------------------------------------------------------------------- plan --
 
-def test_repair_router_resolves_within_budget(tmp_path):
-    generator = DummyGeneratorCode(fail_until=1)   # fails cycle 1, succeeds cycle 2
-    runner, router = _wire(DummyVerifier({"fail_until": 1}), generator, tmp_path, max_repair_cycles=3)
+def test_plan_routes_and_carries_the_diagnostic():
+    router = _router(generator_code=RepairableTarget())
 
-    ctx = runner.run(SceneContext())   # must NOT raise — repair resolves it
+    plan = router.plan(
+        {
+            "status": "fail",
+            "finding_type": "spatial_conflict",
+            "stem": "01",
+            "detail": "collision at (1,2)",
+        },
+        "verifier_spatial",
+    )
 
-    assert generator.calls == 1 # First run does nothing, repair triggers regenerate_one
-    assert generator.reverted == ["01"]
-    assert ctx.check_results["dummy_verifier"][0]["status"] == "pass" # Re-verification passes
-    # repair_context is now cleared on successful repair
-    assert not ctx.repair_context
-
-    lines = [json.loads(l) for l in
-            (tmp_path / "repair_log.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [r["outcome"] for r in lines] == ["attempted"]
-    assert [r["cycles_used"] for r in lines] == [1]
-    assert all(r["scene_id"] == "01" for r in lines)
-    assert all(r["finding_type"] == "spatial_conflict" for r in lines)
-
-
-def test_repair_router_feeds_prior_diagnostics_to_next_attempt(tmp_path):
-    generator = DummyGeneratorCode(fail_until=2)
-    runner, _ = _wire(DummyVerifier({"fail_until": 2}), generator, tmp_path, max_repair_cycles=3)
-    runner.run(SceneContext())
-    # second regenerate_one call should have seen the first cycle's accumulated repair_context
-    assert generator.seen_repair_context[0] == ["collision at (1,2)"]
-    assert generator.seen_repair_context[1] == ["collision at (1,2)", "collision at (1,2)"]
+    assert plan.stem == "01"
+    assert plan.finding_type == "spatial_conflict"
+    assert plan.targets == ["generator_code"]
+    assert plan.diagnostic == "collision at (1,2)"
+    assert plan.routable is True
 
 
-# ------------------------------------------------------------------------------- budget exceeded --
-
-def test_repair_router_gives_up_hard_gate_halts(tmp_path):
-    generator = DummyGeneratorCode(fail_until=99)   # never succeeds
-    runner, _ = _wire(DummyVerifier({"fail_until": 99}), generator, tmp_path, max_repair_cycles=2)
-
-    with pytest.raises(GateFailure):
-        runner.run(SceneContext())
-
-    assert generator.calls == 2   # exactly max_repair_cycles attempts, no more
-    lines = [json.loads(l) for l in
-            (tmp_path / "repair_log.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [r["outcome"] for r in lines] == ["attempted", "attempted", "gave_up"]
+def test_plan_is_not_routable_for_an_unknown_finding_type():
+    router = _router(generator_code=RepairableTarget())
+    plan = router.plan({"finding_type": "no_such_type", "stem": "01"}, "v")
+    assert plan.routable is False
 
 
-def test_repair_router_gives_up_soft_gate_continues(tmp_path):
-    generator = DummyGeneratorCode(fail_until=99)
-    runner, _ = _wire(SoftDummyVerifier({"fail_until": 99}), generator, tmp_path, max_repair_cycles=2)
+def test_plan_falls_back_to_the_source_plugins_default_finding_type():
+    """A verifier that forgets finding_type still routes correctly."""
+    assert finding_type_of({}, "verifier_spatial") == "spatial_conflict"
+    assert finding_type_of({}, "verifier_semantic") == "semantic_mismatch"
 
-    ctx = runner.run(SceneContext())   # must NOT raise — soft gate
 
-    assert generator.calls == 2
-    assert ctx.check_results["soft_dummy_verifier"][0]["status"] == "open_defect"
+def test_plan_assigns_the_global_pseudo_stem_when_no_scene_is_named():
+    router = _router(generator_code=RepairableTarget())
+    plan = router.plan({"finding_type": "spatial_conflict"}, "verifier_spatial")
+    assert plan.stem == "__all__"
 
-def test_runner_clears_repair_context_on_success():
-    from prompt2render.harness.runner import HarnessRunner
-    from prompt2render.harness.context import SceneContext
-    from prompt2render.harness.plugin import Plugin
-    from prompt2render.harness.logging_ import StructuredLogger
+
+def test_plan_aliases_generator_code_to_generator_manim_when_that_is_the_backend():
+    manim = RepairableTarget()
+    manim.name = "generator_manim"
+    router = _router(generator_manim=manim)
+
+    plan = router.plan(
+        {"finding_type": "spatial_conflict", "stem": "01"}, "verifier_spatial"
+    )
+
+    assert plan.targets == ["generator_manim"]
+
+
+def test_plan_mutates_nothing():
+    router = _router(generator_code=RepairableTarget())
+    ctx = SceneContext()
+    finding = {"finding_type": "spatial_conflict", "stem": "01", "status": "fail"}
+
+    router.plan(finding, "verifier_spatial")
+
+    assert finding["status"] == "fail"       # NOT rewritten to "resolved"
+    assert ctx.repair_context == {}
+
+
+# ----------------------------------------------------------------- execute --
+
+def test_execute_prefers_scene_scoped_repair():
+    target = RepairableTarget()
+    router = _router(generator_code=target)
+    ctx = SceneContext()
+
+    plan = router.plan(
+        {"finding_type": "spatial_conflict", "stem": "01", "detail": "boom"},
+        "verifier_spatial",
+    )
+    execution = router.execute(plan, ctx)
+
+    assert execution.ok is True
+    assert execution.targets_run == ["generator_code"]
+    assert target.reverted == ["01"]        # revert precedes regenerate
+    assert target.calls == 1
+
+
+def test_execute_feeds_the_diagnostic_forward_to_the_generator():
+    target = RepairableTarget()
+    router = _router(generator_code=target)
+    ctx = SceneContext()
+
+    plan = router.plan(
+        {"finding_type": "spatial_conflict", "stem": "01",
+         "detail": "collision at (1,2)"},
+        "verifier_spatial",
+    )
+    router.execute(plan, ctx)
+
+    assert target.seen_repair_context[0] == ["collision at (1,2)"]
+
+
+def test_execute_does_not_duplicate_an_identical_diagnostic():
+    """The same message re-appended each attempt grew the prompt without
+    adding information, and both generators truncate to the last 6000 chars."""
+    target = RepairableTarget()
+    router = _router(generator_code=target)
+    ctx = SceneContext()
+
+    plan = router.plan(
+        {"finding_type": "spatial_conflict", "stem": "01", "detail": "same"},
+        "verifier_spatial",
+    )
+    router.execute(plan, ctx)
+    router.execute(plan, ctx)
+
+    assert ctx.repair_context["01"] == ["same"]
+
+
+def test_execute_degrades_to_a_full_run_without_scene_scoped_methods():
+    target = WholeStageTarget()
+    router = _router(reviser_script=target)
+    ctx = SceneContext()
+
+    plan = router.plan(
+        {"finding_type": "pedagogy_review", "stem": "01"}, "verifier_pedagogy"
+    )
+    execution = router.execute(plan, ctx)
+
+    assert execution.ok is True
+    assert target.runs == 1
+
+
+def test_execute_reports_a_raising_target_without_claiming_success():
+    target = RepairableTarget(raise_on_regenerate=True)
+    router = _router(generator_code=target)
+    ctx = SceneContext()
+
+    plan = router.plan(
+        {"finding_type": "spatial_conflict", "stem": "01"}, "verifier_spatial"
+    )
+    execution = router.execute(plan, ctx)
+
+    assert execution.ok is False
+    assert execution.errors
+    assert "SystemExit" in execution.errors[0]
+    # The failure is also surfaced to the next generation attempt.
+    assert any("repair failed" in m for m in ctx.repair_context["01"])
+
+
+def test_execute_reports_an_unregistered_target():
+    router = _router()          # nothing registered
+    ctx = SceneContext()
+
+    plan = router.plan(
+        {"finding_type": "spatial_conflict", "stem": "01"}, "verifier_spatial"
+    )
+    execution = router.execute(plan, ctx)
+
+    assert execution.ok is False
+    assert "not registered" in execution.errors[0]
+
+
+def test_execute_never_rewrites_a_finding_status():
+    """The mechanism by which an unproven repair used to clear the gate."""
+    target = RepairableTarget()
+    router = _router(generator_code=target)
+    ctx = SceneContext()
+
+    finding = {
+        "status": "fail",
+        "finding_type": "spatial_conflict",
+        "stem": "01",
+        "detail": "boom",
+    }
+    router.execute(router.plan(finding, "verifier_spatial"), ctx)
+
+    assert finding["status"] == "fail"
+
+
+# -------------------------------------------------------------- plugin role --
+
+def test_router_is_not_a_pipeline_stage():
+    router = RepairRouterPlugin()
+    ctx = SceneContext()
+
+    assert router.run(ctx) is ctx
+    assert router.declare_effects() == []
+    assert router._default_gate() is False
+
+
+def test_subscribe_deliberately_does_not_subscribe():
+    """Repair is initiated by the runner, not by an event handler racing
+    the runner's own control flow."""
     from prompt2render.harness.events import EventBus
-    import tempfile
-    from pathlib import Path
-    
-    class DummyVerifier(Plugin):
-        name = "dummy"
-        def __init__(self):
-            super().__init__()
-            self.runs = 0
-            
-        def declare_dependencies(self):
-            return []
-            
-        def declare_effects(self):
-            return ["check_results"]
 
-        def run(self, ctx):
-            self.runs += 1
-            if self.runs == 1:
-                ctx.check_results[self.name] = [{"status": "fail", "detail": "bad"}]
-                ctx.repair_context["01"] = ["fix it"]
-            else:
-                ctx.check_results[self.name] = [{"status": "pass"}]
-            return ctx
-            
-        def is_gate(self):
-            return True
-            
-    verifier = DummyVerifier()
-    
-    # We need a dummy event handler to mark the failure as "resolved" so the runner re-verifies
     bus = EventBus()
-    def fake_repair(event):
-        for f in event.payload["findings"]:
-            f["status"] = "resolved"
-    bus.subscribe("check.failed", fake_repair)
-    
-    with tempfile.TemporaryDirectory() as d:
-        logger = StructuredLogger(Path(d) / "log.jsonl")
-        runner = HarnessRunner([verifier], logger, bus)
-        ctx = SceneContext()
-        
-        ctx = runner.run(ctx)
-        
-        assert verifier.runs == 2
-        # The repair context MUST be cleared after a successful re-verification
-        assert not ctx.repair_context
+    router = RepairRouterPlugin()
+    router.subscribe(bus)
+
+    seen = []
+    bus.subscribe("check.failed", lambda e: seen.append(e))
+    bus.emit("check.failed", plugin="v", findings=[], context=SceneContext())
+
+    # Only our own subscriber ran; the router did not act on the event.
+    assert len(seen) == 1

@@ -72,6 +72,26 @@ def test_subscribing_to_repair_events_does_not_raise():
     bus.subscribe("repair.finished", lambda e: None)
 
 
+def _controller(bus: EventBus, target: _Repairable, tmp: Path):
+    """A repair controller wired the way the runner wires one.
+
+    Repair is driven by the controller now, not by a ``check.failed``
+    subscriber -- that indirection is exactly what let a second, competing
+    repair loop race the runner's own control flow.
+    """
+
+    from prompt2render.harness.repair_controller import RepairController
+
+    router = RepairRouterPlugin()
+    router.attach(bus=bus, plugins_by_name={"generator_code": target})
+
+    return RepairController(
+        router=router,
+        plugins_by_name={"generator_code": target},
+        log_path=tmp / "repair_log.jsonl",
+    )
+
+
 def test_repair_cycle_delivers_started_and_finished():
     seen: list[tuple[str, dict]] = []
 
@@ -80,22 +100,11 @@ def test_repair_cycle_delivers_started_and_finished():
     bus.subscribe("repair.finished", lambda e: seen.append((e.type, e.payload)))
 
     target = _Repairable()
-    router = RepairRouterPlugin({"max_repair_cycles": 1})
 
     with tempfile.TemporaryDirectory() as d:
-        router.attach(
-            bus=bus,
-            plugins_by_name={"generator_code": target},
-            log_path=Path(d) / "repair_log.jsonl",
-        )
+        controller = _controller(bus, target, Path(d))
         ctx = SceneContext(project_dir=Path(d))
-        bus.emit(
-            "check.failed",
-            plugin="verifier_execution",
-            findings=[_finding()],
-            context=ctx,
-            is_gate=True,
-        )
+        controller.repair_scene(ctx, "01", [_finding()], "verifier_execution")
 
     kinds = [t for t, _ in seen]
     assert "repair.started" in kinds, f"no repair.started delivered; saw {kinds}"
@@ -114,21 +123,35 @@ def test_a_raising_subscriber_does_not_abort_the_repair():
     bus.subscribe("repair.started", explode)
 
     target = _Repairable()
-    router = RepairRouterPlugin({"max_repair_cycles": 1})
 
     with tempfile.TemporaryDirectory() as d:
-        router.attach(
-            bus=bus,
-            plugins_by_name={"generator_code": target},
-            log_path=Path(d) / "repair_log.jsonl",
-        )
+        controller = _controller(bus, target, Path(d))
         ctx = SceneContext(project_dir=Path(d))
-        bus.emit(
-            "check.failed",
-            plugin="verifier_execution",
-            findings=[_finding()],
-            context=ctx,
-            is_gate=True,
-        )
+        controller.repair_scene(ctx, "01", [_finding()], "verifier_execution")
 
     assert target.regenerated == ["01"]
+
+
+def test_repair_finished_reports_the_real_decision():
+    """The finished event carries the controller's verdict, not merely
+    'the repair call did not raise'."""
+
+    finished: list[dict] = []
+
+    bus = EventBus()
+    bus.subscribe("repair.finished", lambda e: finished.append(e.payload))
+
+    target = _Repairable()
+
+    with tempfile.TemporaryDirectory() as d:
+        controller = _controller(bus, target, Path(d))
+        ctx = SceneContext(project_dir=Path(d))
+        record = controller.repair_scene(
+            ctx, "01", [_finding()], "verifier_execution"
+        )
+
+    assert finished
+    assert finished[0]["outcome"] == record.decision
+    # No verifiers were registered, so nothing could establish the candidate
+    # is at least as good -- it must NOT be accepted.
+    assert record.accepted is False

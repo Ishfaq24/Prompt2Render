@@ -313,20 +313,36 @@ def cmd_harness(a):
     )
 
     plugins = build_plugins(config=cfg_dict)
-    repair_router = build_repair_router(config=cfg_dict)
-    
+
     log_path = d / "build" / "harness" / "log.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logger = StructuredLogger(log_path)
     bus = EventBus()
-    
-    if repair_router is not None:
-        repair_router.attach(
-            bus=bus,
-            plugins_by_name={p.name: p for p in plugins},
-            log_path=d / "build" / "harness" / "repair_log.jsonl",
-        )
-        
+
+    # The repair controller is the single authority over the repair
+    # lifecycle: detect -> snapshot -> repair -> re-verify every scene
+    # verifier -> compare against the accepted scene -> accept or restore.
+    # The router underneath it only routes and executes; it no longer
+    # decides whether a repair worked.
+    from prompt2render.harness.loader import build_repair_controller
+
+    repair_controller = build_repair_controller(
+        plugins,
+        config=cfg_dict,
+        logger=logger,
+        log_path=d / "build" / "harness" / "repair_log.jsonl",
+    )
+
+    if repair_controller is not None:
+        repair_controller.router.attach(bus=bus)
+
+    # Clear any candidate trees left by an interrupted earlier run so a
+    # stale sidecar can never be mistaken for this run's work.
+    from prompt2render.harness import workspace as _workspace
+
+    _workspace.cleanup_candidates(d)
+
+
     # Attach live progress UI if running in a TTY
     progress = None
     import sys
@@ -336,7 +352,12 @@ def cmd_harness(a):
         progress.attach(bus)
         
     ctx = SceneContext(prompt=script_path, project_dir=d)
-    runner = HarnessRunner(plugins, logger, bus)
+    runner = HarnessRunner(
+        plugins,
+        logger,
+        bus,
+        repair_controller=repair_controller,
+    )
 
     cfg.say(f"running harness over {a.slug}: " + " -> ".join(p.name for p in plugins))
     try:

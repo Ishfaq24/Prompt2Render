@@ -1,73 +1,35 @@
 {
   "project": "unknown",
   "final_pass": false,
-  "iterations": 5,
+  "iterations": 0,
   "detected_issues": [
     {
       "status": "fail",
-      "finding_type": "spatial_conflict",
-      "stem": "01",
-      "detail": "collision at (1,2)"
+      "finding_type": "stage_exception",
+      "category": "TECHNICAL",
+      "severity": "BLOCKING",
+      "detail": "SystemExit: [prompt2render] no build/master.wav — run `prompt2render voice` first"
     }
   ],
-  "repairs": [
-    {
-      "cycle_id": 1,
-      "scene_id": "01",
-      "finding_type": "spatial_conflict",
-      "mismatch_subtype": null,
-      "routed_to": [
-        "generator_code"
-      ],
-      "diagnostic_message": "collision at (1,2)",
-      "pre_repair_context_hash": "97ef275ddd6ebdd1",
-      "post_repair_context_hash": "cdddac3c02bace72",
-      "outcome": "attempted",
-      "cycles_used": 1,
-      "timestamp": "2026-08-24T23:28:13Z"
-    },
-    {
-      "cycle_id": 2,
-      "scene_id": "01",
-      "finding_type": "spatial_conflict",
-      "mismatch_subtype": null,
-      "routed_to": [
-        "generator_code"
-      ],
-      "diagnostic_message": "collision at (1,2)",
-      "pre_repair_context_hash": "5b1126335f6e2adb",
-      "post_repair_context_hash": "6e1bb11018ce5a55",
-      "outcome": "attempted",
-      "cycles_used": 2,
-      "timestamp": "2026-08-24T23:28:13Z"
-    },
-    {
-      "cycle_id": 3,
-      "scene_id": "01",
-      "finding_type": "spatial_conflict",
-      "mismatch_subtype": null,
-      "routed_to": [
-        "generator_code"
-      ],
-      "diagnostic_message": "collision at (1,2)",
-      "pre_repair_context_hash": "d53ece79e1985313",
-      "post_repair_context_hash": "d53ece79e1985313",
-      "outcome": "gave_up",
-      "cycles_used": 2,
-      "timestamp": "2026-08-24T23:28:13Z"
-    }
-  ],
+  "repairs": [],
   "verification_results": {
-    "dummy_verifier": [
+    "raises_system_exit": [
       {
         "status": "fail",
-        "finding_type": "spatial_conflict",
-        "stem": "01",
-        "detail": "collision at (1,2)"
+        "finding_type": "stage_exception",
+        "category": "TECHNICAL",
+        "severity": "BLOCKING",
+        "detail": "SystemExit: [prompt2render] no build/master.wav — run `prompt2render voice` first"
       }
     ]
   },
   "findings_by_category": {
     "TECHNICAL": 1
-  }
+  },
+  "repair_outcomes": {},
+  "repairs_accepted": 0,
+  "repairs_rejected_regression": 0,
+  "repairs_failed_verification": 0,
+  "repairs_budget_exhausted": 0,
+  "repair_decisions": []
 }

@@ -1,32 +1,43 @@
 """Pipeline runner for the Prompt2Render harness.
 
-The runner executes an already-resolved plugin DAG over one SceneContext.
+The runner executes an already-resolved plugin DAG over one SceneContext,
+and it is the single authority over the repair lifecycle.
 
 Plugin execution has two failure classes:
 
-1. Hard execution failure:
-   ``plugin.run()`` raises. This is always fatal for that invocation,
-   regardless of the plugin's gate setting.
+1. Hard execution failure: ``plugin.run()`` raises. Always fatal for that
+   invocation, regardless of the plugin's gate setting.
 
-2. Soft verification failure:
-   ``plugin.run()`` returns normally but writes one or more ``status == "fail"``
-   entries to ``context.check_results[plugin.name]``. These are emitted as
-   ``check.failed`` events. The EventBus/repair_router may synchronously repair
-   the affected scene and mark the finding resolved. The runner then
-   re-verifies the original verifier rather than trusting the repair router.
+2. Soft verification failure: ``plugin.run()`` returns normally but writes
+   ``status == "fail"`` entries to ``context.check_results[plugin.name]``.
+   The runner hands those to :class:`RepairController`, which owns the
+   complete detect -> snapshot -> repair -> re-verify -> compare -> decide
+   cycle and returns an auditable decision.
 
-The runner owns orchestration and gate policy. Repair policy remains in
-``repair_router`` and ``RoutingPolicy``.
+What this replaced
+------------------
 
-Tier 3 Phase 14 ("verifier-driven repair with regression detection") adds
-one more trigger source to the rewind loop below: ``regression.
-scene_fingerprints``/``changed_stems`` (see ``regression.py`` for the
-structural gap this closes and an honest note on why it is a forward-looking
-safety net today rather than a fix for a currently-live bug). Purely
-additive: it only ever widens ``trigger``, never narrows it, so it cannot
-change any existing gate/rewind decision by itself -- it can only cause
-*more* re-verification to happen in a case that would otherwise silently
-skip it.
+There used to be two competing loops here:
+
+* an inner repair/re-verify loop inside ``_run_one`` that emitted
+  ``check.failed``, let the router rewrite a finding's status to
+  ``"resolved"``, and re-ran the plugin up to three times; and
+* an outer rewind loop in ``run()`` that inferred a set of affected stems
+  from four heuristics (new ``repair_context`` keys, vanished
+  ``render_artifacts``, empty manifests, scene-plan text fingerprints) and
+  jumped the plugin index backwards.
+
+They coordinated only through mutations to ``SceneContext``. The inner
+loop's success path cleared ``repair_context`` *before returning*, which
+destroyed the outer loop's primary trigger -- the other three heuristics
+existed to compensate, and a repair that changed neither a render artifact
+nor scene-plan text was invisible to all four. Their three budgets
+(router cycles, re-verify attempts, rewind counts) had no shared
+accounting.
+
+Both are gone. Repair is now explicit, revision-driven, and owned in one
+place, and staleness is a comparison against ``scene_versions`` rather than
+a heuristic (see :mod:`prompt2render.harness.lineage`).
 """
 
 from __future__ import annotations
@@ -34,7 +45,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from . import regression
+from . import lineage
 from .context import HistoryEntry, SceneContext, snapshot
 from .events import EventBus
 from .logging_ import (
@@ -42,6 +53,8 @@ from .logging_ import (
     write_self_correction_report,
 )
 from .plugin import Plugin
+from .repair_controller import RepairController
+from .scene_quality import classify
 
 
 class GateFailure(RuntimeError):
@@ -61,10 +74,46 @@ class GateFailure(RuntimeError):
         )
 
 
-class HarnessRunner:
-    """Execute a resolved plugin pipeline."""
+class FinalizationFailure(GateFailure):
+    """Raised when scene gates passed but no valid programme was produced.
 
-    DEFAULT_MAX_REVERIFY_ATTEMPTS = 3
+    This is the reachability invariant: a run whose scene-level gates all
+    pass must actually produce ``out/final.mp4``. Terminating "successfully"
+    with no video, or with a video built from superseded scene revisions, is
+    a failure the harness must state plainly rather than hide.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+        super().__init__(
+            "finalization",
+            [
+                {
+                    "status": "fail",
+                    "finding_type": "final_video_unreachable",
+                    "category": "TECHNICAL",
+                    "severity": "BLOCKING",
+                    "detail": reason,
+                }
+            ],
+        )
+
+
+#: Stages that produce or validate the finished programme. Used to decide
+#: whether the reachability invariant applies to a given pipeline.
+FINALIZATION_STAGES = (
+    "renderer_finish",
+    "renderer_manim_finish",
+)
+
+#: Minimum plausible size for a real encoded video, in bytes. Matches the
+#: threshold encode.py/finish.py already use for their own output checks.
+MIN_FINAL_BYTES = 2048
+
+
+class HarnessRunner:
+    """Execute a resolved plugin pipeline, owning the repair lifecycle."""
 
     def __init__(
         self,
@@ -72,20 +121,18 @@ class HarnessRunner:
         logger: StructuredLogger,
         bus: EventBus | None = None,
         *,
-        max_reverify_attempts: int = DEFAULT_MAX_REVERIFY_ATTEMPTS,
+        repair_controller: RepairController | None = None,
+        enforce_final_video: bool = True,
     ) -> None:
-        self.plugins = list(
-            plugins
-        )
+        self.plugins = list(plugins)
         self.logger = logger
         self.bus = bus or EventBus()
+        self.repair_controller = repair_controller
 
-        self.max_reverify_attempts = max(
-            0,
-            int(
-                max_reverify_attempts
-            ),
-        )
+        #: When False, the reachability invariant is not enforced -- used by
+        #: partial pipelines (the ablation runner, focused tests) that
+        #: deliberately contain no finish stage.
+        self.enforce_final_video = bool(enforce_final_video)
 
     # ------------------------------------------------------------------
     # Pipeline
@@ -96,182 +143,32 @@ class HarnessRunner:
         ctx: SceneContext,
         halt_on_gate_failure: bool = True,
     ) -> SceneContext:
-        """Run all resolved plugins in order.
+        """Run every resolved plugin in order, repairing scenes as needed.
 
-        If a repair cycle mutates earlier artifacts (e.g. generator_code /
-        generator_manim), the pipeline MUST rewind to the earliest producer of
-        ``code_artifacts`` and re-execute the full chain:
+        Two explicit phases:
 
-            generator -> verifier_execution -> renderer -> verifier_temporal
-            -> verifier_semantic -> feedback_hitl (and any other gates)
+        1. **Scene phase** -- run each stage. A stage with blocking
+           scene-scoped findings is handed to the repair controller, which
+           either accepts a candidate (advancing the scene's revision) or
+           restores the accepted state. The stage is then re-evaluated once
+           against the post-repair evidence.
 
-        The previous heuristic scanned only consumers of ``code_artifacts`` /
-        ``render_artifacts``.  ``generator_manim`` declares dependencies on
-        ``scene_plan``/``narration`` and therefore was never found, so a HITL
-        regeneration of sections 01/07 would mark the finding "resolved" but
-        never re-render or re-verify before assembly.  This implementation
-        searches for *producers* of ``code_artifacts`` (including the canonical
-        names ``generator_manim``/``generator_code``) and falls back to the
-        earliest ``scene_plan`` producer, guaranteeing stale assembly is
-        impossible.
+        2. **Finalization** -- after every stage has run, verify the
+           reachability invariant: if the scene gates passed, a valid
+           ``out/final.mp4`` built from the current revisions must exist.
         """
 
-        i = 0
-        # Prevent infinite rewind loops but allow HITL to trigger the same
-        # stems again when hitl_feedback.json still lists them as reject
-        # (user explicitly said same file should cause regeneration again).
-        # Each distinct (plugin_index, frozenset) may rewind up to 3 times.
-        seen_rewinds: dict[tuple[int, frozenset[str]], int] = {}
-        MAX_SAME_REWINDS = 3
-        total_rewinds = 0
-        MAX_TOTAL_REWINDS = 10
-
-        while i < len(self.plugins):
-            plugin = self.plugins[i]
-
-            before_repair_stems = set(ctx.repair_context.keys())
-            before_render_keys = set(ctx.render_artifacts.keys())
-            before_fingerprints = regression.scene_fingerprints(ctx)
-
+        for index, plugin in enumerate(self.plugins):
             ctx = self._run_one(
                 plugin,
                 ctx,
                 halt_on_gate_failure=halt_on_gate_failure,
-                plugin_index=i,
+                plugin_index=index,
             )
 
-            after_repair_stems = set(ctx.repair_context.keys())
-            new_repairs = after_repair_stems - before_repair_stems
-            # A revert_scene() pops the stale render artifact when a repair
-            # is routed to a code generator. IMPORTANT: this must NOT be
-            # gated on ``s in after_repair_stems`` (repair_context
-            # membership). The success path of ``_run_one`` — via
-            # ``_clear_verified_repair_context`` — pops a stem's
-            # repair_context entry as soon as the *current* plugin
-            # re-verifies clean, which happens before we get back here. For
-            # a repair surfaced by a verifier that runs *after*
-            # renderer_manim (verifier_semantic/_lifecycle/_spatial/_temporal,
-            # feedback_hitl) and whose own re-check then passes, that pop
-            # erased the only signal this loop used to have, so the rewind
-            # back to renderer_manim never fired and a freshly regenerated
-            # scene kept its stale, pre-fix render. Comparing render_artifacts
-            # key sets directly is immune to that: it only fires when a
-            # render that existed before this stage genuinely no longer does.
-            stale_renders = before_render_keys - set(ctx.render_artifacts.keys())
-            # Also trigger if a pending stem has no manifest (render not yet redone)
-            missing_renders = {
-                s for s in after_repair_stems
-                if s not in ctx.render_artifacts
-                or not getattr(ctx.render_artifacts.get(s, None), "manifest", None)
-            }
-            trigger = new_repairs | stale_renders | missing_renders
-
-            # Tier 3 Phase 14: a repair routed to a plugin without
-            # regenerate_one/revert_scene degrades to a full target.run(ctx)
-            # (SS15 implicit contract #2), which can silently rewrite an
-            # unrelated stem's authored content without touching
-            # repair_context/render_artifacts at all -- the three triggers
-            # above would never see it. Detect that directly and widen
-            # trigger; this can only add stems, never remove any of the
-            # above.
-            after_fingerprints = regression.scene_fingerprints(ctx)
-            silently_changed = regression.changed_stems(
-                before_fingerprints, after_fingerprints
-            )
-            regression_detected = silently_changed - trigger
-
-            if regression_detected:
-                self.logger.info(
-                    f"Regression detected at {plugin.name}: repair "
-                    f"silently changed {sorted(regression_detected)} "
-                    "without registering them via repair_context/"
-                    "render_artifacts -- widening rewind scope to "
-                    "re-verify them too."
-                )
-
-            trigger = trigger | regression_detected
-
-            if trigger:
-                # Rewind to the earliest *consumer* of code/render artifacts
-                # that has already executed.  The repair_router has already
-                # produced fresh code via revert+regenerate, so we need to
-                # re-run the downstream chain:
-                #   verifier_execution -> renderer_manim -> verifier_temporal
-                #   -> verifier_semantic -> feedback_hitl
-                # Rewinding to the generator would duplicate the LLM call.
-                rewind_idx = self._rewind_target_index(i)
-
-                if rewind_idx < i:
-                    key = (rewind_idx, frozenset(sorted(trigger)))
-                    cnt = seen_rewinds.get(key, 0)
-                    if cnt >= MAX_SAME_REWINDS or total_rewinds >= MAX_TOTAL_REWINDS:
-                        self.logger.info(
-                            f"Rewind loop detected for {sorted(trigger)} at {self.plugins[rewind_idx].name} "
-                            f"(cnt={cnt}, total={total_rewinds}); not rewinding again — surfacing gate failure."
-                        )
-                    else:
-                        seen_rewinds[key] = cnt + 1
-                        total_rewinds += 1
-                        # Invalidate downstream check_results for the affected
-                        # stems so verifiers cannot pass on stale cached
-                        # findings.  Only the stale stems are cleared; other
-                        # stems keep their passing evidence.
-                        for pname in [q.name for q in self.plugins[rewind_idx:]]:
-                            if pname in ctx.check_results:
-                                remaining = [
-                                    r for r in ctx.check_results[pname]
-                                    if not isinstance(r, dict) or str(r.get("stem") or r.get("scene_id") or "") not in trigger
-                                ]
-                                # If the only findings were for the stale stems,
-                                # remove the entry entirely so the verifier re-runs.
-                                if len(remaining) != len(ctx.check_results[pname]):
-                                    if remaining:
-                                        ctx.check_results[pname] = remaining
-                                    else:
-                                        ctx.check_results.pop(pname, None)
-                        self.logger.info(
-                            f"Rewinding pipeline from {plugin.name} to {self.plugins[rewind_idx].name} "
-                            f"to re-process repaired scenes: {sorted(trigger)} (rewind #{total_rewinds})"
-                        )
-                        i = rewind_idx
-                        continue
-
-            i += 1
+        self._check_final_video_reachable(ctx, halt_on_gate_failure)
 
         return ctx
-
-    # ------------------------------------------------------------------
-    # Rewind targeting
-    # ------------------------------------------------------------------
-
-    def _rewind_target_index(self, plugin_index: int) -> int:
-        """Return the earliest index before ``plugin_index`` worth replaying.
-
-        A rewind target is a plugin that either consumes ``code_artifacts``/
-        ``render_artifacts`` or produces ``code_artifacts`` (the canonical
-        generator stages). When none exists before ``plugin_index`` — e.g. a
-        repair to an upstream planning/verification stage like
-        ``verifier_storyboard``, which sits before any code generator even
-        appears in the pipeline — this returns ``plugin_index`` unchanged,
-        signalling "no rewind is possible here".
-        """
-
-        rewind_idx = plugin_index
-
-        for j, p in enumerate(self.plugins[:plugin_index]):
-            deps = p.declare_dependencies() or []
-            if "code_artifacts" in deps or "render_artifacts" in deps:
-                rewind_idx = min(rewind_idx, j)
-
-        # Fallback: if no consumer was found (e.g. stripped Manim config),
-        # rewind to the earliest code producer.
-        if rewind_idx == plugin_index:
-            for j, p in enumerate(self.plugins[:plugin_index]):
-                eff = p.declare_effects() or []
-                if "code_artifacts" in eff or p.name in ("generator_manim", "generator_code"):
-                    rewind_idx = min(rewind_idx, j)
-
-        return rewind_idx
 
     # ------------------------------------------------------------------
     # Single stage
@@ -285,22 +182,9 @@ class HarnessRunner:
         halt_on_gate_failure: bool,
         plugin_index: int,
     ) -> SceneContext:
-        """Execute, optionally repair, and re-verify one plugin."""
+        """Execute one stage, repair any scene defects, decide its gate."""
 
-        # Stems already present in repair_context before this plugin does
-        # anything. Used as a fallback in _clear_verified_repair_context
-        # when a successful result carries no stem info at all: any stem
-        # that appeared in repair_context ONLY during this invocation was
-        # necessarily added by this same plugin's own failure (see below),
-        # so a since-confirmed clean re-verification can safely clear it —
-        # without guessing about unrelated stems that were already pending.
-        repair_keys_before_run = set(
-            ctx.repair_context.keys()
-        )
-
-        snap = snapshot(
-            ctx
-        )
+        snap = snapshot(ctx)
 
         self.bus.emit(
             "stage.started",
@@ -308,23 +192,99 @@ class HarnessRunner:
         )
 
         started = time.monotonic()
-        ok = True
         diagnostics = ""
 
+        ctx = self._execute(plugin, ctx, snap, started)
+
+        self._normalize(ctx, plugin)
+        self._stamp_revisions(ctx, plugin)
+
+        fails = self._failures(ctx, plugin)
+
         # --------------------------------------------------------------
-        # Forward execution
+        # Repair -- delegated entirely to the controller
         # --------------------------------------------------------------
 
-        try:
-            result = plugin.run(
-                ctx
+        if fails:
+            ctx, repaired = self._repair(ctx, plugin, fails)
+
+            if repaired:
+                # Re-evaluate against post-repair evidence. The controller
+                # already re-ran every scene verifier, so the stage is not
+                # re-executed here -- doing so would duplicate its work and
+                # let a stage overwrite the controller's findings.
+                fails = self._failures(ctx, plugin)
+
+        # --------------------------------------------------------------
+        # Gate
+        # --------------------------------------------------------------
+
+        ok = not bool(fails)
+
+        if fails:
+            diagnostics = "; ".join(
+                str(
+                    finding.get(
+                        "detail",
+                        finding.get("message", ""),
+                    )
+                )
+                for finding in fails
             )
 
+            if plugin.is_gate() and halt_on_gate_failure:
+                self.logger.log_invocation(
+                    plugin=plugin.name,
+                    input_ctx=snap,
+                    output_ctx=ctx,
+                    ok=False,
+                    diagnostics=diagnostics,
+                    duration_s=time.monotonic() - started,
+                )
+
+                write_self_correction_report(
+                    ctx,
+                    final_pass=False,
+                    repair_controller=self.repair_controller,
+                )
+
+                raise GateFailure(
+                    plugin.name,
+                    fails,
+                )
+
+        ctx.history.append(
+            _history_entry(
+                plugin,
+                ok=ok,
+            )
+        )
+
+        self.logger.log_invocation(
+            plugin=plugin.name,
+            input_ctx=snap,
+            output_ctx=ctx,
+            ok=ok,
+            diagnostics=diagnostics,
+            duration_s=time.monotonic() - started,
+        )
+
+        return ctx
+
+    def _execute(
+        self,
+        plugin: Plugin,
+        ctx: SceneContext,
+        snap: SceneContext,
+        started: float,
+    ) -> SceneContext:
+        """Forward execution. A raise is always fatal for this invocation."""
+
+        try:
+            result = plugin.run(ctx)
+
             if result is not None:
-                if not isinstance(
-                    result,
-                    SceneContext,
-                ):
+                if not isinstance(result, SceneContext):
                     raise TypeError(
                         f"{plugin.name}.run() returned "
                         f"{type(result).__name__}; "
@@ -333,22 +293,14 @@ class HarnessRunner:
 
                 ctx = result
 
-        except (
-            Exception,
-            SystemExit,
-        ) as exc:
-            # SystemExit is deliberately included because existing
-            # prompt2render modules use it for expected fatal configuration
-            # conditions.
-            ok = False
+            return ctx
 
-            diagnostics = (
-                f"{type(exc).__name__}: {exc}"
-            )
+        except (Exception, SystemExit) as exc:
+            # SystemExit is deliberately included: several prompt2render
+            # modules use it for expected fatal configuration conditions.
+            diagnostics = f"{type(exc).__name__}: {exc}"
 
-            ctx.check_results[
-                plugin.name
-            ] = [
+            ctx.check_results[plugin.name] = [
                 {
                     "status": "fail",
                     "finding_type": "stage_exception",
@@ -371,27 +323,184 @@ class HarnessRunner:
                 output_ctx=ctx,
                 ok=False,
                 diagnostics=diagnostics,
-                duration_s=(
-                    time.monotonic()
-                    - started
-                ),
+                duration_s=time.monotonic() - started,
             )
 
             write_self_correction_report(
                 ctx,
                 final_pass=False,
+                repair_controller=self.repair_controller,
             )
 
             raise
 
-        # --------------------------------------------------------------
-        # Normalize missing check results
-        # --------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Repair
+    # ------------------------------------------------------------------
+
+    def _repair(
+        self,
+        ctx: SceneContext,
+        plugin: Plugin,
+        fails: list[dict[str, Any]],
+    ) -> tuple[SceneContext, bool]:
+        """Hand blocking scene findings to the controller, one scene at a time.
+
+        Returns ``(context, whether any repair cycle ran)``.
+        """
+
+        if self.repair_controller is None:
+            return ctx, False
+
+        # Announce the failure for observers (progress UI, experiment
+        # tooling). Nothing subscribed to this drives control flow any more.
+        self.bus.emit(
+            "check.failed",
+            plugin=plugin.name,
+            findings=fails,
+            context=ctx,
+            is_gate=plugin.is_gate(),
+        )
+
+        by_stem: dict[str, list[dict[str, Any]]] = {}
+
+        for finding in fails:
+            if not isinstance(finding, dict):
+                continue
+
+            stem = str(
+                finding.get("stem") or finding.get("scene_id") or ""
+            )
+
+            if not lineage.is_scene_stem(stem):
+                # Whole-video findings have no single scene to regenerate.
+                continue
+
+            by_stem.setdefault(stem, []).append(finding)
+
+        repaired = False
+
+        for stem, scene_findings in sorted(by_stem.items()):
+            record = self.repair_controller.repair_scene(
+                ctx,
+                stem,
+                scene_findings,
+                plugin.name,
+            )
+
+            repaired = True
+
+            if record.accepted:
+                # The scene genuinely changed. Everything derived from it,
+                # up to and including out/final.mp4, is now stale by
+                # revision comparison rather than by heuristic.
+                lineage.invalidate_scene(ctx, stem)
+
+        return ctx, repaired
+
+    # ------------------------------------------------------------------
+    # Reachability invariant
+    # ------------------------------------------------------------------
+
+    def _check_final_video_reachable(
+        self,
+        ctx: SceneContext,
+        halt_on_gate_failure: bool,
+    ) -> None:
+        """If scene gates passed, a current final.mp4 must exist.
+
+        Deliberately enforced here rather than in ``qc.py`` so the
+        standalone ``prompt2render check`` command keeps its existing
+        behaviour of reporting a missing final video as SKIP -- checking
+        layout/alignment on a partially-built project is a legitimate use.
+        """
+
+        if not (self.enforce_final_video and halt_on_gate_failure):
+            return
+
+        names = {plugin.name for plugin in self.plugins}
+
+        if not (names & set(FINALIZATION_STAGES)):
+            # No finish stage in this pipeline -- nothing was promised.
+            return
+
+        reason = self._finalization_problem(ctx)
+
+        if reason is None:
+            return
+
+        write_self_correction_report(
+            ctx,
+            final_pass=False,
+            repair_controller=self.repair_controller,
+        )
+
+        raise FinalizationFailure(reason)
+
+    @staticmethod
+    def _finalization_problem(ctx: SceneContext) -> str | None:
+        """Why the programme is not shippable, or ``None`` if it is."""
+
+        program = ctx.program
+
+        if program is None:
+            return (
+                "every scene gate passed but no finish stage recorded a "
+                "programme artifact -- out/final.mp4 was never produced"
+            )
+
+        if program.final_mp4 is None:
+            return (
+                "the finish stage ran but produced no out/final.mp4"
+            )
+
+        final = program.final_mp4
+
+        if not final.exists():
+            return f"out/final.mp4 is missing at {final}"
+
+        try:
+            size = final.stat().st_size
+        except OSError as exc:
+            return f"out/final.mp4 could not be inspected: {exc}"
+
+        if size <= MIN_FINAL_BYTES:
+            return (
+                f"out/final.mp4 is {size} bytes, which is too small to be a "
+                "valid encode"
+            )
+
+        if program.is_stale(ctx.scene_versions):
+            expected = dict(ctx.scene_versions)
+            built_from = dict(program.source_revisions)
+
+            drifted = sorted(
+                stem
+                for stem in set(expected) | set(built_from)
+                if expected.get(stem) != built_from.get(stem)
+            )
+
+            return (
+                "out/final.mp4 was built from superseded scene revisions "
+                f"(scenes {drifted} changed after it was produced); it "
+                "cannot be treated as current"
+            )
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Result bookkeeping
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize(
+        ctx: SceneContext,
+        plugin: Plugin,
+    ) -> None:
+        """A stage that wrote nothing is recorded as a clean pass."""
 
         if plugin.name not in ctx.check_results:
-            ctx.check_results[
-                plugin.name
-            ] = [
+            ctx.check_results[plugin.name] = [
                 {
                     "status": "pass",
                     "finding_type": "stage_success",
@@ -401,305 +510,51 @@ class HarnessRunner:
                 }
             ]
 
-        fails = self._failures(
-            ctx,
-            plugin,
-        )
+    @staticmethod
+    def _stamp_revisions(
+        ctx: SceneContext,
+        plugin: Plugin,
+    ) -> None:
+        """Tag this stage's scene-scoped findings with the scene revision.
 
-        # --------------------------------------------------------------
-        # Repair/re-verification loop
-        # --------------------------------------------------------------
+        Done centrally so none of the eleven verifiers has to remember --
+        the same reasoning that moved ``finding_type`` onto ``Finding``
+        itself rather than asking each verifier to hand-add it.
+        """
 
-        reverify_attempts = 0
+        results = ctx.check_results.get(plugin.name)
 
-        while fails:
-            before_repairs = len(
-                ctx.repair_records
-            )
+        if not isinstance(results, list):
+            return
 
-            # EventBus is synchronous, so a repair_router subscribed to
-            # check.failed gets a chance to repair before emit() returns.
-            self.bus.emit(
-                "check.failed",
-                plugin=plugin.name,
-                findings=fails,
-                context=ctx,
-                is_gate=plugin.is_gate(),
-            )
+        for finding in results:
+            if not isinstance(finding, dict):
+                continue
 
-            after_repairs = len(
-                ctx.repair_records
-            )
+            stem = finding.get("stem") or finding.get("scene_id")
 
-            resolved = any(
-                isinstance(
-                    finding,
-                    dict,
+            if lineage.is_scene_stem(stem):
+                finding.setdefault(
+                    "scene_revision",
+                    lineage.current_revision(ctx, str(stem)),
                 )
-                and finding.get(
-                    "status"
-                )
-                == "resolved"
-                for finding in fails
-            )
-
-            repair_happened = (
-                after_repairs
-                > before_repairs
-            )
-
-            # A router may choose to mutate the finding to "resolved", but
-            # the authoritative test is still the verifier rerun. If a
-            # router repaired the scene without mutating the finding, the
-            # repair-record delta still allows one re-verification attempt.
-            if not (
-                resolved
-                or repair_happened
-            ):
-                break
-
-            new_records = ctx.repair_records[before_repairs:]
-
-            # The router has already exhausted its own repair budget for
-            # this finding (outcome "gave_up"). The finding's status is left
-            # untouched in that case (still "fail" for a hard gate), so
-            # reverifying here would just re-observe the identical failure
-            # and burn through max_reverify_attempts producing more useless
-            # "gave_up" cycles before the gate check below finally fires.
-            if any(r.get("outcome") == "gave_up" for r in new_records):
-                break
-
-            # If the repair was routed to an earlier stage (like generator_code),
-            # we must break out of this plugin's internal re-verification loop
-            # and let the outer pipeline loop rewind. We can detect this by checking
-            # if the router added new scenes to repair_context.
-            #
-            # This is only safe when the outer loop actually HAS a rewind
-            # target to replay back to. A repair routed to a stage upstream
-            # of any code/render-artifact producer (e.g. verifier_storyboard
-            # repairing via planner_llm, long before generator_code even
-            # appears in the pipeline) has no such target — _rewind_target_index
-            # would return plugin_index unchanged and the outer loop's `if
-            # rewind_idx < i` never fires. Breaking here anyway would let a
-            # router's optimistic "resolved" mutation stand as this plugin's
-            # final verdict without ever re-running plugin.run() to confirm
-            # it, so context fields the plugin itself sets (like
-            # storyboard_verified) stay stale even though check_results
-            # claims success. Falling through to the reverify-in-place path
-            # below is the only way to get an authoritative result in that
-            # case.
-            if (
-                any(r.get("routed_to") for r in new_records)
-                and self._rewind_target_index(plugin_index) < plugin_index
-            ):
-                break
-
-            if (
-                reverify_attempts
-                >= self.max_reverify_attempts
-            ):
-                diagnostics = (
-                    f"maximum re-verification attempts "
-                    f"({self.max_reverify_attempts}) "
-                    f"exhausted"
-                )
-                break
-
-            reverify_attempts += 1
-
-            # Never trust the router's "resolved" claim. Clear this verifier's
-            # previous result and execute it again against the repaired
-            # artifacts.
-            ctx.check_results[
-                plugin.name
-            ] = []
-
-            reverify_started = time.monotonic()
-
-            try:
-                result = plugin.run(
-                    ctx
-                )
-
-                if result is not None:
-                    if not isinstance(
-                        result,
-                        SceneContext,
-                    ):
-                        raise TypeError(
-                            f"{plugin.name}.run() returned "
-                            f"{type(result).__name__}; "
-                            "expected SceneContext."
-                        )
-
-                    ctx = result
-
-            except (
-                Exception,
-                SystemExit,
-            ) as exc:
-                diagnostics = (
-                    f"Re-verification crashed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-                ctx.check_results[
-                    plugin.name
-                ] = [
-                    {
-                        "status": "fail",
-                        "finding_type": "stage_exception",
-                        "category": "TECHNICAL",
-                        "severity": "BLOCKING",
-                        "detail": diagnostics,
-                    }
-                ]
-
-                self.bus.emit(
-                    "stage.failed",
-                    plugin=plugin.name,
-                    error=diagnostics,
-                    context=ctx,
-                    re_verification=True,
-                )
-
-                fails = self._failures(
-                    ctx,
-                    plugin,
-                )
-                break
-
-            fails = self._failures(
-                ctx,
-                plugin,
-            )
-
-            # Record re-verification in history separately from the original
-            # invocation. This makes the evidence layer honest about how many
-            # executions actually occurred.
-            ctx.history.append(
-                _history_entry(
-                    plugin,
-                    ok=not bool(fails),
-                    suffix=(
-                        f"reverify_{reverify_attempts}"
-                    ),
-                )
-            )
-
-            # Defensive diagnostic if a repair consumed a cycle but produced
-            # exactly the same failing result.
-            if (
-                fails
-                and not repair_happened
-                and not resolved
-            ):
-                break
-
-            # Avoid an unused local while retaining the measurement for future
-            # instrumentation.
-            _ = reverify_started
-
-        # --------------------------------------------------------------
-        # Final gate decision
-        # --------------------------------------------------------------
-
-        # Re-evaluate fails because if we broke out of the loop early to rewind,
-        # the original fails list might contain findings that were provisionally marked 'resolved'
-        fails = self._failures(ctx, plugin)
-        
-        if fails:
-            ok = False
-
-            diagnostics = diagnostics or "; ".join(
-                str(
-                    finding.get(
-                        "detail",
-                        finding.get(
-                            "message",
-                            "",
-                        ),
-                    )
-                )
-                for finding in fails
-            )
-
-            if (
-                plugin.is_gate()
-                and halt_on_gate_failure
-            ):
-                self.logger.log_invocation(
-                    plugin=plugin.name,
-                    input_ctx=snap,
-                    output_ctx=ctx,
-                    ok=False,
-                    diagnostics=diagnostics,
-                    duration_s=(
-                        time.monotonic()
-                        - started
-                    ),
-                )
-
-                write_self_correction_report(
-                    ctx,
-                    final_pass=False,
-                )
-
-                raise GateFailure(
-                    plugin.name,
-                    fails,
-                )
-
-        else:
-            # Do not clear all repair context. Other scenes may still have
-            # unresolved repair state belonging to another verifier.
-            self._clear_verified_repair_context(
-                ctx,
-                plugin,
-                repair_keys_before_run,
-            )
-
-        ctx.history.append(
-            _history_entry(
-                plugin,
-                ok=ok,
-            )
-        )
-
-        self.logger.log_invocation(
-            plugin=plugin.name,
-            input_ctx=snap,
-            output_ctx=ctx,
-            ok=ok,
-            diagnostics=diagnostics,
-            duration_s=(
-                time.monotonic()
-                - started
-            ),
-        )
-
-        return ctx
-
-    # ------------------------------------------------------------------
-    # Finding helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _failures(
         ctx: SceneContext,
         plugin: Plugin,
     ) -> list[dict[str, Any]]:
-        """Return normalized fail findings for one plugin."""
+        """Return this plugin's blocking findings.
 
-        results = ctx.check_results.get(
-            plugin.name,
-            [],
-        )
+        Uses ``scene_quality.classify`` so the gate, the repair controller
+        and the quality report all agree on what counts as blocking --
+        including for the many verifiers that write plain dicts with no
+        ``severity`` key.
+        """
 
-        if not isinstance(
-            results,
-            list,
-        ):
+        results = ctx.check_results.get(plugin.name, [])
+
+        if not isinstance(results, list):
             return [
                 {
                     "status": "fail",
@@ -707,8 +562,7 @@ class HarnessRunner:
                     "category": "TECHNICAL",
                     "severity": "BLOCKING",
                     "detail": (
-                        f"{plugin.name} produced non-list "
-                        "check_results."
+                        f"{plugin.name} produced non-list check_results."
                     ),
                 }
             ]
@@ -716,73 +570,9 @@ class HarnessRunner:
         return [
             finding
             for finding in results
-            if isinstance(
-                finding,
-                dict,
-            )
-            and str(
-                finding.get(
-                    "status",
-                    ""
-                )
-            ).lower()
-            == "fail"
+            if isinstance(finding, dict)
+            and classify(finding) == "blocking"
         ]
-
-    @staticmethod
-    def _clear_verified_repair_context(
-        ctx: SceneContext,
-        plugin: Plugin,
-        repair_keys_before_run: set[str],
-    ) -> None:
-        """Clear repair context only for scenes actually verified successfully.
-
-        A verifier may emit a clean result for only part of the pipeline, so
-        clearing every scene's repair context is unsafe.
-        """
-
-        affected: set[str] = set()
-
-        for result in ctx.check_results.get(
-            plugin.name,
-            [],
-        ):
-            if not isinstance(
-                result,
-                dict,
-            ):
-                continue
-
-            stem = (
-                result.get("stem")
-                or result.get("scene_id")
-            )
-
-            if stem:
-                affected.add(
-                    str(stem)
-                )
-
-        if not affected:
-            # The verifier's successful result carries no scene information
-            # at all (a global/aggregate pass, e.g. verifier_storyboard's
-            # all-clean case) — do not guess that every OTHER pending repair
-            # is now safe to clear. But any stem that appeared in
-            # repair_context only DURING this plugin's own run necessarily
-            # came from this same plugin's own earlier failure in this
-            # invocation (see repair_keys_before_run in _run_one), so a
-            # since-confirmed clean re-verification can safely clear those
-            # specific entries without touching unrelated pending repairs.
-            affected = set(ctx.repair_context.keys()) - repair_keys_before_run
-
-        if not affected:
-            return
-
-        for stem in affected:
-            ctx.repair_context.pop(
-                stem,
-                None,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -798,9 +588,7 @@ def _history_entry(
     name = plugin.name
 
     if suffix:
-        name = (
-            f"{name}:{suffix}"
-        )
+        name = f"{name}:{suffix}"
 
     return HistoryEntry(
         plugin=name,
@@ -811,13 +599,13 @@ def _history_entry(
         effects=list(
             plugin.declare_effects()
         ),
-        ok=bool(
-            ok
-        ),
+        ok=bool(ok),
     )
 
 
 __all__ = [
+    "FINALIZATION_STAGES",
+    "FinalizationFailure",
     "GateFailure",
     "HarnessRunner",
 ]
