@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .scene_quality import classify
+
 #: Quality report schema version.
 QUALITY_REPORT_SCHEMA_VERSION = "1.0"
 
@@ -177,24 +179,27 @@ class QualityReport:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Classification delegates to scene_quality.classify so this report and the
+# repair controller's accept/reject decision can never disagree about what
+# counts as a blocking finding.
+#
+# The previous predicates here required BOTH `status` and `severity`, which
+# silently matched none of the many hand-written verifier dicts that omit
+# `severity` (verifier_spatial's skip/warn/pass records, verifier_motion's
+# skip/pass, verifier_temporal's skips, verifier_storyboard throughout).
+# Those inflated `total` while contributing to no bucket, diluting every
+# dimension score. Severity is now inferred from status when absent.
+
 def _is_blocking(finding: Any) -> bool:
-    return (
-        isinstance(finding, dict)
-        and str(finding.get("status", "")).lower() == "fail"
-        and str(finding.get("severity", "")) == "BLOCKING"
-    )
+    return classify(finding) == "blocking"
 
 
 def _is_warning(finding: Any) -> bool:
-    return (
-        isinstance(finding, dict)
-        and str(finding.get("status", "")).lower() in ("fail", "warn")
-        and str(finding.get("severity", "")) == "WARNING"
-    )
+    return classify(finding) == "warning"
 
 
 def _is_pass(finding: Any) -> bool:
-    return isinstance(finding, dict) and str(finding.get("status", "")).lower() == "pass"
+    return classify(finding) == "pass"
 
 
 def _dimension_score(summary: DimensionSummary) -> float:
