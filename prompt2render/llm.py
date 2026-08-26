@@ -241,6 +241,69 @@ def is_rate_limited(
     )
 
 
+def _resolved_temperature(
+    explicit: float | None,
+) -> float | None:
+    """Explicit argument wins; otherwise ``P2R_LLM_TEMPERATURE``; otherwise
+    unset (the provider's own default -- current behavior, unchanged).
+
+    An unmanaged nondeterminism source (F15/docs/ARCHITECTURE_AUDIT.md
+    SS13): ``llm.py`` previously exposed no way to control this at all.
+    Default stays unset rather than pinning a value -- ordinary generation
+    wants the provider's normal creative variation; a fixed value is
+    something a reproducibility-focused caller (an ablation run, a golden
+    baseline) opts into explicitly, not something imposed on every build.
+    """
+
+    if explicit is not None:
+        return explicit
+
+    raw = os.environ.get(
+        "P2R_LLM_TEMPERATURE",
+        "",
+    ).strip()
+
+    if not raw:
+        return None
+
+    try:
+        return float(raw)
+    except ValueError:
+        cfg.warn(
+            f"invalid P2R_LLM_TEMPERATURE={raw!r}; ignoring"
+        )
+        return None
+
+
+def _resolved_seed(
+    explicit: int | None,
+) -> int | None:
+    """Same resolution order as :func:`_resolved_temperature`, for
+    ``P2R_LLM_SEED``. The provider's ``seed`` parameter is best-effort
+    determinism, not a guarantee -- this only wires the plumbing through;
+    it does not itself promise bit-identical completions.
+    """
+
+    if explicit is not None:
+        return explicit
+
+    raw = os.environ.get(
+        "P2R_LLM_SEED",
+        "",
+    ).strip()
+
+    if not raw:
+        return None
+
+    try:
+        return int(raw)
+    except ValueError:
+        cfg.warn(
+            f"invalid P2R_LLM_SEED={raw!r}; ignoring"
+        )
+        return None
+
+
 def _completion(
     client_obj: Any,
     model: str,
@@ -248,6 +311,8 @@ def _completion(
     max_tokens: int,
     image_base64: str | None = None,
     json_object: bool = False,
+    temperature: float | None = None,
+    seed: int | None = None,
 ):
     content: str | list[dict[str, Any]] = prompt
 
@@ -275,6 +340,12 @@ def _completion(
 
     if json_object:
         kwargs["response_format"] = {"type": "json_object"}
+
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+
+    if seed is not None:
+        kwargs["seed"] = seed
 
     reasoning = os.environ.get(
         "P2R_REASONING",
@@ -317,8 +388,18 @@ def complete(
     label: str = "request",
     image_base64: str | None = None,
     json_object: bool = False,
+    temperature: float | None = None,
+    seed: int | None = None,
 ) -> str:
-    """Perform one completion using deterministic model/key rotation."""
+    """Perform one completion using deterministic model/key rotation.
+
+    ``temperature``/``seed`` resolve through ``P2R_LLM_TEMPERATURE``/
+    ``P2R_LLM_SEED`` when not passed explicitly (see
+    :func:`_resolved_temperature`/:func:`_resolved_seed`) and stay fixed
+    across every model/key rotation attempt within this one call, so a
+    retry after a quota/rate-limit switch doesn't silently change the
+    request's determinism intent.
+    """
 
     configured_keys = keys()
 
@@ -326,6 +407,9 @@ def complete(
         model_env,
         default_model,
     )
+
+    resolved_temperature = _resolved_temperature(temperature)
+    resolved_seed = _resolved_seed(seed)
 
     last_error: BaseException | None = None
 
@@ -373,6 +457,8 @@ def complete(
                     max_tokens,
                     image_base64=image_base64,
                     json_object=json_object,
+                    temperature=resolved_temperature,
+                    seed=resolved_seed,
                 )
 
             except Exception as error:

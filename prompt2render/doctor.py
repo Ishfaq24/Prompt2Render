@@ -503,6 +503,24 @@ def _check_scenes(r: Report) -> None:
             "not installed — pip install openai",
         )
 
+    # F15: llm.py previously exposed no temperature/seed control at all.
+    # Unset (the default) is not a warning — most builds want the
+    # provider's normal creative variation; this just makes the opt-in
+    # visible for anyone running a reproducibility-focused build.
+    temperature = os.environ.get("P2R_LLM_TEMPERATURE", "").strip()
+    seed = os.environ.get("P2R_LLM_SEED", "").strip()
+
+    r.add(
+        OK,
+        "LLM temperature",
+        f"{temperature} (fixed)" if temperature else "unset (provider default)",
+    )
+    r.add(
+        OK,
+        "LLM seed",
+        f"{seed} (best-effort determinism)" if seed else "unset",
+    )
+
 
 def _check_optional(r: Report) -> None:
     try:
