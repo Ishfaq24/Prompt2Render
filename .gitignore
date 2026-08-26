@@ -8,6 +8,8 @@ projects/*/audio/
 projects/*/build/
 projects/*/out/
 !.gitkeep
+.manim019-cache-quarantine/
+media/
 
 # Python
 __pycache__/
