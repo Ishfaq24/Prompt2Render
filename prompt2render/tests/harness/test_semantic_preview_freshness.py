@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from prompt2render.harness.context import CodeArtifact, SceneContext, ScenePlanEntry
 from prompt2render.harness.plugins.verifier_semantic import (

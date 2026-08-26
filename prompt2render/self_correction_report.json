@@ -1,0 +1,35 @@
+{
+  "project": "unknown",
+  "final_pass": false,
+  "iterations": 0,
+  "detected_issues": [
+    {
+      "status": "fail",
+      "finding_type": "stage_exception",
+      "category": "TECHNICAL",
+      "severity": "BLOCKING",
+      "detail": "SystemExit: [prompt2render] no build/master.wav — run `prompt2render voice` first"
+    }
+  ],
+  "repairs": [],
+  "verification_results": {
+    "raises_system_exit": [
+      {
+        "status": "fail",
+        "finding_type": "stage_exception",
+        "category": "TECHNICAL",
+        "severity": "BLOCKING",
+        "detail": "SystemExit: [prompt2render] no build/master.wav — run `prompt2render voice` first"
+      }
+    ]
+  },
+  "findings_by_category": {
+    "TECHNICAL": 1
+  },
+  "repair_outcomes": {},
+  "repairs_accepted": 0,
+  "repairs_rejected_regression": 0,
+  "repairs_failed_verification": 0,
+  "repairs_budget_exhausted": 0,
+  "repair_decisions": []
+}

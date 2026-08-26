@@ -15,7 +15,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import asrmodel, cfg
+from . import asrmodel, cfg, manimver
 
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -539,15 +539,39 @@ def _check_optional(r: Report) -> None:
             "--manim only) will report skip for every stem",
         )
 
-    try:
-        import manim  # noqa: F401
-    except ImportError:
+
+def _check_manim(r: Report) -> None:
+    target, installed, matches = manimver.status()
+
+    if installed is None:
         r.add(
             OK,
             "manim",
-            "not installed (optional)",
+            f"not installed (optional — target is {target})",
         )
         return
+
+    if matches:
+        r.add(
+            OK,
+            "manim",
+            f"{installed} (matches target {target})",
+        )
+    else:
+        # WARN, not FAIL: manim only drives the optional --manim backend
+        # and the `prompt2render manim` escape hatch, matching this
+        # function's existing "degraded but runnable" treatment of the
+        # LaTeX check below. Any actual render call still hard-fails on
+        # this mismatch (see visuals.manim_scene / scenes._render_manim)
+        # so a stale install can't silently produce wrong-API renders.
+        r.add(
+            WARN,
+            "manim",
+            f"{installed} installed, but this build targets {target} — "
+            f'pip install "manim=={target}" (or set '
+            f"P2R_MANIM_VERSION={installed} to declare that version "
+            "intentionally)",
+        )
 
     latex = (
         shutil.which("latex")
@@ -557,16 +581,55 @@ def _check_optional(r: Report) -> None:
     if latex:
         r.add(
             OK,
-            "manim",
-            "available with LaTeX",
+            "manim LaTeX",
+            "available",
         )
     else:
         r.add(
             WARN,
-            "manim",
-            "available, but no LaTeX — "
-            "Text only; MathTex/Tex will fail",
+            "manim LaTeX",
+            "not available — Text only; MathTex/Tex will fail",
         )
+
+
+def _check_render_test(r: Report) -> None:
+    target, installed, matches = manimver.status()
+
+    if installed is None:
+        r.add(FAIL, "manim render test", "manim is not installed")
+        return
+
+    if not matches:
+        r.add(
+            FAIL,
+            "manim render test",
+            f"skipped — installed {installed} does not match target {target}",
+        )
+        return
+
+    import tempfile
+
+    from . import manim_smoke
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="p2r-manim-smoke-") as tmp:
+            clip = manim_smoke.render_smoke_scene(Path(tmp))
+            info = manim_smoke.probe_clip(clip)
+    except Exception as exc:  # noqa: BLE001 - surface any failure as a doctor row
+        r.add(FAIL, "manim render test", f"render failed: {exc}")
+        return
+
+    ok = (
+        info["width"] == cfg.WIDTH
+        and info["height"] == cfg.HEIGHT
+        and abs(info["fps"] - cfg.FPS) < 0.01
+        and info["size_bytes"] > 10_000
+    )
+    detail = (
+        f"{info['width']}x{info['height']} @ {info['fps']:.2f}fps, "
+        f"{info['size_bytes'] / 1024:.0f} KB"
+    )
+    r.add(OK if ok else FAIL, "manim render test", detail)
 
 
 def _check_disk(r: Report) -> None:
@@ -593,7 +656,7 @@ def _check_disk(r: Report) -> None:
     )
 
 
-def doctor() -> int:
+def doctor(render_test: bool = False) -> int:
     r = Report()
 
     _check_ffmpeg(r)
@@ -602,6 +665,9 @@ def doctor() -> int:
     _check_align(r)
     _check_scenes(r)
     _check_optional(r)
+    _check_manim(r)
+    if render_test:
+        _check_render_test(r)
     _check_disk(r)
 
     r.show()
@@ -632,7 +698,8 @@ def doctor() -> int:
 
 def main() -> None:
     cfg.load_env()
-    sys.exit(doctor())
+    render_test = "--render-test" in sys.argv[1:]
+    sys.exit(doctor(render_test=render_test))
 
 
 __all__ = [

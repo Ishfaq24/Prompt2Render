@@ -43,6 +43,8 @@ class Category(str, Enum):
     """Top-level failure category."""
 
     SPATIAL = "SPATIAL"
+    LAYOUT = "LAYOUT"
+    STRUCTURAL = "STRUCTURAL"
     TEMPORAL = "TEMPORAL"
     SEMANTIC = "SEMANTIC"
     AUDIO = "AUDIO"
@@ -52,6 +54,59 @@ class Category(str, Enum):
     STORYBOARD = "STORYBOARD"
     CODE = "CODE"
     RENDER = "RENDER"
+
+
+# ---------------------------------------------------------------------------
+# Layout sub-types (diagnosis-driven taxonomy)
+# ---------------------------------------------------------------------------
+
+class LayoutSubtype(str, Enum):
+    """Refined layout failure modes."""
+
+    OUT_OF_BOUNDS = "OUT_OF_BOUNDS"
+    OVERLAP = "OVERLAP"
+    CROWDING = "CROWDING"
+    UNSAFE_MARGIN = "UNSAFE_MARGIN"
+    TEXT_OVERFLOW = "TEXT_OVERFLOW"
+    CAPTION_COLLISION = "CAPTION_COLLISION"
+    TITLE_COLLISION = "TITLE_COLLISION"
+    NEAR_SAFE_MARGIN = "NEAR_SAFE_MARGIN"
+
+
+class SemanticSubtype(str, Enum):
+    """Semantic correctness subtypes."""
+
+    WRONG_OBJECT = "WRONG_OBJECT"
+    WRONG_VALUE = "WRONG_VALUE"
+    WRONG_STATE = "WRONG_STATE"
+    MISSING_CONCEPT = "MISSING_CONCEPT"
+    NARRATION_MISMATCH = "NARRATION_MISMATCH"
+
+
+class StructuralSubtype(str, Enum):
+    """Structural/system subtypes."""
+
+    RENDER_FAILURE = "RENDER_FAILURE"
+    MISSING_ASSET = "MISSING_ASSET"
+    WRONG_RESOLUTION = "WRONG_RESOLUTION"
+    WRONG_DURATION = "WRONG_DURATION"
+
+
+class PedagogicalSubtype(str, Enum):
+    """Pedagogical subtypes."""
+
+    UNCLEAR_PROGRESSION = "UNCLEAR_PROGRESSION"
+    MISSING_STEP = "MISSING_STEP"
+    INCONSISTENT_EXAMPLE = "INCONSISTENT_EXAMPLE"
+    UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
+
+
+class TemporalSubtype(str, Enum):
+    """Temporal subtypes."""
+
+    CUE_MISALIGNMENT = "CUE_MISALIGNMENT"
+    STATE_TOO_EARLY = "STATE_TOO_EARLY"
+    STATE_TOO_LATE = "STATE_TOO_LATE"
 
 
 class Severity(str, Enum):
@@ -287,4 +342,9 @@ __all__ = [
     "Severity",
     "Finding",
     "next_finding_id",
+    "LayoutSubtype",
+    "SemanticSubtype",
+    "StructuralSubtype",
+    "PedagogicalSubtype",
+    "TemporalSubtype",
 ]

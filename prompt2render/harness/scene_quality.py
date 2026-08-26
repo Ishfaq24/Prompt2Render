@@ -169,6 +169,13 @@ class SceneQuality:
     #: All finding types seen, for the decision log.
     finding_types: dict[str, int] = field(default_factory=dict)
 
+    #: Per-category blocking counts for dimension-specific scoring.
+    #: Keys are uppercased categories: STRUCTURAL, LAYOUT, SEMANTIC, PEDAGOGY, TEMPORAL, SPATIAL etc.
+    category_blocking: dict[str, int] = field(default_factory=dict)
+
+    #: Per-category warning counts.
+    category_warnings: dict[str, int] = field(default_factory=dict)
+
     #: |actual - target| seconds from verifier_temporal's pass path.
     #: Lower is better. ``None`` when unavailable.
     temporal_difference: float | None = None
@@ -176,6 +183,27 @@ class SceneQuality:
     #: Smallest per-state motion delta. Higher is better. ``None`` when
     #: unavailable.
     motion_min_delta: float | None = None
+
+    @property
+    def layout_score(self) -> int:
+        """Layout dimension: higher is better. 100 minus weighted blocking."""
+        return max(0, 100 - self.category_blocking.get("LAYOUT", 0) * 20 - self.category_warnings.get("LAYOUT", 0) * 5)
+
+    @property
+    def semantic_score(self) -> int:
+        return max(0, 100 - self.category_blocking.get("SEMANTIC", 0) * 20 - self.category_warnings.get("SEMANTIC", 0) * 5)
+
+    @property
+    def structural_score(self) -> int:
+        return max(0, 100 - self.category_blocking.get("STRUCTURAL", 0) * 20)
+
+    @property
+    def pedagogical_score(self) -> int:
+        return max(0, 100 - self.category_blocking.get("PEDAGOGY", 0) * 20)
+
+    @property
+    def temporal_score(self) -> int:
+        return max(0, 100 - self.category_blocking.get("TEMPORAL", 0) * 20)
 
     @property
     def has_evidence(self) -> bool:
@@ -199,6 +227,13 @@ class SceneQuality:
             "skips": self.skips,
             "blocking_types": dict(self.blocking_types),
             "finding_types": dict(self.finding_types),
+            "category_blocking": dict(self.category_blocking),
+            "category_warnings": dict(self.category_warnings),
+            "structural_score": self.structural_score,
+            "layout_score": self.layout_score,
+            "semantic_score": self.semantic_score,
+            "pedagogical_score": self.pedagogical_score,
+            "temporal_score": self.temporal_score,
             "temporal_difference": self.temporal_difference,
             "motion_min_delta": self.motion_min_delta,
         }
@@ -224,6 +259,14 @@ class SceneQuality:
                 finding.get("finding_type", "")
             ).strip() or "unspecified"
 
+            # Dimension-specific category for scoring
+            raw_cat = str(finding.get("category") or finding.get("Category") or "").strip().upper()
+            # Normalize legacy SPATIAL -> LAYOUT for scoring (same geometric dimension)
+            if raw_cat == "SPATIAL":
+                raw_cat = "LAYOUT"
+            if raw_cat == "PEDAGOGICAL":
+                raw_cat = "PEDAGOGY"
+
             quality.finding_types[finding_type] = (
                 quality.finding_types.get(finding_type, 0) + 1
             )
@@ -233,8 +276,12 @@ class SceneQuality:
                 quality.blocking_types[finding_type] = (
                     quality.blocking_types.get(finding_type, 0) + 1
                 )
+                if raw_cat:
+                    quality.category_blocking[raw_cat] = quality.category_blocking.get(raw_cat, 0) + 1
             elif bucket == "warning":
                 quality.warnings += 1
+                if raw_cat:
+                    quality.category_warnings[raw_cat] = quality.category_warnings.get(raw_cat, 0) + 1
             elif bucket == "pass":
                 quality.passes += 1
             else:

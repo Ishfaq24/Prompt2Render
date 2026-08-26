@@ -29,7 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 PROJECTS = ROOT / "projects"
 GOLDEN_DIR = ROOT / "tests" / "golden"
 PYTHON = sys.executable

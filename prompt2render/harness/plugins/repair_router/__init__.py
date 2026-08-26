@@ -51,6 +51,7 @@ from .policy import RoutingPolicy, StaticTableRoutingPolicy
 _DEFAULT_FINDING_TYPE: dict[str, str] = {
     "verifier_spatial": "spatial_conflict",
     "verifier_semantic": "semantic_mismatch",
+    "verifier_layout": "layout_violation",
     "verifier_lifecycle": "lifecycle_violation",
     "verifier_audio": "audio_visual_mismatch",
     "verifier_storyboard": "storyboard_failure",
@@ -111,6 +112,107 @@ def finding_type_of(
 # Plan / execution records
 # ---------------------------------------------------------------------------
 
+def _derive_category(finding: dict[str, Any], source: str) -> str:
+    """Diagnosis-driven category from finding or source plugin."""
+    raw = str(finding.get("category") or finding.get("Category") or "").strip().upper()
+    if raw in {"LAYOUT", "SPATIAL", "SEMANTIC", "STRUCTURAL", "TEMPORAL", "PEDAGOGY", "PEDAGOGICAL", "AUDIO", "TECHNICAL"}:
+        # Normalize PEDAGOGICAL -> PEDAGOGY etc but keep canonical
+        if raw == "PEDAGOGICAL":
+            return "PEDAGOGY"
+        return raw
+    # Infer from source plugin name
+    if "layout" in source.lower():
+        return "LAYOUT"
+    if "semantic" in source.lower():
+        return "SEMANTIC"
+    if "spatial" in source.lower():
+        return "SPATIAL"
+    if "pedagogy" in source.lower():
+        return "PEDAGOGY"
+    if "temporal" in source.lower() or "lifecycle" in source.lower():
+        return "TEMPORAL"
+    if "execution" in source.lower() or "render" in source.lower():
+        return "STRUCTURAL"
+    return "LAYOUT" if "layout" in str(finding.get("finding_type", "")).lower() else "SEMANTIC"
+
+
+def _derive_subtype(finding: dict[str, Any]) -> str | None:
+    for k in ("mismatch_subtype", "layout_subtype", "subtype", "finding_subtype"):
+        v = finding.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip().upper()
+    ft = str(finding.get("finding_type", "")).lower()
+    if "crowd" in ft:
+        return "CROWDING"
+    if "caption" in ft:
+        return "CAPTION_COLLISION"
+    if "overlap" in ft:
+        return "OVERLAP"
+    if "offframe" in ft or "out_of_bounds" in ft:
+        return "OUT_OF_BOUNDS"
+    if "overflow" in ft:
+        return "TEXT_OVERFLOW"
+    return None
+
+
+def _contract_for(category: str, subtype: str | None) -> tuple[list[str], list[str], str]:
+    """Target-aware repair contract: what may change vs what must be preserved."""
+    cat = str(category or "").upper()
+    sub = str(subtype or "").upper()
+
+    if cat == "LAYOUT":
+        allowed = ["position", "spacing", "font_size", "line_wrap"]
+        protected = ["objects", "values", "relationships", "animation_sequence", "narration"]
+        instruction = (
+            "This is a layout-only repair. Preserve all semantic content, values, objects, "
+            "relationships, animation sequence, and pedagogical intent. Modify only geometry, "
+            "spacing, typography, or safe-zone placement necessary to resolve the finding. "
+            f"Subtype: {sub}. Allowed: {', '.join(allowed)}. Do NOT change underlying data or logic."
+        )
+        return allowed, protected, instruction
+
+    if cat == "SPATIAL":
+        # SPATIAL is the legacy name for layout; keep repair minimal for backward compat
+        allowed = ["position", "spacing"]
+        protected = ["objects", "values"]
+        instruction = ""  # do not inject layout-only constraint for legacy spatial findings (tests expect only diagnostic)
+        return allowed, protected, instruction
+
+    if cat == "SEMANTIC":
+        allowed = ["objects", "values", "relationships", "animation_sequence", "labels"]
+        protected = ["position", "spacing"]  # layout should stay similar if possible, but semantic may move things
+        instruction = (
+            "This is a semantic repair. Correct the conceptual content, values, objects, or "
+            "relationships to match the narration and domain invariants. Preserve overall layout "
+            f"where possible. Subtype: {sub}. Allowed: {', '.join(allowed)}."
+        )
+        return allowed, protected, instruction
+
+    if cat == "STRUCTURAL":
+        allowed = ["render", "resolution", "duration", "assets"]
+        protected = ["objects", "values", "narration"]
+        instruction = "This is a structural repair. Fix rendering or asset issues without altering pedagogical content."
+        return allowed, protected, instruction
+
+    if cat in {"PEDAGOGY", "PEDAGOGICAL"}:
+        allowed = ["explanation", "progression", "example"]
+        protected = ["layout", "values"]
+        instruction = "Pedagogical repair: improve clarity and progression while preserving values and layout."
+        return allowed, protected, instruction
+
+    if cat == "TEMPORAL":
+        allowed = ["cue", "timing", "duration"]
+        protected = ["objects", "values"]
+        instruction = "Temporal repair: realign cues and animation timing without changing semantic content."
+        return allowed, protected, instruction
+
+    # Fallback
+    allowed = ["position", "spacing", "font_size"]
+    protected = ["objects", "values", "relationships"]
+    instruction = f"Repair for {cat}/{sub}: follow allowed changes {allowed}, preserve {protected}."
+    return allowed, protected, instruction
+
+
 @dataclass
 class RepairPlan:
     """What the router proposes doing about one finding."""
@@ -121,6 +223,11 @@ class RepairPlan:
     targets: list[str]
     diagnostic: str = ""
     mismatch_subtype: Any = None
+    category: str = "LAYOUT"
+    subtype: str | None = None
+    allowed_changes: list[str] = field(default_factory=list)
+    protected_properties: list[str] = field(default_factory=list)
+    repair_instruction: str = ""
 
     @property
     def routable(self) -> bool:
@@ -259,13 +366,25 @@ class RepairRouterPlugin(Plugin):
             "source_plugin": source,
         }
 
+        category = _derive_category(finding, source)
+        subtype = _derive_subtype(finding) or str(finding.get("mismatch_subtype") or "").strip().upper() or None
+        # Normalize subtype case for contract
+        if subtype:
+            subtype = subtype.upper()
+        allowed, protected, instruction = _contract_for(category, subtype)
+
         return RepairPlan(
             stem=stem,
             finding_type=finding_type,
             source_plugin=source,
             targets=self._resolve_targets(routed),
             diagnostic=_detail(finding),
-            mismatch_subtype=finding.get("mismatch_subtype"),
+            mismatch_subtype=finding.get("mismatch_subtype") or subtype,
+            category=category,
+            subtype=subtype,
+            allowed_changes=allowed,
+            protected_properties=protected,
+            repair_instruction=instruction,
         )
 
     def _resolve_targets(
@@ -329,6 +448,19 @@ class RepairRouterPlugin(Plugin):
             # generators truncate the feedback to its trailing 6000 chars.
             if plan.diagnostic not in history:
                 history.append(plan.diagnostic)
+
+        # Diagnosis-driven constraint: embed the repair contract so the LLM
+        # sees what may and may not be changed. This is what enforces
+        # layout-only repairs preserving semantic content.
+        if getattr(plan, "repair_instruction", None):
+            history = context.repair_context.setdefault(plan.stem, [])
+            instr = str(plan.repair_instruction).strip()
+            if instr and instr not in history:
+                history.append(instr)
+            # Also append structured contract for explicit logging
+            contract = f"REPAIR CONTRACT category={plan.category} subtype={plan.subtype} allowed={plan.allowed_changes} protected={plan.protected_properties}"
+            if contract not in history:
+                history.append(contract)
 
         for target_name in plan.targets:
             target = self._plugins_by_name.get(target_name)

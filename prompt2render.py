@@ -58,7 +58,7 @@ def cmd_new(a):
 
 def cmd_doctor(a):
     from prompt2render import doctor
-    sys.exit(doctor.doctor())
+    sys.exit(doctor.doctor(render_test=getattr(a, "render_test", False)))
 
 
 def cmd_draft(a):
@@ -509,8 +509,13 @@ def cmd_harness(a):
                     if cand2.exists():
                         clip_path = cand2
                     else:
-                        cand3 = d / "build" / "manim" / "videos" / f"scene_{stem}" / "1080p30" / f"Scene{stem}.mp4"
-                        if cand3.exists():
+                        # Not hard-coded to "1080p30": Manim names that
+                        # directory after the resolution/fps it actually
+                        # rendered at, so a literal stops matching the moment
+                        # P2R_MANIM_QUALITY or the fps moves.
+                        from prompt2render.visuals import latest_manim_clip
+                        cand3 = latest_manim_clip(d, stem)
+                        if cand3 is not None:
                             clip_path = cand3
             except Exception:
                 clip_path = None
@@ -720,7 +725,11 @@ def main() -> None:
     dr.add_argument("--force", action="store_true",
                     help="overwrite sections that already have real narration")
 
-    add("doctor", cmd_doctor, "check the environment before you spend an hour")
+    dc = add("doctor", cmd_doctor,
+             "check the environment before you spend an hour")
+    dc.add_argument("--render-test", action="store_true", dest="render_test",
+                    help="also render a real Manim smoke scene and verify it "
+                         "is 1920x1080 at 30 fps (slower; needs manim)")
 
     m = add("models", cmd_models, "download the models `voice`/`align` need")
     m.add_argument("--asr", default="base.en",

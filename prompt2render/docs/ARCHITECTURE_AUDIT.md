@@ -17,7 +17,7 @@ below was verified against source; file:line references are given so each can be
 | Tests | **139 passed**, 0 failed, 0 skipped |
 | Warnings | 1 (`cloup`/Click `__version__` DeprecationWarning — third-party, unrelated) |
 | Python | 3.13.7 |
-| Manim | Community Edition 0.19.0 |
+| Manim | Community Edition 0.21.0 (updated post-audit; was 0.19.0 at the time of this snapshot — see manimver.py and docs/MANIM_0_21_MIGRATION.md) |
 | Platform | Windows 11 (10.0.26200) |
 | Source size | 85 `.py` files, 31,663 LOC (excluding `harness_old*`) |
 | Largest module | `harness/plugins/renderer_manim/__init__.py` — 2,272 LOC |
@@ -196,7 +196,7 @@ invalidated earlier artifacts, computing
 
 `repair_router` (`policy.py:56-67`) maps `finding_type` → target plugin, with sub-tables for
 `audio_visual_mismatch` (by `mismatch_subtype`) and `vlm_post_render_defect` (by category).
-Budget is keyed `scene:finding_type:source`, capped by `max_repair_cycles=3`.
+Budget is keyed `scene:finding_type:source`, capped by `max_repairs_per_scene=3` (and `max_total_repairs=12` across the whole run).
 
 This is a genuine strength: **verification is independent of generation, and the router's
 optimistic "resolved" is never trusted.**

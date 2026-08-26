@@ -75,6 +75,16 @@ class StaticTableRoutingPolicy(RoutingPolicy):
         # plan failure must route to the plugin that actually owns that
         # repair action.
         "semantic_plan_failure": ["planner_semantic"],
+        # Layout taxonomy -- diagnosis-driven routing for geometric defects
+        "layout_violation": ["generator_code"],
+        "layout_warning": ["generator_code"],
+        "layout_audit": ["generator_code"],
+        "spatial_audit": ["generator_code"],
+        "caption_collision": ["generator_code"],
+        "text_overflow": ["generator_code"],
+        "crowding": ["generator_code"],
+        "overlap": ["generator_code"],
+        "out_of_bounds": ["generator_code"],
     }
 
     #: Post-render VLM findings are routed back to the verifier that owns
@@ -92,6 +102,7 @@ class StaticTableRoutingPolicy(RoutingPolicy):
     #: ``tests/harness/test_repair_router.py``.
     VLM_CATEGORY_ROUTE: dict[str, list[str]] = {
         "SPATIAL": ["verifier_spatial"],
+        "LAYOUT": ["verifier_layout"],
         "TEMPORAL": ["verifier_lifecycle"],
         "SEMANTIC": ["verifier_semantic"],
         "AUDIO": ["verifier_audio"],

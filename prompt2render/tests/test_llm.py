@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import prompt2render.llm as llm
 

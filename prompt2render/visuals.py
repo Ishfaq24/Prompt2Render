@@ -16,8 +16,28 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import cfg, voice
+from . import cfg, manimver, voice
 from .project import Script
+
+
+def latest_manim_clip(project_dir: Path, stem: str) -> Path | None:
+    """Find the most recently rendered ``Scene{stem}.mp4`` under a project.
+
+    Manim names its output directory after the resolution/fps it actually
+    rendered at (e.g. ``1080p30``), so a hardcoded literal stops matching the
+    moment ``P2R_MANIM_QUALITY`` or the fps changes. Search instead, mirroring
+    the same ``rglob``-by-mtime pattern ``manim_scene()`` uses to find its own
+    freshly rendered clip.
+    """
+    work = project_dir / "build" / "manim"
+    if not work.is_dir():
+        return None
+
+    found = sorted(
+        work.rglob(f"Scene{stem}.mp4"),
+        key=lambda p: p.stat().st_mtime_ns,
+    )
+    return found[-1] if found else None
 
 
 def normalise(src: Path, dst: Path, seconds: float | None = None) -> None:
@@ -165,6 +185,15 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
     whether you have one.
     """
     cfg.need("manim")
+    target, installed, matches = manimver.status()
+    if not matches:
+        raise SystemExit(
+            f"[prompt2render] Manim version mismatch: installed "
+            f"{installed or 'none'}, but this build targets {target}. "
+            f"Run: pip install \"manim=={target}\" (or set "
+            f"P2R_MANIM_VERSION={installed} to declare that version "
+            "intentionally)."
+        )
     work = (
         Path(out_dir) / "manim"
         if out_dir is not None

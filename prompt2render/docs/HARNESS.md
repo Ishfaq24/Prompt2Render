@@ -94,7 +94,7 @@ repair_router.attach(bus=bus, plugins_by_name={p.name: p for p in plugins}, log_
 (`tools/harness_run.py` already does this for you.) On a `check.failed` event, it routes the
 finding to a target plugin via a `RoutingPolicy` (default: `StaticTableRoutingPolicy`, config key
 `repair_router.routing_table`), calls `revert_scene()` + `regenerate_one()` on that plugin for the
-one affected section, and retries up to `repair_router.max_repair_cycles` (default 3) times before
+one affected section, and retries up to `repair_router.max_repairs_per_scene` (default 3) times before
 giving up. On giving up, a hard-gated source plugin still halts the run; a soft-gated one gets its
 finding demoted to `"open_defect"` and the run continues.
 

@@ -30,7 +30,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from . import align, cfg, llm, stills
+from . import align, cfg, llm, manimver, stills
 from .project import Script
 
 #: Sections are storyboarded concurrently (see default_jobs), but the *render*
@@ -607,9 +607,10 @@ def _check_manim_kwarg_signatures(tree: ast.AST) -> list[str]:
 
 def validate_manim_source(code: str) -> list[str]:
     """Validate generated Manim code before rendering.
-    
-    Catches known Manim 0.19 incompatibilities, invalid imports, and structural
-    mistakes without running the code.
+
+    Catches known Manim API incompatibilities (see manimver.py for the
+    version this build targets), invalid imports, and structural mistakes
+    without running the code.
     """
     errors: list[str] = []
     import ast
@@ -652,28 +653,38 @@ def validate_manim_source(code: str) -> list[str]:
                 errors.append(f"Scenekit k.{node.func.attr}() found in Manim mode (line {node.lineno})")
 
 
-            # Manim 0.19 specific checks
+            # Known-bad kwargs, independent of the exact installed Manim
+            # version (see manimver.py). Worded against "the supported
+            # Manim" rather than a bare version literal so this stays
+            # accurate whichever release P2R_MANIM_VERSION declares.
+            _target = manimver.target_version()
             if func_name in {"get_x_label", "get_y_label"}:
                 for kw in node.keywords:
                     if kw.arg in {"font_size", "direction"}:
-                        errors.append(f"Axes.{func_name}() does not accept '{kw.arg}' in Manim 0.19 (line {node.lineno})")
-                        
+                        errors.append(f"Axes.{func_name}() does not accept '{kw.arg}' in Manim {_target} (line {node.lineno})")
+
             if func_name == "move_to":
                 for kw in node.keywords:
                     if kw.arg == "corner":
-                        errors.append(f"move_to() does not accept 'corner=' in Manim 0.19; use align_to() or next_to() (line {node.lineno})")
-                        
+                        errors.append(f"move_to() does not accept 'corner=' in Manim {_target}; use align_to() or next_to() (line {node.lineno})")
+
             if func_name == "Code":
                 for kw in node.keywords:
                     if kw.arg == "theme":
-                        errors.append(f"Code() does not accept 'theme=' in Manim 0.19 (line {node.lineno})")
+                        errors.append(f"Code() does not accept 'theme=' in Manim {_target} (line {node.lineno})")
                     if kw.arg == "insert_line_numbers":
                         errors.append(f"Code() expects 'add_line_numbers=', not 'insert_line_numbers=' (line {node.lineno})")
-                        
+                    if kw.arg == "code":
+                        errors.append(f"Code() expects 'code_string=', not 'code=', in Manim {_target} (line {node.lineno})")
+                    if kw.arg == "style":
+                        errors.append(f"Code() expects 'formatter_style=', not 'style=', in Manim {_target} (line {node.lineno})")
+                    if kw.arg == "font_size":
+                        errors.append(f"Code() no longer accepts 'font_size=' directly in Manim {_target}; pass it inside paragraph_config={{'font_size': ...}} (line {node.lineno})")
+
             if func_name in {"MobjectTable", "Table", "IntegerTable", "DecimalTable", "MathTable"}:
                 for kw in node.keywords:
                     if kw.arg in {"row_height", "col_widths", "include_background"}:
-                        errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim 0.19 (line {node.lineno})")
+                        errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim {_target} (line {node.lineno})")
 
             if func_name == "set_shadow":
                 errors.append(f"set_shadow() is deprecated and causes rendering errors (line {node.lineno})")
@@ -704,7 +715,7 @@ def validate_manim_source(code: str) -> list[str]:
             if func_name in {"Text", "MathTex", "Tex", "VGroup", "Line", "Arrow", "Circle", "Square", "Rectangle", "Dot"}:
                 for kw in node.keywords:
                     if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment"}:
-                        errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim 0.19 (line {node.lineno})")
+                        errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim {_target} (line {node.lineno})")
 
             # MathTex/Tex hand the string straight to LaTeX. A raw, unescaped
             # '&', '%', or '#' outside a tabular/align environment is a
@@ -901,11 +912,12 @@ def validate_scene_source(code: str, max_cue: int | None = None) -> list[str]:
 # DUAL RENDERER
 # ---------------------------------------------------------------------------
 
-MANIM_API_DOC = r"""
+MANIM_API_DOC_TEMPLATE = r"""
 REAL MANIM BACKEND — PRODUCTION CONTRACT
 
-Generate REAL Manim 0.19+ Python. This backend does NOT use Scenekit and does
-NOT generate def states().
+Generate REAL Manim Community Edition __MANIM_VERSION__ Python. Do not use
+APIs introduced after v__MANIM_VERSION__. This backend does NOT use Scenekit
+and does NOT generate def states().
 
 Required:
     from manim import *
@@ -925,6 +937,20 @@ CANVAS:
   * Keep important content inside x=-7..7 and y=-3.8..3.8.
   * Reserve the top for titles and the bottom for captions.
   * Never allow text or diagrams to clip.
+
+TEXT SIZING:
+  * Prefer Text(...).scale_to_fit_width(...) (or a deterministic font_size
+    reduction) over a large fixed font_size — never assume a string will fit
+    just because it looked fine for a shorter one.
+  * Titles and captions must stay inside their reserved band; if a line is
+    long, shrink it or wrap it rather than letting it cross the canvas edge.
+
+CODE OBJECT (only if the section is specifically about source code):
+  * Code(code_string=..., language="python", formatter_style="monokai",
+    add_line_numbers=True, paragraph_config={"font_size": 24}) is the
+    correct call shape.
+  * Do NOT use code=, style=, insert_line_numbers=, or a bare font_size=
+    kwarg — none of those exist on Code() anymore.
 
 ANIMATION:
   * This is a genuine Manim animation timeline.
@@ -1005,6 +1031,9 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
     )
     total = sents[-1]["end"] if sents else 0.0
     class_name = f"Scene{sec.stem}"
+    manim_api_doc = MANIM_API_DOC_TEMPLATE.replace(
+        "__MANIM_VERSION__", manimver.target_version()
+    )
 
     return textwrap.dedent(f"""
     You are the senior Manim animation engineer for Prompt2Render.
@@ -1029,7 +1058,7 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
 
     {numbered}
 
-    {MANIM_API_DOC}
+    {manim_api_doc}
 
     OUTPUT CONTRACT:
       * Output ONLY complete Python source.
@@ -1066,6 +1095,16 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
                   class_name: str) -> list[Path]:
     """Render a real Manim scene through the installed Manim CLI."""
     import subprocess
+
+    target, installed, matches = manimver.status()
+    if not matches:
+        sys.exit(
+            f"[prompt2render] Manim version mismatch: installed "
+            f"{installed or 'none'}, but this build targets {target}. "
+            f"Run: pip install \"manim=={target}\" (or set "
+            f"P2R_MANIM_VERSION={installed} to declare that version "
+            "intentionally)."
+        )
 
     section_dir.mkdir(parents=True, exist_ok=True)
     media_dir = section_dir / "_manim_media"

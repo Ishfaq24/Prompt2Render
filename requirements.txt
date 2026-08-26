@@ -22,7 +22,17 @@ Jinja2>=3.1              # already a transitive dep elsewhere; used directly her
 
 # --- optional ---
 # edge-tts>=6.1.9        # online voice; kokoro is the supported default
-# manim==0.19.0          # hand-authored hero scenes only; MathTex needs LaTeX
+
+# --- Manim scene backend (`--manim`, and the `prompt2render manim` escape hatch) ---
+# Pinned, not commented out: with this line absent, `pip install -r
+# requirements.txt` produced a venv where --manim simply did not work.
+# prompt2render/manimver.py is the single source of truth for this version;
+# keep the two in step. `P2R_MANIM_VERSION=0.19.0` re-targets the build at
+# 0.19.0 for the Code2Video comparison (docs/MANIM_EXPERIMENT_PROTOCOL.md).
+manim==0.21.0
+# manim[typst]==0.21.0   # optional: adds Typst/TypstMath. NOT required --
+#                        # MathTex over a LaTeX install is the supported
+#                        # math path. MathTex/Tex still need LaTeX either way.
 
 # Forced alignment needs NO Python package: it uses the whisper filter built
 # into ffmpeg. Fetch the model once with:  python prompt2render.py models --asr base.en

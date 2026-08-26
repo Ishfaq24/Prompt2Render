@@ -121,6 +121,10 @@ verifier_spatial:
                               # (SceneKit on stills, observer_visual on Manim)
   gate_override: null
 
+verifier_layout:
+  enabled: true              # deterministic layout gate: caption collision, crowding, out_of_bounds
+  gate_override: true        # BLOCKING for layout violations, WARNING for near margin
+
 # Tier 3 Phase 12 ("motion traces"): the first producer of quality_report.py's
 # "motion" dimension (zero producers since Phase 10 shipped that dimension).
 # Reads RenderArtifact.motion (observer_visual's raw per-state frame deltas)
@@ -220,4 +224,5 @@ generator_publish:
 repair_router:
   enabled: true                    # event subscriber, not a pipeline stage — see its own docstring
   gate_override: false
-  max_repair_cycles: 3
+  max_repairs_per_scene: 3         # read by harness/loader.py -> RepairController
+  max_total_repairs: 12

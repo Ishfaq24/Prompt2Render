@@ -218,9 +218,11 @@ explicitly once this becomes a `declare_dependencies()` plugin.
 
 ## 4. Manim / Python / client-library pins
 
-- **Manim:** `manim==0.19.0` in `requirements.txt`, **commented out** — "hand-authored hero
-  scenes only; MathTex needs LaTeX." Not installed by default; only needed for the opt-in
-  `prompt2render manim` escape hatch.
+- **Manim:** `manim==0.21.0`, actively pinned (not commented out) in `requirements.txt` — drives
+  both the `--manim` harness backend and the `prompt2render manim` escape hatch. `manimver.py` is
+  the single source of truth for the target version; `P2R_MANIM_VERSION` overrides it (used to
+  reproduce the 0.19.0 Code2Video comparison — see docs/MANIM_EXPERIMENT_PROTOCOL.md and
+  docs/MANIM_0_21_MIGRATION.md).
 - **Python version:** no pin found anywhere in the repo (no `python_requires`, no
   `.python-version`, nothing in `requirements.txt` or `setup.ps1`/`setup.sh` beyond invoking
   whatever `python`/`winget`-installed interpreter is on PATH).

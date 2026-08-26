@@ -458,6 +458,8 @@ projects/<slug>/        script.md, sections/, audio/, build/, out/
 | `prompt2render doctor` reports a missing model | `python prompt2render.py models --asr base.en --vad --kokoro` |
 | `latex failed` in `prompt2render manim` | install `texlive-latex-extra texlive-science` (or MiKTeX on Windows) — the main `prompt2render scenes` path never touches LaTeX |
 | Windows: `manim` not found | activate the venv: `.\.venv\Scripts\Activate.ps1` |
+| `prompt2render doctor` warns about a Manim version mismatch | `pip install "manim==0.21.0"` (the version `manimver.py` targets), or set `P2R_MANIM_VERSION` to the version you have installed if that's intentional (e.g. reproducing docs/MANIM_EXPERIMENT_PROTOCOL.md at 0.19.0) |
+| Want to actually render-test Manim, not just check its version | `prompt2render doctor --render-test` — renders a real smoke scene and verifies 1920x1080 @ 30 fps via ffprobe |
 | Windows: LaTeX prompt pops up | MiKTeX asking to install a package — tick "always", it stops asking |
 | Windows: captions look wrong | font fallback; `CAPTION_FONT` in `prompt2render/cfg.py` |
 | `prompt2render scenes` keeps rejecting a section | open `build/scenes/scene_NN.py` — the audit error in the terminal names the exact overlap or off-frame text; fix the `k.` call or delete the file and regenerate |

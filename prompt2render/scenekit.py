@@ -972,6 +972,7 @@ grid = _element("grid")(grid)
 
 PX_W, PX_H = int(FIGSIZE[0] * DPI), int(FIGSIZE[1] * DPI)   # 1920 x 1080
 MARGIN_PX = 12
+NEAR_MARGIN_PX = 20      # WARNING band: within this of the safe margin but not yet off-frame
 OVERLAP_FRAC = 0.10      # of the smaller box; calibrated against shipped scenes
 MIN_TEXT_PX = 15         # below this a glyph is unreadable at 360p
 
@@ -984,6 +985,44 @@ ELEMENT_OVERLAP_MIN_PX = 60.0   # px^2; below this it is antialiasing, not a bug
 # legitimate title card 1.30%, a dense bit-addition frame 23.3%. An earlier 2%
 # floor called every title card blank.
 INK_LOW, INK_HIGH = 0.005, 0.55
+
+# -----------------------------------------------------------------
+# Authoritative safe-zone geometry (mirrors harness/layout_zones.py).
+# Kept inline so scenekit remains self-contained for matplotlib-only
+# installs; the harness module re-exports these as the authoritative copy.
+# Canvas is 16 x 9 units; pixel scale is PX_H / H = 120 px per unit.
+_SCENEKIT_ZONE_UNITS = {
+    "title": (7.6, 8.6),
+    "visual": (4.0, 7.0),
+    "secondary": (1.5, 3.5),
+    "caption": (0.4, 1.3),
+}
+_SCENEKIT_SAFE_X_UNITS = (0.4, 15.6)
+_SCENEKIT_SAFE_Y_UNITS = (0.4, 8.6)
+
+
+def _units_to_px_y(y_units: float) -> float:
+    return y_units * (PX_H / H)
+
+
+def _units_to_px_x(x_units: float) -> float:
+    return x_units * (PX_W / W)
+
+
+# Pre-computed pixel bands for fast audit checks
+SCENEKIT_CAPTION_PX = (_units_to_px_y(_SCENEKIT_ZONE_UNITS["caption"][0]),
+                       _units_to_px_y(_SCENEKIT_ZONE_UNITS["caption"][1]))
+SCENEKIT_TITLE_PX = (_units_to_px_y(_SCENEKIT_ZONE_UNITS["title"][0]),
+                     _units_to_px_y(_SCENEKIT_ZONE_UNITS["title"][1]))
+SCENEKIT_VISUAL_PX = (_units_to_px_y(_SCENEKIT_ZONE_UNITS["visual"][0]),
+                      _units_to_px_y(_SCENEKIT_ZONE_UNITS["visual"][1]))
+SCENEKIT_SECONDARY_PX = (_units_to_px_y(_SCENEKIT_ZONE_UNITS["secondary"][0]),
+                         _units_to_px_y(_SCENEKIT_ZONE_UNITS["secondary"][1]))
+
+# Minimum gap between caption zone and other text (px)
+CAPTION_GAP_PX = 18
+# Minimum gap between title zone and visual elements
+TITLE_GAP_PX = 16
 
 
 class Problem:
@@ -1142,12 +1181,15 @@ def _element_problems(ax, renderer, tag: str) -> list[Problem]:
         bb = e["bbox"]
         if (bb.x0 < MARGIN_PX or bb.x1 > PX_W - MARGIN_PX
                 or bb.y0 < MARGIN_PX or bb.y1 > PX_H - MARGIN_PX):
+            # Distinguish caption vs other elements for repair targeting
+            kind_map = {"caption": "caption_collision", "title": "title_collision"}
+            k = kind_map.get(e["kind"], "offframe")
             out.append(Problem(
-                "fail", "offframe",
+                "fail", k,
                 f"{tag}the {e['kind']} runs off the frame "
                 f"(x {bb.x0:.0f}-{bb.x1:.0f}, y {bb.y0:.0f}-{bb.y1:.0f}; "
                 f"the frame is {PX_W}x{PX_H}). Move it inward, shrink it, or "
-                f"give it fewer elements."))
+                f"give it fewer elements. bbox={bb.x0:.0f},{bb.y0:.0f},{bb.x1:.0f},{bb.y1:.0f} safe_zone=frame"))
 
     for i in range(len(els)):
         for j in range(i + 1, len(els)):
@@ -1164,15 +1206,148 @@ def _element_problems(ax, renderer, tag: str) -> list[Problem]:
                 if area < ELEMENT_OVERLAP_MIN_PX or \
                         (smaller > 0 and area / smaller <= ELEMENT_OVERLAP_FRAC):
                     continue
+            # Diagnosis-driven subtype: caption involvement is distinct
+            if a["kind"] == "caption" or b["kind"] == "caption":
+                kind = "caption_collision"
+                repair_hint = "caption bbox overlaps another element bbox; move supporting labels upward and preserve caption zone"
+            elif a["kind"] == "title" or b["kind"] == "title":
+                kind = "title_collision"
+                repair_hint = "title bbox overlaps another element; move visual elements down out of title band"
+            else:
+                kind = "overlap"
+                repair_hint = "separate elements overlap"
             out.append(Problem(
-                "fail", "overlap",
+                "fail", kind,
                 f"{tag}the {a['kind']} (x {a['bbox'].x0:.0f}-"
                 f"{a['bbox'].x1:.0f}, y {a['bbox'].y0:.0f}-{a['bbox'].y1:.0f}) "
                 f"is drawn over the {b['kind']} (x {b['bbox'].x0:.0f}-"
                 f"{b['bbox'].x1:.0f}, y {b['bbox'].y0:.0f}-{b['bbox'].y1:.0f})."
-                f" These are separate elements and must not share space — put "
-                f"them in different horizontal bands, or split this into two "
-                f"states."))
+                f" {repair_hint}. bbox_a={a['bbox'].x0:.0f},{a['bbox'].y0:.0f},{a['bbox'].x1:.0f},{a['bbox'].y1:.0f} "
+                f"bbox_b={b['bbox'].x0:.0f},{b['bbox'].y0:.0f},{b['bbox'].x1:.0f},{b['bbox'].y1:.0f}"))
+    return out
+
+
+def _zone_problems(ax, renderer, tag: str) -> list[Problem]:
+    """Safe-zone violations and caption/label crowding.
+
+    This is the deterministic geometric check that catches the exact Scene-07
+    class before VLM review: caption outside its reserved band, labels drifting
+    into the caption band, or caption placed so close to another text element
+    that it crowds the bottom margin.
+    """
+    out: list[Problem] = []
+    els = _elements(ax, renderer)
+    boxes = _boxes(ax, renderer)
+
+    # --- Near-margin warnings (2 px from edge vs clipped) ---
+    for e in els:
+        bb = e["bbox"]
+        near_left = (bb.x0 >= MARGIN_PX and bb.x0 < MARGIN_PX + NEAR_MARGIN_PX)
+        near_right = (bb.x1 <= PX_W - MARGIN_PX and bb.x1 > PX_W - MARGIN_PX - NEAR_MARGIN_PX)
+        near_bottom = (bb.y0 >= MARGIN_PX and bb.y0 < MARGIN_PX + NEAR_MARGIN_PX)
+        near_top = (bb.y1 <= PX_H - MARGIN_PX and bb.y1 > PX_H - MARGIN_PX - NEAR_MARGIN_PX)
+        if near_left or near_right or near_bottom or near_top:
+            # Only warn if not already failing off-frame
+            if not (bb.x0 < MARGIN_PX or bb.x1 > PX_W - MARGIN_PX or bb.y0 < MARGIN_PX or bb.y1 > PX_H - MARGIN_PX):
+                out.append(Problem(
+                    "warn", "near_safe_margin",
+                    f"{tag}the {e['kind']} is within {NEAR_MARGIN_PX}px of the safe margin "
+                    f"(x {bb.x0:.0f}-{bb.x1:.0f}, y {bb.y0:.0f}-{bb.y1:.0f}); "
+                    f"still inside but should be moved inward. measured_gap={min(bb.x0 - MARGIN_PX, PX_W - MARGIN_PX - bb.x1, bb.y0 - MARGIN_PX, PX_H - MARGIN_PX - bb.y1):.0f}px"))
+
+    # --- Caption zone enforcement ---
+    caption_els = [e for e in els if e["kind"] == "caption"]
+    title_els = [e for e in els if e["kind"] == "title"]
+    label_els = [e for e in els if e["kind"] == "label"]
+    # Also text boxes that are not element-tagged but are caption-like (long sentence)
+    cap_min_y, cap_max_y = SCENEKIT_CAPTION_PX
+    title_min_y, title_max_y = SCENEKIT_TITLE_PX
+
+    for e in caption_els:
+        bb = e["bbox"]
+        # Caption should sit inside caption band (allow slight tolerance of 8px)
+        if bb.y1 > cap_max_y + 8 or bb.y0 < cap_min_y - 8:
+            out.append(Problem(
+                "fail", "caption_collision",
+                f"{tag}caption bbox (y {bb.y0:.0f}-{bb.y1:.0f}) is outside its reserved caption zone "
+                f"(y {cap_min_y:.0f}-{cap_max_y:.0f}). Keep caption inside the caption zone "
+                f"and move other labels out. bbox={bb.x0:.0f},{bb.y0:.0f},{bb.x1:.0f},{bb.y1:.0f} safe_zone=caption"))
+        # Caption exceeding allocated height (multiline overflow)
+        cap_height = bb.y1 - bb.y0
+        allowed = cap_max_y - cap_min_y + 16  # slack
+        if cap_height > allowed + 4:
+            out.append(Problem(
+                "fail", "text_overflow",
+                f"{tag}caption height {cap_height:.0f}px exceeds allocated caption zone height {allowed:.0f}px "
+                f"(multiline overflow). Reduce font size or reflow text. bbox={bb.x0:.0f},{bb.y0:.0f},{bb.x1:.0f},{bb.y1:.0f}"))
+        # Caption crowding: any other element within CAPTION_GAP_PX vertically
+        for other in els:
+            if other["kind"] == "caption":
+                continue
+            obb = other["bbox"]
+            # vertical gap between caption top and other bottom
+            gap = obb.y0 - bb.y1 if obb.y0 >= bb.y1 else bb.y0 - obb.y1 if bb.y0 >= obb.y1 else -1
+            if gap >= 0 and gap < CAPTION_GAP_PX:
+                out.append(Problem(
+                    "fail", "crowding",
+                    f"{tag}caption bbox (y {bb.y0:.0f}-{bb.y1:.0f}) is only {gap:.0f}px from {other['kind']} bbox "
+                    f"(y {obb.y0:.0f}-{obb.y1:.0f}); elements crowd the bottom region. "
+                    f"Increase vertical spacing. overlap_with={other['kind']} measured_gap={gap:.0f}px safe_zone=caption"))
+
+    # Labels drifting into caption band
+    for e in label_els:
+        bb = e["bbox"]
+        # If label's bbox overlaps caption zone vertically
+        if bb.y0 < cap_max_y and bb.y1 > cap_min_y:
+            # Check if it's actually close to caption element
+            for cap in caption_els:
+                cbb = cap["bbox"]
+                if _touching(bb, cbb) or min(abs(bb.y0 - cbb.y1), abs(cbb.y0 - bb.y1)) < CAPTION_GAP_PX:
+                    out.append(Problem(
+                        "fail", "caption_collision",
+                        f"{tag}label {bb.x0:.0f},{bb.y0:.0f} intrudes into caption zone (y {cap_min_y:.0f}-{cap_max_y:.0f}) "
+                        f"and crowds caption (y {cbb.y0:.0f}-{cbb.y1:.0f}). Move label upward to secondary zone (y {SCENEKIT_SECONDARY_PX[0]:.0f}-{SCENEKIT_SECONDARY_PX[1]:.0f}). "
+                        f"bbox={bb.x0:.0f},{bb.y0:.0f},{bb.x1:.0f},{bb.y1:.0f} overlap_with=caption"))
+
+    # Title zone violation
+    for e in title_els:
+        bb = e["bbox"]
+        if bb.y0 < title_min_y - 8 or bb.y1 > title_max_y + 8:
+            out.append(Problem(
+                "fail", "title_collision",
+                f"{tag}title bbox (y {bb.y0:.0f}-{bb.y1:.0f}) outside title zone (y {title_min_y:.0f}-{title_max_y:.0f}). "
+                f"Keep title in title band. bbox={bb.x0:.0f},{bb.y0:.0f},{bb.x1:.0f},{bb.y1:.0f}"))
+
+    # Visual elements (bits, array, etc.) should not be in caption band unless tiny
+    for e in els:
+        if e["kind"] in ("title", "caption", "label", "badge"):
+            continue
+        if e["kind"] in CONNECTOR_KINDS:
+            continue
+        bb = e["bbox"]
+        if bb.y0 < cap_max_y + CAPTION_GAP_PX and bb.y1 > cap_min_y:
+            # If a visual's bottom intrudes into caption band
+            # Allow if it's just touching edge; only flag if significant intrusion
+            intrusion = cap_max_y - bb.y0 if bb.y0 < cap_max_y else 0
+            if intrusion > 10:
+                out.append(Problem(
+                    "fail", "caption_collision",
+                    f"{tag}{e['kind']} bbox (y {bb.y0:.0f}-{bb.y1:.0f}) intrudes into caption zone "
+                    f"(y {cap_min_y:.0f}-{cap_max_y:.0f}) by {intrusion:.0f}px. Move visual upward to visual zone (y {SCENEKIT_VISUAL_PX[0]:.0f}-{SCENEKIT_VISUAL_PX[1]:.0f}). "
+                    f"bbox={bb.x0:.0f},{bb.y0:.0f},{bb.x1:.0f},{bb.y1:.0f} safe_zone=caption"))
+
+    # Also check text boxes directly for caption-like strings near bottom
+    for s, bb in boxes:
+        # Heuristic: long sentence-like text near bottom is a caption
+        if len(s) > 25 and bb.y0 < cap_max_y + 20 and bb.y1 > cap_min_y - 20:
+            # Check distance to margin
+            bottom_gap = bb.y0 - MARGIN_PX
+            if bottom_gap >= 0 and bottom_gap < NEAR_MARGIN_PX:
+                out.append(Problem(
+                    "warn", "near_safe_margin",
+                    f"{tag}text {s[:32]!r} near bottom margin (y {bb.y0:.0f}-{bb.y1:.0f}, gap {bottom_gap:.0f}px). "
+                    f"Ensure caption stays well within caption zone. bbox={bb.x0:.0f},{bb.y0:.0f},{bb.x1:.0f},{bb.y1:.0f}"))
+
     return out
 
 
@@ -1225,6 +1400,7 @@ def audit(fig, ax, name: str = "") -> list[Problem]:
                     f"Move one of them, or split this into two states."))
 
     problems += _element_problems(ax, renderer, tag)
+    problems += _zone_problems(ax, renderer, tag)
 
     for s, bb in boxes:
         if bb.height < MIN_TEXT_PX:

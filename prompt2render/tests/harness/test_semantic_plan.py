@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from prompt2render.harness.animation_ir import from_storyboard_plan
 from prompt2render.harness.semantic_plan import (

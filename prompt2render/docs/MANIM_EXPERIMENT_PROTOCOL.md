@@ -46,8 +46,8 @@ Select 20 topics from the MMMC dataset, stratified across four difficulty tiers:
 To prevent confounding factors, the following variables must be fixed across all conditions:
 * **LLM Provider:** Both systems must use the same underlying LLM (e.g., `gemini-3.5-flash` or `gemini-3.7-flash`) for their Coder/Generator stages.
 * **VLM Provider:** Both systems must use the same VLM for visual criticism (if applicable).
-* **Manim Version:** Both systems must execute against Manim Community Edition v0.19.0.
-* **Retry Budgets:** Code2Video's `max_fix_bug_tries` and Prompt2Render's `repair_router.max_repair_cycles` must be set to the same limit (e.g., 3 retries).
+* **Manim Version:** Both systems must execute against Manim Community Edition v0.19.0. The project default moved to 0.21.0 after this protocol was written (see manimver.py); reproduce this comparison by setting `P2R_MANIM_VERSION=0.19.0` and installing `manim==0.19.0` in the venv used for the run.
+* **Retry Budgets:** Code2Video's `max_fix_bug_tries` and Prompt2Render's `repair_router.max_repairs_per_scene` must be set to the same limit (e.g., 3 retries).
 * **Audio Engine:** Both systems must use the same TTS engine (Kokoro) and voice to ensure timing differences are due to the architecture, not the speaker.
 
 ## 5. Evaluation Metrics

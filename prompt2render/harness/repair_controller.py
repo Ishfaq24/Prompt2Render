@@ -65,6 +65,7 @@ SCENE_VERIFIERS = (
     "verifier_execution",
     "verifier_semantic",
     "verifier_spatial",
+    "verifier_layout",
     "verifier_motion",
     "verifier_lifecycle",
     "verifier_temporal",

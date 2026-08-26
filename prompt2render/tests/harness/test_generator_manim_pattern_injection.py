@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import prompt2render.align as align_module
 from prompt2render.harness.animation_ir import from_storyboard_plan

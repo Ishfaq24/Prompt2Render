@@ -84,6 +84,42 @@ class Scene01(Scene):
     assert any("next_to() does not accept 'align_to_left='" in e for e in errors)
 
 
+def test_manim_static_verifier_catches_pre_0_21_code_kwargs():
+    """Manim 0.21 renamed Code()'s code=/style= kwargs; both must be flagged."""
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        snippet = Code(code="x = 1", style="monokai")
+        self.play(Create(snippet))
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("Code() expects 'code_string=', not 'code='" in e for e in errors)
+    assert any("Code() expects 'formatter_style=', not 'style='" in e for e in errors)
+
+
+def test_manim_static_verifier_accepts_0_21_code_api():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        snippet = Code(
+            code_string="x = 1",
+            language="python",
+            formatter_style="monokai",
+            add_line_numbers=True,
+            paragraph_config={"font_size": 18},
+        )
+        self.play(Create(snippet))
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert not errors
+
+
 # ---------------------------------------------------------------------------
 # F15 cleanup: checks merged in from the formerly-separate, duplicate
 # scenes._validate_manim_source (scenes.py's own docstring at the merge site

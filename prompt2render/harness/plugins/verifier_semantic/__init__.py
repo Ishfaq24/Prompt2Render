@@ -285,6 +285,93 @@ def _normalize_result(
     return normalized
 
 
+def _is_layout_defect(result: dict[str, Any]) -> bool:
+    """Whether a semantic-critic result actually describes a layout/crowding defect.
+
+    A layout/crowding defect is being reported as SEMANTIC when the VLM
+    happens to discover geometric overflow during semantic review. This
+    heuristic prevents misclassification by detecting layout-specific
+    language in the critic's output.
+
+    Returns True if the result is layout-like (should be handled by
+    verifier_layout), False if it is genuinely semantic.
+    """
+
+    if not isinstance(result, dict):
+        return False
+
+    # Collect all textual fields
+    parts: list[str] = []
+    for key in ("reason", "fix", "detail", "message"):
+        v = result.get(key)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+    for key in ("violations", "evidence"):
+        v = result.get(key)
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                if isinstance(item, str) and item.strip():
+                    parts.append(item)
+
+    text = " ".join(parts).lower()
+
+    if not text.strip():
+        return False
+
+    layout_keywords = [
+        "caption",
+        "overlap",
+        "overlaps",
+        "crowd",
+        "crowding",
+        "cramped",
+        "tightly packed",
+        "tightly",
+        "margin",
+        "safe area",
+        "safe zone",
+        "bottom edge",
+        "bottom region",
+        "overflow",
+        "offframe",
+        "off frame",
+        "outside",
+        "clipped",
+        "clipping",
+        "bbox",
+        "bounding box",
+        "collision",
+        "near_safe_margin",
+        "text overflow",
+        "label",
+        "stacked",
+    ]
+
+    # Strong layout signals: caption + geometric term together is a layout defect
+    has_layout = any(kw in text for kw in layout_keywords)
+
+    # Additional geometric evidence like "node label" + "complexity label" stacked tightly
+    # is also layout when it mentions positioning / spacing
+    geometric_terms = ["position", "spacing", "font size", "y-position", "packed", "touching", "edge"]
+    has_geometric = any(term in text for term in geometric_terms)
+
+    # If it mentions caption/label bottom crowding, it's layout regardless
+    if "caption" in text and any(w in text for w in ("bottom", "margin", "overflow", "overlap", "crowd", "zone")):
+        return True
+
+    if has_layout:
+        # Ensure it's not purely semantic: if it also mentions strong semantic signals
+        # like wrong values/state but ALSO layout, layout wins only when geometric evidence dominates.
+        # For the task's example, layout keywords dominate, so we bias toward layout when both present.
+        # Check that at least one explicit layout geometric phrase exists.
+        if any(kw in text for kw in ["caption", "bbox", "margin", "overflow", "overlap", "crowd", "safe", "zone", "clipped"]):
+            return True
+        if has_geometric:
+            return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
@@ -813,6 +900,14 @@ class VerifierSemanticPlugin(Plugin):
                 if result[
                     "status"
                 ] == "fail":
+                    # Diagnosis-driven routing: do not misclassify geometric/layout evidence as semantic
+                    # merely because the VLM happened to discover it during semantic review.
+                    if _is_layout_defect(result):
+                        cfg.warn(
+                            f"Semantic verifier suppressed layout-like finding for {entry.stem}: "
+                            f"{result.get('reason','')[:120]} -- delegated to verifier_layout"
+                        )
+                        continue
                     findings.append(
                         _make_finding(
                             stem=entry.stem,

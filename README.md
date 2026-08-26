@@ -73,9 +73,14 @@ install.
 
 Everything here runs natively: Manim, ffmpeg, kokoro and the ffmpeg-builtin
 whisper filter all support Windows; MiKTeX auto-installs LaTeX packages on
-demand, which is actually smoother than TeX Live. MiKTeX/Manim are only
-needed for the `prompt2render manim` hand-authored escape hatch — the main pipeline
-(`prompt2render scenes`) doesn't touch LaTeX at all.
+demand, which is actually smoother than TeX Live.
+
+Manim drives the `--manim` scene backend and the `prompt2render manim`
+hand-authored escape hatch. LaTeX is needed by both whenever a scene uses
+`MathTex`/`Tex`, which generated educational scenes do routinely — around a
+third of the scenes in `projects/` contain an equation. Only the default
+matplotlib scene-kit backend (`prompt2render scenes` without `--manim`) is
+genuinely LaTeX-free.
 
 Activate before each session:
 
@@ -441,6 +446,10 @@ prompt2render/captions.py         SRT/ASS generation from the alignment
 prompt2render/qc.py               the quality gates behind `prompt2render check`, caption drift parallelized
 prompt2render/publish.py          upload packet (description, chapters, checklist)
 prompt2render/doctor.py           environment check
+prompt2render/manimver.py         the one place that knows which Manim we target
+prompt2render/manim_contract.py   the shared Manim generation contract + safe layout kit
+prompt2render/manim_smoke.py      the `doctor --render-test` render check
+prompt2render/assets/manim_smoke.py  the scenes that check renders
 prompt2render/visuals.py          import/placeholder/manim escape hatches
 prompt2render/assemble.py         legacy sync path, for `prompt2render import`ed clips only
 prompt2render/web/                the `prompt2render serve` dashboard — FastAPI + SSE over the same stages
@@ -451,13 +460,107 @@ topics/backlog.yaml     the 30-video queue
 projects/<slug>/        script.md, sections/, audio/, build/, out/
 ```
 
+## Manim
+
+Supported version: **Manim Community 0.21.0**, pinned in `requirements.txt`.
+
+```bash
+pip install "manim==0.21.0"
+```
+
+`prompt2render/manimver.py` is the single source of truth. Every consumer
+derives from it: the dependency pin, the generator prompts, the static
+verifier's messages, and a hard guard at both render entry points. `doctor`
+only *warns* about a version mismatch — Manim is optional and the default
+stills backend never touches it — but a run that has actually selected the
+Manim backend refuses to render against a version it does not target, so
+`--manim` can never silently run on the wrong Manim.
+
+Check it:
+
+```bash
+python prompt2render.py doctor                 # version + API probe, no render
+python prompt2render.py doctor --render-test   # renders a real scene and ffprobes it
+```
+
+The render test is the one thing in the repo that proves Manim actually
+works end to end: it renders `prompt2render/assets/manim_smoke.py` and
+asserts the output exists, is non-trivially sized, is readable by ffprobe,
+is exactly 1920x1080 and reports exactly 30/1 fps. A render that silently
+came back at 1080p60 would pass an exit-code check and then desynchronise
+every section against the master audio.
+
+### Running an older Manim on purpose
+
+`docs/MANIM_EXPERIMENT_PROTOCOL.md` pins 0.19.0 for the Code2Video
+comparison, because changing Manim mid-experiment introduces a version
+confound. Declare the version the run targets:
+
+```bash
+pip install "manim==0.19.0"
+P2R_MANIM_VERSION=0.19.0 python prompt2render.py build <slug> --harness --manim
+```
+
+That makes the whole system self-consistent again — doctor stops warning,
+the generator prompts say 0.19.0, the validator's messages say 0.19.0, and
+the render guard accepts it. It is a way to *declare* a target, not to
+silence a mismatch: a mismatch against the declared target still fails.
+
+### 0.21 compatibility notes
+
+- **`Code`** — colours now come from Pygments. Use
+  `Code(code_string=..., language=..., add_line_numbers=True,
+  formatter_style="monokai")`. A foreground colour passed through
+  `paragraph_config` is **silently ignored** in 0.21 rather than rejected, so
+  the static verifier flags it; nothing downstream could detect it, because
+  the render succeeds and simply looks wrong. `background_config={"fill_color":
+  ...}` still overrides the background.
+- **`MathTex`/`Tex`** — unchanged in use, and still the supported maths path.
+  0.20 rewrote substring splitting, so a scene that indexes into a `MathTex`
+  or relies on `{{ ... }}` grouping is worth re-checking visually. LaTeX
+  (plus `dvisvgm`) remains a hard requirement for these.
+- **`Text`** — 0.21 raises when a ligature-aware font collapses an ASCII
+  digraph into one glyph, where 0.19 silently mis-indexed. Generated code is
+  normalised automatically (`->` becomes `→` inside `Text` literals); in
+  hand-written scenes, write the Unicode glyph or pass
+  `disable_ligatures=True`.
+- **Typst** — 0.21 adds `Typst`/`TypstMath` as an optional extra
+  (`pip install "manim[typst]"`). Prompt2Render does **not** use it and does
+  not require it; `doctor` reports it as optional either way.
+- **Caching** — 0.21 changed how scene cache keys hash numpy arrays, so
+  caches written by 0.19 are not comparable. Both render entry points pass
+  `--disable_caching`; if you have old `media/` or `build/manim/videos`
+  trees from a 0.19 run, delete them.
+
+### Text that fits the frame
+
+Generated educational scenes overflow the frame more than they do anything
+else wrong, so the fix is structural rather than advisory.
+`prompt2render/manim_contract.py` holds one canonical layout block that every
+generated scene starts with. It derives its bounds from
+`config.frame_width`/`frame_height`, splits the safe area into title /
+content / caption bands that cannot overlap, and exposes
+`title_text`, `caption`, `fit_text`, `fit_mobject` and `place_content`, each
+of which caps *both* width and height. `tests/test_manim_contract.py`
+executes that block against the installed Manim and asserts the guarantee
+holds for adversarial input — that is how the bands got fixed when a
+two-line title turned out to overflow the top.
+
+Text is bounded, not shrunk globally: `fit_text` wraps first, then steps the
+font size down proportionally, and only scales as a last resort.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `prompt2render doctor` reports a missing model | `python prompt2render.py models --asr base.en --vad --kokoro` |
-| `latex failed` in `prompt2render manim` | install `texlive-latex-extra texlive-science` (or MiKTeX on Windows) — the main `prompt2render scenes` path never touches LaTeX |
+| `latex failed` in `prompt2render manim` | install `texlive-latex-extra texlive-science` (or MiKTeX on Windows) — needed for any scene using `MathTex`/`Tex` |
 | Windows: `manim` not found | activate the venv: `.\.venv\Scripts\Activate.ps1` |
+| `manim <version> is installed but this build targets 0.21.0` | `pip install "manim==0.21.0"`. To keep an older Manim on purpose, declare it: `P2R_MANIM_VERSION=0.19.0` |
+| `doctor` says the Manim package and the CLI disagree | the venv is not active, or a second Manim is on PATH — the render path shells out to the `manim` executable, so both must match |
+| A `Code(...)` scene renders in the wrong colours | Manim 0.21 takes syntax colours from Pygments. Use `formatter_style="<style>"`; a colour in `paragraph_config` is ignored |
+| `Text ... rendered fewer glyph(s)` | a ligature font collapsed an ASCII digraph. Write `→` / `≤` / `≠` instead of `->` / `<=` / `!=`, or pass `disable_ligatures=True` |
+| A generated scene's text runs off the frame | build text through the safe-layout helpers (`title_text`, `caption`, `fit_text`, `fit_mobject`) — see `prompt2render/manim_contract.py` |
 | Windows: LaTeX prompt pops up | MiKTeX asking to install a package — tick "always", it stops asking |
 | Windows: captions look wrong | font fallback; `CAPTION_FONT` in `prompt2render/cfg.py` |
 | `prompt2render scenes` keeps rejecting a section | open `build/scenes/scene_NN.py` — the audit error in the terminal names the exact overlap or off-frame text; fix the `k.` call or delete the file and regenerate |

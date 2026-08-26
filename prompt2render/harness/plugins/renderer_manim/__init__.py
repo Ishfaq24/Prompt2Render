@@ -44,6 +44,7 @@ from ...temporal_ir import compute_state_slots
 from ...timing import narration_span
 from ...plugin import Plugin
 from ..verifier_execution import check_scene_artifact
+from .... import manimver
 from ....project import parse_script
 from ....visuals import manim_scene
 
@@ -75,7 +76,9 @@ def hitl_status_sets(project_dir: Path | None) -> tuple[set[str], set[str]]:
 # Constants
 # ---------------------------------------------------------------------------
 
-MANIM_VERSION = "0.19.0"
+# The Manim version this build targets is manimver.target_version()
+# (env-overridable via P2R_MANIM_VERSION); prompts below call it directly
+# rather than freezing it into a module constant at import time.
 
 MANIM_BUILD_DIR = "build/manim"
 
@@ -1521,7 +1524,7 @@ class GeneratorManimPlugin(Plugin):
     - the validated scene plan,
     - the storyboard/visual contract,
     - exact narration timing,
-    - Manim CE 0.19 compatibility rules,
+    - Manim CE compatibility rules (see manimver.py for the target version),
     - and repair feedback.
 
     Generated code is NOT automatically accepted.
@@ -1680,7 +1683,7 @@ class GeneratorManimPlugin(Plugin):
             )
 
         prompt = f"""
-Write a Manim Community Edition {MANIM_VERSION} script for this educational
+Write a Manim Community Edition {manimver.target_version()} script for this educational
 video section.
 
 TITLE:
@@ -1704,11 +1707,11 @@ EXACT CUE MAP (use these waits when they are necessary to keep sync):
         prompt += f"""
 REQUIREMENTS:
 
-1. Use Manim Community Edition v{MANIM_VERSION}.
+1. Use Manim Community Edition v{manimver.target_version()}.
    Use:
         from manim import *
 
-   Do not use APIs introduced after v{MANIM_VERSION}.
+   Do not use APIs introduced after v{manimver.target_version()}.
 
 2. Define exactly one class:
         Scene{section.stem}
@@ -1806,14 +1809,14 @@ REFERENCE PATTERN (imitate this structure — not the specific text/content):
         VGroup(Dot(color=RED), Text("Class 1", font_size=21)).arrange(RIGHT, buff=0.15),
     ).arrange(RIGHT, buff=0.5).move_to(DOWN * 2.65)
 
-6. MANIM 0.19 API SAFETY:
+6. MANIM API SAFETY:
    - Do not pass font_size or direction to Axes.get_x_label/get_y_label. Create Text labels and position them with next_to.
    - Do not pass corner= to move_to. Use move_to(point) or align_to.
-   - Do not pass theme= to Code. Use Code(code_string=..., language=...).
+   - Code(code_string=..., language=..., formatter_style=..., add_line_numbers=True, paragraph_config={{"font_size": 24}}) is the correct call shape. Never pass code=, style=, theme=, insert_line_numbers=, or a bare font_size= — none of those exist on Code() anymore.
    - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
    - Do not pass include_background= to Text, MathTex, or Tex.
-   - For Code line numbers use add_line_numbers=True. Never use insert_line_numbers.
    - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
+   - Prefer Text(...).scale_to_fit_width(...) or a deterministic font_size reduction over a large fixed font_size — never assume a string fits just because a shorter one did.
 
 7. VECTOR SAFETY & SHAPES:
    - move_to() requires a coordinate vector.
@@ -1967,7 +1970,7 @@ REFERENCE PATTERN (imitate this structure — not the specific text/content):
 
         prompt = f"""
 Write the object-construction half of a Manim Community Edition
-{MANIM_VERSION} scene for this educational video section.
+{manimver.target_version()} scene for this educational video section.
 
 TITLE:
 {section.title}
@@ -1993,11 +1996,11 @@ order and animating the exact objects you define. Because of this:
 
 REQUIREMENTS:
 
-1. Use Manim Community Edition v{MANIM_VERSION}.
+1. Use Manim Community Edition v{manimver.target_version()}.
    Use:
         from manim import *
 
-   Do not use APIs introduced after v{MANIM_VERSION}.
+   Do not use APIs introduced after v{manimver.target_version()}.
 
 2. Define exactly one class:
         Scene{section.stem}
@@ -2041,14 +2044,14 @@ STATES:
      `VGroup(part1, part2, ...).arrange(RIGHT, buff=...)` (or `DOWN`)
      followed by ONE `.move_to(...)` on the group.
 
-5. MANIM 0.19 API SAFETY:
+5. MANIM API SAFETY:
    - Do not pass font_size or direction to Axes.get_x_label/get_y_label. Create Text labels and position them with next_to.
    - Do not pass corner= to move_to. Use move_to(point) or align_to.
-   - Do not pass theme= to Code. Use Code(code_string=..., language=...).
+   - Code(code_string=..., language=..., formatter_style=..., add_line_numbers=True, paragraph_config={{"font_size": 24}}) is the correct call shape. Never pass code=, style=, theme=, insert_line_numbers=, or a bare font_size= — none of those exist on Code() anymore.
    - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
    - Do not pass include_background= to Text, MathTex, or Tex.
-   - For Code line numbers use add_line_numbers=True. Never use insert_line_numbers.
    - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
+   - Prefer Text(...).scale_to_fit_width(...) or a deterministic font_size reduction over a large fixed font_size — never assume a string fits just because a shorter one did.
 
 6. VECTOR SAFETY & SHAPES:
    - move_to() requires a coordinate vector.
@@ -2120,7 +2123,7 @@ STATES:
         kinds = sorted(set(OBJECT_REQUIRED_PROPS) | {"VGroup"})
 
         prompt = f"""
-Describe the objects for this Manim Community Edition {MANIM_VERSION} scene as
+Describe the objects for this Manim Community Edition {manimver.target_version()} scene as
 JSON -- do NOT write Python or Manim API calls yourself. A deterministic
 compiler renders your JSON into the actual construction code.
 

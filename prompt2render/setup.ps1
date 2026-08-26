@@ -38,9 +38,14 @@ Say "creating virtualenv .venv"
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip wheel --quiet
 
-Say "installing prompt2render deps + Manim (Manim is only used by the 'prompt2render manim' hand-authored escape hatch)"
+# Manim version is pinned in requirements.txt and mirrored by manimver.py.
+# $env:P2R_MANIM_VERSION installs a different one (0.19.0 reproduces the
+# Code2Video comparison - docs/MANIM_EXPERIMENT_PROTOCOL.md).
+$ManimVersion = if ($env:P2R_MANIM_VERSION) { $env:P2R_MANIM_VERSION } else { "0.21.0" }
+
+Say "installing prompt2render deps (Manim $ManimVersion drives the --manim scene backend and the 'prompt2render manim' escape hatch)"
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
-& .\.venv\Scripts\python.exe -m pip install "manim==0.19.0" --quiet
+& .\.venv\Scripts\python.exe -m pip install "manim==$ManimVersion" --quiet
 
 # ------------------------------------------------------------------- .env
 if (-not (Test-Path .env)) {
