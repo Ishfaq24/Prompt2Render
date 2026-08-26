@@ -1127,7 +1127,8 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
 
 
 def _generate_manim(proj: Path, script: Script, index: int,
-                    retries: int = 0, extra_feedback: str = "") -> Path:
+                    retries: int = 0, extra_feedback: str = "",
+                    dst: Path | None = None) -> Path:
     sec = next((s for s in script.sections if s.index == index), None)
     if sec is None:
         sys.exit(f"[prompt2render] no section {index} in script.md")
@@ -1142,7 +1143,15 @@ def _generate_manim(proj: Path, script: Script, index: int,
 
     outdir = proj / "build" / "scenes"
     outdir.mkdir(parents=True, exist_ok=True)
-    dst = outdir / f"scene_{sec.stem}.py"
+    # See _generate_matplotlib: `outdir` remains the canonical accepted
+    # directory (previous-section continuity is read from it) even when the
+    # new module is written to a sidecar candidate path.
+    if dst is None:
+        dst = outdir / f"scene_{sec.stem}.py"
+    else:
+        dst = Path(dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
     section_dir = outdir / sec.stem
 
     previous_context = ""
@@ -1270,7 +1279,7 @@ def _generate_manim(proj: Path, script: Script, index: int,
 
 
 def generate(proj: Path, script: Script, index: int, retries: int = 0,
-             extra_feedback: str = "") -> Path:
+             extra_feedback: str = "", dst: Path | None = None) -> Path:
     """Unified dual-renderer entry point.
 
     Selection:
@@ -1282,6 +1291,12 @@ def generate(proj: Path, script: Script, index: int, retries: int = 0,
       P2R_RENDERER=manim
       P2R_RENDERER=matplotlib
       P2R_RENDERER=auto
+
+    ``dst`` redirects the generated module to a specific path instead of the
+    canonical ``build/scenes/scene_<stem>.py``. The harness uses it to write
+    repair candidates into a sidecar workspace so the currently-accepted
+    scene is never overwritten by an unproven regeneration. ``None`` (the
+    default) preserves the historical behaviour exactly.
     """
     sec = next((s for s in script.sections if s.index == index), None)
     if sec is None:
@@ -1301,17 +1316,19 @@ def generate(proj: Path, script: Script, index: int, retries: int = 0,
             proj, script, index,
             retries=retries,
             extra_feedback=extra_feedback,
+            dst=dst,
         )
 
     return _generate_matplotlib(
         proj, script, index,
         retries=retries,
         extra_feedback=extra_feedback,
+        dst=dst,
     )
 
 
 def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 0,
-            extra_feedback: str = "") -> Path:
+            extra_feedback: str = "", dst: Path | None = None) -> Path:
     sec = next((s for s in script.sections if s.index == index), None)
     if sec is None:
         sys.exit(f"[prompt2render] no section {index} in script.md")
@@ -1323,8 +1340,16 @@ def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 
 
     outdir = proj / "build" / "scenes"
     outdir.mkdir(parents=True, exist_ok=True)
-    dst = outdir / f"scene_{sec.stem}.py"
-    
+    # `outdir` stays the canonical scenes directory even when writing a
+    # candidate elsewhere: it is also where the *previous* section's
+    # accepted code is read from for layout continuity below, which must
+    # keep pointing at accepted work.
+    if dst is None:
+        dst = outdir / f"scene_{sec.stem}.py"
+    else:
+        dst = Path(dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
     # State-Carrying Context: Find the previous section's generated code to anchor the layout
     previous_context = ""
     if index > 1:

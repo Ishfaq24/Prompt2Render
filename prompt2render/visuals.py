@@ -141,7 +141,7 @@ def stock_card(proj: Path, index: int, text: str, seconds: float = 6.0) -> Path:
 
 
 def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
-                index: int) -> Path:
+                index: int, out_dir: Path | None = None) -> Path:
     """Render one Manim scene into the section contract.
 
     Originally hand-authored only (Manim's API surface is enormous, renders
@@ -153,11 +153,23 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
     just the manual ``prompt2render manim`` escape hatch. Still the right
     tool for one or two hand-written hero shots too.
 
+    ``out_dir`` redirects both Manim's media directory and the finished
+    section clip into a sidecar location. The harness uses it to render a
+    repair candidate without overwriting the accepted ``sections/NN.mp4``,
+    so a candidate that turns out worse can be discarded with the accepted
+    clip still intact. ``None`` (the default) preserves the historical
+    behaviour exactly, including for the standalone ``prompt2render manim``
+    command.
+
     Note MathTex and Tex need a LaTeX install; `prompt2render doctor` will say
     whether you have one.
     """
     cfg.need("manim")
-    work = proj / "build" / "manim"
+    work = (
+        Path(out_dir) / "manim"
+        if out_dir is not None
+        else proj / "build" / "manim"
+    )
     work.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -202,7 +214,12 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
             "`prompt2render voice` to lock it to the narration"
         )
 
-    dst = proj / "sections" / f"{index:02d}.mp4"
+    dst = (
+        Path(out_dir) / f"{index:02d}.mp4"
+        if out_dir is not None
+        else proj / "sections" / f"{index:02d}.mp4"
+    )
+    dst.parent.mkdir(parents=True, exist_ok=True)
     # When the harness is the caller, the raw Manim clip must already be
     # cue-synced; forcing the section to the narration length with a large
     # tpad would hide a temporal bug (sections 01/07 stale-assembly case).

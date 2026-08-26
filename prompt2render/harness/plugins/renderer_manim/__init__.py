@@ -37,7 +37,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ... import hitl, lineage
+from ... import hitl, lineage, workspace
 from ...context import CodeArtifact, RenderArtifact, SceneContext, VideoArtifact
 from ...motion import MOTION_OPS, find_storyboard_states
 from ...temporal_ir import compute_state_slots
@@ -337,11 +337,21 @@ def _scene_py_path(
     context: SceneContext,
     stem: str,
 ) -> Path:
-    return (
+    """Where this scene's Manim module lives right now.
+
+    Redirects to the sidecar workspace while a repair candidate for this
+    scene is open, so generation, verification and rendering all operate on
+    the candidate while the accepted module stays intact on disk. Without an
+    open candidate this is the canonical path, unchanged.
+    """
+
+    canonical = (
         context.project_dir
         / MANIM_BUILD_DIR
         / f"scene_{stem}.py"
     )
+
+    return workspace.resolve_code_path(context, stem, canonical)
 
 
 # ---------------------------------------------------------------------------
@@ -395,16 +405,23 @@ def _remove_generated_scene(
     context: SceneContext,
     stem: str,
 ) -> None:
-    """Remove generated code and stale downstream artifacts."""
+    """Remove generated code and stale downstream artifacts.
 
-    py_file = _scene_py_path(
-        context,
-        stem,
-    )
+    With a repair candidate open for this scene the accepted ``.py`` is
+    left untouched -- the candidate lands on a sidecar path, and destroying
+    the accepted scene here would leave nothing to restore if the candidate
+    proves worse.
+    """
 
-    py_file.unlink(
-        missing_ok=True
-    )
+    if not workspace.is_candidate_open(context, stem):
+        py_file = _scene_py_path(
+            context,
+            stem,
+        )
+
+        py_file.unlink(
+            missing_ok=True
+        )
 
     context.code_artifacts.pop(
         stem,
@@ -1270,6 +1287,14 @@ class RendererManimPlugin(Plugin):
 
         stem = artifact.stem
 
+        # With a repair candidate open, render into the sidecar workspace so
+        # the accepted sections/NN.mp4 survives an unproven regeneration.
+        candidate_dir = (
+            context.candidate.render_dir
+            if workspace.is_candidate_open(context, stem)
+            else None
+        )
+
         try:
             out = manim_scene(
                 context.project_dir,
@@ -1277,6 +1302,7 @@ class RendererManimPlugin(Plugin):
                 artifact.path,
                 f"Scene{stem}",
                 section.index,
+                out_dir=candidate_dir,
             )
 
             context.render_artifacts[stem] = (

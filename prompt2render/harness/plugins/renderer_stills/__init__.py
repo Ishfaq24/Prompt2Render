@@ -28,9 +28,10 @@ The normal pipeline is:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from ... import lineage
+from ... import lineage, workspace
 from ...context import RenderArtifact, SceneContext
 from ...plugin import Plugin
 from .... import align, stills
@@ -181,13 +182,24 @@ def _audit(
 def _record_render_artifact(
     context: SceneContext,
     stem: str,
+    outdir: Path | None = None,
 ) -> None:
-    """Synchronize RenderArtifact with the filesystem."""
+    """Synchronize RenderArtifact with the filesystem.
 
-    outdir = stills.stills_dir(
-        context.project_dir,
-        stem,
-    )
+    ``outdir`` overrides the canonical stills directory so a repair
+    candidate's render is recorded against the sidecar workspace it was
+    actually written to.
+    """
+
+    if outdir is None:
+        outdir = workspace.resolve_render_dir(
+            context,
+            stem,
+            stills.stills_dir(
+                context.project_dir,
+                stem,
+            ),
+        )
 
     context.render_artifacts[stem] = (
         RenderArtifact(
@@ -542,9 +554,18 @@ class RendererStillsPlugin(Plugin):
                 f"{artifact.path}"
             )
 
-        outdir = stills.stills_dir(
-            context.project_dir,
+        # With a repair candidate open, render into the sidecar workspace
+        # rather than over the accepted stills -- stills.render() deletes
+        # manifest.json/audit.json before drawing, so rendering a candidate
+        # into the accepted directory would destroy the very artifact a
+        # rejection needs to fall back to.
+        outdir = workspace.resolve_render_dir(
+            context,
             stem,
+            stills.stills_dir(
+                context.project_dir,
+                stem,
+            ),
         )
 
         try:
@@ -624,4 +645,5 @@ class RendererStillsPlugin(Plugin):
         _record_render_artifact(
             context,
             stem,
+            outdir=outdir,
         )

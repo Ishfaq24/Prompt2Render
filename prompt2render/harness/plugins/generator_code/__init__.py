@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from ... import lineage
+from ... import lineage, workspace
 from ...context import CodeArtifact, SceneContext
 from ...plugin import Plugin
 from ..verifier_execution import check_scene_artifact
@@ -156,18 +156,25 @@ def _artifact_exists(
 def _record_artifact(
     context: SceneContext,
     stem: str,
+    path: Path | None = None,
 ) -> None:
     """Synchronise the in-memory artifact record with disk.
+
+    ``path`` overrides the canonical location -- the repair controller
+    passes the sidecar candidate path so verifiers, which follow
+    ``CodeArtifact.path``, inspect the candidate rather than the accepted
+    scene.
 
     Also seeds artifact lineage: a scene that exists on disk is at least
     revision 1, so a later repair produces revision 2 and "no artifact"
     stays distinguishable from "the original artifact".
     """
 
-    path = scene_path(
-        context.project_dir,
-        stem,
-    )
+    if path is None:
+        path = scene_path(
+            context.project_dir,
+            stem,
+        )
 
     exists = (
         path.exists()
@@ -419,16 +426,24 @@ def _remove_scene_artifacts(
     context: SceneContext,
     stem: str,
 ) -> None:
-    """Remove artifacts that would cause generate() to silently skip."""
+    """Remove artifacts that would cause generate() to silently skip.
 
-    path = scene_path(
-        context.project_dir,
-        stem,
-    )
+    When a repair candidate is open for this scene, the accepted file on
+    disk is deliberately left alone -- the candidate is written to a
+    sidecar path that does not exist yet, so there is nothing to clear, and
+    unlinking the accepted scene here is exactly the irreversible deletion
+    that used to make a failed regeneration a net loss of working work.
+    """
 
-    path.unlink(
-        missing_ok=True
-    )
+    if not workspace.is_candidate_open(context, stem):
+        path = scene_path(
+            context.project_dir,
+            stem,
+        )
+
+        path.unlink(
+            missing_ok=True
+        )
 
     # Keep in-memory state consistent.
     context.code_artifacts.pop(
@@ -703,22 +718,34 @@ class GeneratorCodePlugin(Plugin):
 
         retries = self._retries()
 
+        # When the repair controller has a candidate open for this scene,
+        # the regenerated module goes to the sidecar workspace instead of
+        # the canonical path -- the currently-accepted scene must survive
+        # an unproven regeneration intact, so it can be restored verbatim
+        # if the candidate turns out to be worse.
+        canonical = scene_path(
+            context.project_dir,
+            stem,
+        )
+
+        path = workspace.resolve_code_path(
+            context,
+            stem,
+            canonical,
+        )
+
         generate(
             context.project_dir,
             script,
             section.index,
             retries=retries,
             extra_feedback=extra_feedback,
+            dst=path if path != canonical else None,
         )
 
         # --------------------------------------------------------------
         # Postcondition
         # --------------------------------------------------------------
-
-        path = scene_path(
-            context.project_dir,
-            stem,
-        )
 
         if not path.exists():
             raise RuntimeError(
@@ -729,6 +756,7 @@ class GeneratorCodePlugin(Plugin):
         _record_artifact(
             context,
             stem,
+            path=path,
         )
 
         # Send the repaired scene straight to the harness, same as a
