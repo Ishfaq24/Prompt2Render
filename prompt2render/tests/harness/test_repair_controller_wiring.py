@@ -348,3 +348,82 @@ def test_repair_contract_from_the_real_router_is_recorded_and_journaled():
         started = journal.read(event_type="scene.repair.started", scene_id=STEM)
         assert len(started) == 1
         assert "position" in started[0]["payload"]["repair_contract"]["allowed_changes"]
+
+
+# --------------------------------------------------------------- dry-run --
+# Phase 18: preview a repair without committing anything.
+
+def test_dry_run_accept_path_does_not_promote_or_advance_state():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        ctx, canonical = _seed_context(tmp_path)
+        journal = EventJournal(tmp_path / "events.jsonl")
+
+        def write_candidate(context):
+            context.candidate.code_path.write_text("# candidate\n")
+
+        router = _Router(write_candidate)
+        verif = _VerifierClean()
+        controller = RepairController(
+            router=router,
+            plugins_by_name={
+                "verifier_layout": verif, "verifier_semantic": verif,
+                "verifier_spatial": verif, "verifier_temporal": verif,
+            },
+            log_path=None,
+            journal=journal,
+        )
+
+        record = controller.repair_scene(
+            ctx, STEM,
+            [{"stem": STEM, "status": "fail", "finding_type": "layout_violation",
+              "category": "LAYOUT", "severity": "BLOCKING", "detail": "caption crowding"}],
+            "verifier_layout",
+            dry_run=True,
+        )
+
+        # The would-be decision is reported honestly...
+        assert record.decision == Decision.ACCEPTED.value
+        # ...but nothing was actually committed.
+        assert record.accepted is False
+        assert canonical.read_text() == "# accepted\nprint(1)\n"
+        assert current_state(ctx, STEM) is not SceneState.ACCEPTED
+
+        # No repair budget was spent on a preview.
+        assert controller.repairs_per_scene.get(STEM, 0) == 0
+        assert controller.total_repairs == 0
+
+        # No revision history entry was written for a dry run.
+        from prompt2render.harness.revision_history import load_revision_history
+        history = load_revision_history(tmp_path)
+        assert STEM not in history["scenes"]
+
+
+def test_dry_run_reject_path_behaves_like_a_normal_rejection_otherwise():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        ctx, canonical = _seed_context(tmp_path)
+
+        def write_candidate(context):
+            context.candidate.code_path.write_text("# candidate\n")
+
+        router = _Router(write_candidate)
+        verif = _VerifierRegresses()
+        controller = RepairController(
+            router=router,
+            plugins_by_name={"verifier_layout": verif, "verifier_semantic": verif},
+            log_path=None,
+        )
+
+        record = controller.repair_scene(
+            ctx, STEM,
+            [{"stem": STEM, "status": "fail", "finding_type": "layout_violation",
+              "category": "LAYOUT", "severity": "BLOCKING", "detail": "caption crowding"}],
+            "verifier_layout",
+            dry_run=True,
+        )
+
+        assert record.decision == Decision.REGRESSION_REJECTED.value
+        assert record.accepted is False
+        assert canonical.read_text() == "# accepted\nprint(1)\n"
+        assert controller.total_repairs == 0

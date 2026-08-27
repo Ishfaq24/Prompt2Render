@@ -156,9 +156,20 @@ class RepairDecisionRecord:
     errors: list[str] = field(default_factory=list)
     timestamp: str = ""
 
+    #: P1-4/Phase 18: true when this cycle ran under a dry-run request --
+    #: ``decision`` still reflects what WOULD have happened (including
+    #: ``"accepted"``), but the candidate was always discarded and no
+    #: lifecycle/revision-history side effect was applied. See
+    #: ``RepairController.repair_scene``'s ``dry_run`` parameter.
+    dry_run: bool = False
+
     @property
     def accepted(self) -> bool:
-        return self.decision == Decision.ACCEPTED.value
+        # A dry run never actually commits, regardless of what decision it
+        # would have reached -- callers (runner._repair's
+        # lineage.invalidate_scene trigger, in particular) must never treat
+        # a dry-run preview as a real acceptance.
+        return self.decision == Decision.ACCEPTED.value and not self.dry_run
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -241,8 +252,19 @@ class RepairController:
         stem: str,
         findings: list[dict[str, Any]],
         source_plugin: str,
+        *,
+        dry_run: bool = False,
     ) -> RepairDecisionRecord:
-        """Run one complete, regression-safe repair cycle for one scene."""
+        """Run one complete, regression-safe repair cycle for one scene.
+
+        ``dry_run`` (Phase 18): generate, render and verify a candidate,
+        and judge it exactly as normal -- but never promote it and never
+        apply any lifecycle/revision-history side effect, regardless of
+        the verdict. ``record.decision`` still reports what WOULD have
+        happened; ``record.accepted`` is always ``False`` for a dry run.
+        Does not consume repair budget -- a preview must not cost a scene
+        one of its limited real attempts.
+        """
 
         self._cycle_id += 1
 
@@ -251,6 +273,7 @@ class RepairController:
 
         record = RepairDecisionRecord(
             cycle_id=self._cycle_id,
+            dry_run=dry_run,
             stem=str(stem),
             trigger_finding_type=plan.finding_type,
             source_plugin=source_plugin,
@@ -296,11 +319,13 @@ class RepairController:
 
         # A rejected candidate still consumes budget -- otherwise a scene
         # could be retried indefinitely by producing different bad results.
-        self.repairs_per_scene[str(stem)] = (
-            self.repairs_per_scene.get(str(stem), 0) + 1
-        )
-        self.total_repairs += 1
-        record.repairs_used_for_scene = self.repairs_per_scene[str(stem)]
+        # A dry run does not: it is a preview, not a real attempt.
+        if not dry_run:
+            self.repairs_per_scene[str(stem)] = (
+                self.repairs_per_scene.get(str(stem), 0) + 1
+            )
+            self.total_repairs += 1
+            record.repairs_used_for_scene = self.repairs_per_scene[str(stem)]
 
         return self._run_cycle(context, stem, plan, record)
 
@@ -437,6 +462,22 @@ class RepairController:
                     record,
                     decision,
                     reason,
+                    context=context,
+                    restored_revision=scope.base_revision,
+                )
+
+            if record.dry_run:
+                # Would accept -- but a dry run never commits. Restore the
+                # accepted scene exactly as any other non-commit path does,
+                # and report the WOULD-BE decision (ACCEPTED) so a caller
+                # can see the preview's verdict; record.accepted correctly
+                # reads False regardless, since it checks dry_run too.
+                self._restore(context, scope, accepted_results)
+
+                return self._finish(
+                    record,
+                    Decision.ACCEPTED,
+                    "[dry-run] would accept -- no changes committed",
                     context=context,
                     restored_revision=scope.base_revision,
                 )
@@ -785,8 +826,15 @@ class RepairController:
         # pass it, this is only a safety net for future/test callers.
         if context is not None:
             self._journal_repair_outcome(context, record, decision)
-            self._transition_after_repair(context, record.stem, decision)
-            self._record_revision_history(context, record, decision)
+
+            # A dry run (Phase 18) is a preview: it must leave zero trace
+            # in the scene's lifecycle state or its persisted revision
+            # history, regardless of what decision it would have reached.
+            # The journal event above still records it -- observability
+            # without commitment is exactly the point of a dry run.
+            if not record.dry_run:
+                self._transition_after_repair(context, record.stem, decision)
+                self._record_revision_history(context, record, decision)
 
         return record
 
@@ -852,7 +900,14 @@ class RepairController:
         record: RepairDecisionRecord,
         decision: Decision,
     ) -> None:
-        if decision is Decision.ACCEPTED:
+        if record.dry_run:
+            # A dry run never commits, so it is never a genuine
+            # scene.accepted -- always report it as a rollback (the
+            # candidate WAS opened and rendered, then always discarded)
+            # regardless of what decision it would have reached. The
+            # would-be decision is still in the payload.
+            event_type, status = "scene.rollback", "ok"
+        elif decision is Decision.ACCEPTED:
             event_type, status = "scene.accepted", "ok"
         elif record.restored_revision is not None:
             # A candidate was opened and then discarded -- a genuine
@@ -873,6 +928,7 @@ class RepairController:
                 "decision": decision.value,
                 "reason": record.rejection_reason,
                 "finding_diff": record.finding_diff,
+                "dry_run": record.dry_run,
             },
         )
 
