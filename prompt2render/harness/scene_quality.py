@@ -474,12 +474,90 @@ def new_blocking_types(
     return introduced
 
 
+def _resolved_blocking_types(
+    accepted: SceneQuality,
+    candidate: SceneQuality,
+) -> tuple[str, ...]:
+    """Blocking finding types present in the baseline but gone (or reduced)
+    in the candidate -- the counterpart to :func:`new_blocking_types`."""
+
+    resolved = [
+        finding_type
+        for finding_type, count in accepted.blocking_types.items()
+        if candidate.blocking_types.get(finding_type, 0) < count
+    ]
+
+    return tuple(sorted(resolved))
+
+
+def _unchanged_blocking_types(
+    accepted: SceneQuality,
+    candidate: SceneQuality,
+) -> tuple[str, ...]:
+    """Blocking finding types present in both baseline and candidate at the
+    same or a higher count -- present before, still present after."""
+
+    unchanged = [
+        finding_type
+        for finding_type, count in accepted.blocking_types.items()
+        if count > 0 and candidate.blocking_types.get(finding_type, 0) >= count
+    ]
+
+    return tuple(sorted(unchanged))
+
+
+@dataclass(frozen=True)
+class FindingDiff:
+    """The explainable difference between a baseline and a candidate.
+
+    This is what the brief's "why was the candidate accepted or rejected"
+    actually needs -- ``new_blocking_types``/``compare`` already produce a
+    verdict, but not the plain-English "what got fixed, what got broken,
+    what didn't move" a decision log reader (human or research script)
+    wants without re-deriving it from two ``blocking_types`` dicts by hand.
+    """
+
+    resolved: tuple[str, ...]
+    introduced: tuple[str, ...]
+    unchanged: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, list[str]]:
+        return {
+            "resolved": list(self.resolved),
+            "introduced": list(self.introduced),
+            "unchanged": list(self.unchanged),
+        }
+
+
+def diff_findings(
+    accepted: SceneQuality,
+    candidate: SceneQuality,
+) -> FindingDiff:
+    """Classify every blocking finding type as resolved/introduced/unchanged.
+
+    Restricted to blocking types deliberately -- warnings and passes churn
+    too much run-to-run (a verifier flipping ``skip``<->``pass`` on
+    unrelated evidence availability is not a "finding" in the sense the
+    brief means) to be useful signal in a decision log.
+    """
+
+    introduced = tuple(sorted(new_blocking_types(accepted, candidate)))
+
+    return FindingDiff(
+        resolved=_resolved_blocking_types(accepted, candidate),
+        introduced=introduced,
+        unchanged=_unchanged_blocking_types(accepted, candidate),
+    )
+
+
 __all__ = [
     "NUMERIC_EPSILON",
     "Comparison",
+    "FindingDiff",
     "SceneQuality",
     "Verdict",
     "classify",
     "compare",
+    "diff_findings",
     "new_blocking_types",
 ]

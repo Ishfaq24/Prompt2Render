@@ -129,6 +129,65 @@ def from_repair_records(
     return records
 
 
+def from_decision_records(
+    decisions: "list[Any]",
+) -> list[ExperienceRecord]:
+    """Convert the CURRENT repair controller's decision log into durable records.
+
+    Bug fix: :func:`from_repair_records` was always fed ``ctx.repair_records``,
+    a list only the *old* router-owned repair path ever populated. Since
+    :class:`~prompt2render.harness.repair_controller.RepairController`
+    replaced that path, ``ctx.repair_records`` has stayed permanently
+    empty and no project has ever produced a real
+    ``experience_memory.jsonl``. The authoritative record of what actually
+    happened during repair is
+    ``RepairController.decisions`` (``list[RepairDecisionRecord]``); this
+    is the adapter for that shape, kept separate from
+    :func:`from_repair_records` rather than changing its contract, since
+    that function has its own callers/tests built against the older
+    dict shape and may still see it from historical/replayed data.
+
+    Accepts ``RepairDecisionRecord`` instances or their ``.to_dict()``
+    dicts, so a caller reading decisions back from ``repair_log.jsonl``
+    can reuse this without re-inflating dataclasses first.
+    """
+
+    records: list[ExperienceRecord] = []
+
+    for entry in decisions:
+        data = entry.to_dict() if hasattr(entry, "to_dict") else entry
+
+        if not isinstance(data, dict):
+            continue
+
+        finding_type = data.get("trigger_finding_type")
+
+        if not finding_type:
+            continue
+
+        triggering = data.get("triggering_findings") or []
+        first = triggering[0] if triggering and isinstance(triggering[0], dict) else {}
+
+        records.append(
+            ExperienceRecord(
+                finding_type=str(finding_type),
+                mismatch_subtype=str(first.get("mismatch_subtype", "") or ""),
+                routed_to=[str(t) for t in (data.get("routed_to") or [])],
+                outcome=str(data.get("decision", "")),
+                # Each RepairDecisionRecord is exactly one repair cycle --
+                # unlike the old router shape, there is no separate
+                # per-finding-type cumulative counter to report instead.
+                cycles_used=1,
+                diagnostic_message=str(data.get("rejection_reason", "") or ""),
+                recorded_at=str(
+                    data.get("timestamp", "")
+                ) or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            )
+        )
+
+    return records
+
+
 def _experience_path(project_dir: Path) -> Path:
     return Path(project_dir) / "build" / "harness" / "experience_memory.jsonl"
 
@@ -232,6 +291,7 @@ __all__ = [
     "EXPERIENCE_SCHEMA_VERSION",
     "ExperienceRecord",
     "append_experience",
+    "from_decision_records",
     "from_repair_records",
     "load_experience",
     "summarize_recurring",

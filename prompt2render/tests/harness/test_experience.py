@@ -183,3 +183,87 @@ def test_summarize_recurring_counts_and_sorts_by_frequency():
 
 def test_summarize_recurring_empty_input():
     assert summarize_recurring([]) == []
+
+
+# ------------------------------------------------- from_decision_records ---
+# Bug fix: from_repair_records was always fed ctx.repair_records, which the
+# current RepairController never populates. from_decision_records reads
+# RepairController.decisions -- the actually-authoritative list -- instead.
+
+def test_from_decision_records_maps_repair_decision_record_shape():
+    from prompt2render.harness.experience import from_decision_records
+    from prompt2render.harness.repair_controller import Decision, RepairDecisionRecord
+
+    record = RepairDecisionRecord(
+        cycle_id=1,
+        stem="07",
+        trigger_finding_type="layout_violation",
+        source_plugin="verifier_layout",
+        routed_to=["generator_code"],
+        triggering_findings=[{"mismatch_subtype": "caption_collision"}],
+        decision=Decision.REGRESSION_REJECTED.value,
+        rejection_reason="quality regressed: blocking findings 0 -> 1",
+        timestamp="2026-01-01T00:00:00Z",
+    )
+
+    [result] = from_decision_records([record])
+
+    assert result.finding_type == "layout_violation"
+    assert result.mismatch_subtype == "caption_collision"
+    assert result.routed_to == ["generator_code"]
+    assert result.outcome == "regression_rejected"
+    assert result.cycles_used == 1
+    assert result.diagnostic_message == "quality regressed: blocking findings 0 -> 1"
+    assert result.recorded_at == "2026-01-01T00:00:00Z"
+
+
+def test_from_decision_records_accepts_plain_dicts_too():
+    from prompt2render.harness.experience import from_decision_records
+
+    [result] = from_decision_records(
+        [
+            {
+                "trigger_finding_type": "semantic_mismatch",
+                "routed_to": ["generator_manim"],
+                "decision": "accepted",
+                "rejection_reason": "",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "triggering_findings": [],
+            }
+        ]
+    )
+
+    assert result.finding_type == "semantic_mismatch"
+    assert result.outcome == "accepted"
+    assert result.mismatch_subtype == ""
+
+
+def test_from_decision_records_skips_entries_with_no_finding_type():
+    from prompt2render.harness.experience import from_decision_records
+
+    assert from_decision_records([{"decision": "accepted"}]) == []
+
+
+def test_from_decision_records_roundtrips_through_append_and_load(tmp_path):
+    from prompt2render.harness.experience import (
+        append_experience,
+        from_decision_records,
+        load_experience,
+    )
+    from prompt2render.harness.repair_controller import Decision, RepairDecisionRecord
+
+    record = RepairDecisionRecord(
+        cycle_id=1,
+        stem="07",
+        trigger_finding_type="layout_violation",
+        source_plugin="verifier_layout",
+        decision=Decision.ACCEPTED.value,
+        timestamp="2026-01-01T00:00:00Z",
+    )
+
+    append_experience(tmp_path, from_decision_records([record]))
+
+    loaded = load_experience(tmp_path)
+    assert len(loaded) == 1
+    assert loaded[0].finding_type == "layout_violation"
+    assert loaded[0].outcome == "accepted"

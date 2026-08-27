@@ -80,8 +80,19 @@ def _finding_for(
     recorded: Any,
     *,
     gate: bool,
-) -> Finding:
-    """Convert one recorded SceneKit warning into a harness Finding."""
+) -> dict[str, Any]:
+    """Convert one recorded SceneKit warning into a check-result dict.
+
+    Bug fix: this used to build ``result`` (with ``finding_type``,
+    ``mismatch_subtype``, ``audit_level``, ``recorded_problem`` all set on
+    it) and then return the untouched ``finding`` object instead. The
+    caller re-serialized via ``finding.as_check_result()``, which silently
+    dropped all four keys -- routing still worked by accident (via
+    ``_DEFAULT_FINDING_TYPE["verifier_spatial"]``), but the typed subtype
+    and raw SceneKit evidence never reached ``check_results``, so
+    ``SceneQuality``/``quality_report`` bucketed every spatial finding as
+    ``"unspecified"``. Returning the dict directly is the fix.
+    """
 
     text = str(
         recorded
@@ -146,7 +157,7 @@ def _finding_for(
         text
     )
 
-    return finding
+    return result
 
 
 def _audit_warnings(
@@ -285,14 +296,12 @@ class VerifierSpatialPlugin(Plugin):
             if warnings:
 
                 for warning in warnings:
-                    finding = _finding_for(
-                        stem,
-                        warning,
-                        gate=gate,
-                    )
-
                     findings.append(
-                        finding.as_check_result()
+                        _finding_for(
+                            stem,
+                            warning,
+                            gate=gate,
+                        )
                     )
 
                 continue

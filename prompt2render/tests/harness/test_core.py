@@ -149,8 +149,14 @@ def test_runner_executes_in_dependency_order(tmp_path):
 def test_runner_halts_on_hard_gate_failure(tmp_path):
     logger = StructuredLogger(tmp_path / "log.jsonl")
     runner = HarnessRunner([FailingGate()], logger)
+    # Bug fix (B6): a GateFailure makes the runner call
+    # write_self_correction_report(), which falls back to Path(".") when
+    # SceneContext.project_dir is unset -- leaking a real
+    # self_correction_report.json into whatever the test runner's cwd
+    # happens to be. project_dir=tmp_path keeps this test's side effects
+    # inside its own sandbox, matching every other test in this file.
     with pytest.raises(GateFailure):
-        runner.run(SceneContext())
+        runner.run(SceneContext(project_dir=tmp_path))
 
 
 class RaisesSystemExit(Plugin):
@@ -172,8 +178,12 @@ def test_runner_logs_and_propagates_system_exit(tmp_path):
     log_path = tmp_path / "log.jsonl"
     logger = StructuredLogger(log_path)
     runner = HarnessRunner([RaisesSystemExit()], logger)
+    # Bug fix (B6): see the matching comment on
+    # test_runner_halts_on_hard_gate_failure -- this path also triggers
+    # write_self_correction_report(), which leaks to cwd without an
+    # explicit project_dir.
     with pytest.raises(SystemExit):
-        runner.run(SceneContext())
+        runner.run(SceneContext(project_dir=tmp_path))
     lines = log_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     record = json.loads(lines[0])

@@ -408,6 +408,20 @@ class SceneContext:
         default_factory=dict
     )
 
+    #: ``{stem: SceneState.value}`` -- the explicit lifecycle state of each
+    #: scene. Stored as the enum's ``str`` value (not the enum itself) so
+    #: this field serializes the same way every other ``SceneContext``
+    #: field already does (``logging_._jsonable`` and plain
+    #: ``json.dumps`` both handle a plain string without special-casing).
+    #: See :mod:`prompt2render.harness.lifecycle` for the state machine and
+    #: :func:`prompt2render.harness.lifecycle.derive_state`, which seeds
+    #: this from ``CodeArtifact``/``scene_versions``/``check_results`` for
+    #: scenes that predate this field's introduction -- no project
+    #: migration is required.
+    scene_states: dict[str, str] = field(
+        default_factory=dict
+    )
+
     #: The repair candidate currently under evaluation, if any. Set by
     #: ``workspace.open_candidate`` and cleared on promote/discard, so
     #: generators and renderers can write to sidecar paths without the

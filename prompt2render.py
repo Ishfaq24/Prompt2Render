@@ -371,15 +371,26 @@ def cmd_harness(a):
         # never raises, so this can't mask the real GateFailure below.
         from prompt2render.harness.quality_report import write_quality_report
         write_quality_report(ctx.check_results, ctx.project_dir)
-        # Tier 3 Phase 15: same reasoning -- repair_records is complete
-        # regardless of the final gate outcome, and a hard-failed run's
-        # repair episodes are exactly the ones worth remembering for next
-        # time. Never raises.
+        # Tier 3 Phase 15: same reasoning -- the repair controller's
+        # decision log is complete regardless of the final gate outcome,
+        # and a hard-failed run's repair episodes are exactly the ones
+        # worth remembering for next time. Never raises.
+        #
+        # Bug fix: this used to read ctx.repair_records, a list only the
+        # OLD router-owned repair path ever populated -- RepairController
+        # (the current repair owner) never wrote to it, so
+        # experience_memory.jsonl was never actually produced by any real
+        # run. from_decision_records reads the controller's own
+        # authoritative decisions instead.
         from prompt2render.harness.experience import (
             append_experience,
-            from_repair_records,
+            from_decision_records,
         )
-        append_experience(ctx.project_dir, from_repair_records(ctx.repair_records))
+        if repair_controller is not None:
+            append_experience(
+                ctx.project_dir,
+                from_decision_records(repair_controller.decisions),
+            )
 
         # Tier 4, HUMAN_ON_FAILURE mode: draft hitl_review_needed.json from
         # this exact failure's findings instead of leaving the human to
@@ -407,15 +418,39 @@ def cmd_harness(a):
     from prompt2render.harness.quality_report import write_quality_report
     write_quality_report(ctx.check_results, ctx.project_dir)
 
+    # Bug fix: write_self_correction_report(final_pass=True) was never
+    # called anywhere -- the three existing call sites are all inside
+    # runner.py's failure paths (gate failure, stage exception,
+    # finalization failure). A successful run therefore left
+    # out/self_correction_report.json either absent or holding a stale
+    # report from the project's last *failed* attempt, silently claiming
+    # final_pass=False for a build that just shipped out/final.mp4. Called
+    # unguarded here, matching every existing call site inside
+    # runner.py's own failure paths (none of them wrap it either).
+    from prompt2render.harness.logging_ import write_self_correction_report
+    write_self_correction_report(
+        ctx,
+        final_pass=True,
+        repair_controller=repair_controller,
+    )
+
     # Tier 3 Phase 15: durable, cross-run experience memory -- see
     # harness/experience.py's module docstring for the gap this closes
     # (repair_context is deleted on success; self_correction_report.json is
     # overwritten every run; nothing previously survived across builds).
+    #
+    # Bug fix: see the matching comment in the GateFailure branch above --
+    # ctx.repair_records is never populated by the current repair
+    # controller; from_decision_records(repair_controller.decisions) is.
     from prompt2render.harness.experience import (
         append_experience,
-        from_repair_records,
+        from_decision_records,
     )
-    append_experience(ctx.project_dir, from_repair_records(ctx.repair_records))
+    if repair_controller is not None:
+        append_experience(
+            ctx.project_dir,
+            from_decision_records(repair_controller.decisions),
+        )
 
     # The default harness now runs timeline -> encode -> finish -> final QC ->
     # publish natively. Do not run qc.check a second time; it would repeat the

@@ -104,6 +104,18 @@ VERIFIER_DIMENSIONS: dict[str, str] = {
     "verifier_semantic": "semantic",
     "verifier_temporal": "temporal",
     "verifier_spatial": "spatial",
+    # Bug fix: this was the one deterministic verifier with real geometric
+    # detection (caption collision, crowding, out-of-bounds, title
+    # collision -- see verifier_layout's own LAYOUT_BLOCKING_KINDS) and it
+    # was absent here entirely. verifier_spatial only re-surfaces the
+    # renderer's own audit record and is inert on the Manim path (no
+    # audit is ever set there without observer_visual); verifier_layout is
+    # the actual layout critic. Its omission meant the strongest layout
+    # gate contributed nothing to overall_score even when it hard-gated
+    # the run. Mapped to the same "spatial" dimension as verifier_spatial
+    # -- both describe on-frame geometry, and quality_report's dimensions
+    # are content-quality buckets, not one-verifier-per-bucket.
+    "verifier_layout": "spatial",
     # Tier 3 Phase 12: the first real producer of the "motion" dimension --
     # it was declared in Phase 10 with zero producers until now.
     "verifier_motion": "motion",

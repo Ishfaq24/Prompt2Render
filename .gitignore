@@ -25,3 +25,4 @@ tools/kokoro/*.bin
 # OS
 .DS_Store
 Thumbs.db
+self_correction_report.json

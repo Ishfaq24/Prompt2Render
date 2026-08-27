@@ -45,9 +45,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from . import lineage
+from . import lineage, regression
 from .context import HistoryEntry, SceneContext, snapshot
 from .events import EventBus
+from .journal import EventJournal
 from .logging_ import (
     StructuredLogger,
     write_self_correction_report,
@@ -123,11 +124,17 @@ class HarnessRunner:
         *,
         repair_controller: RepairController | None = None,
         enforce_final_video: bool = True,
+        journal: EventJournal | None = None,
     ) -> None:
         self.plugins = list(plugins)
         self.logger = logger
         self.bus = bus or EventBus()
         self.repair_controller = repair_controller
+
+        #: Durable event journal (P0-1). Optional -- ``None`` keeps every
+        #: existing caller (tests, the ablation runner) working unchanged;
+        #: only ``cmd_harness`` constructs one for real runs.
+        self.journal = journal
 
         #: When False, the reachability invariant is not enforced -- used by
         #: partial pipelines (the ablation runner, focused tests) that
@@ -158,15 +165,40 @@ class HarnessRunner:
            ``out/final.mp4`` built from the current revisions must exist.
         """
 
-        for index, plugin in enumerate(self.plugins):
-            ctx = self._run_one(
-                plugin,
-                ctx,
-                halt_on_gate_failure=halt_on_gate_failure,
-                plugin_index=index,
+        if self.journal is not None:
+            self.journal.append(
+                event_type="build.started",
+                project=_project_name(ctx),
+                scene_id=lineage.GLOBAL_STEM,
+                payload={"plugins": [p.name for p in self.plugins]},
             )
 
-        self._check_final_video_reachable(ctx, halt_on_gate_failure)
+        try:
+            for index, plugin in enumerate(self.plugins):
+                ctx = self._run_one(
+                    plugin,
+                    ctx,
+                    halt_on_gate_failure=halt_on_gate_failure,
+                    plugin_index=index,
+                )
+
+            self._check_final_video_reachable(ctx, halt_on_gate_failure)
+        except (Exception, SystemExit):
+            if self.journal is not None:
+                self.journal.append(
+                    event_type="build.failed",
+                    project=_project_name(ctx),
+                    scene_id=lineage.GLOBAL_STEM,
+                    status="fail",
+                )
+            raise
+
+        if self.journal is not None:
+            self.journal.append(
+                event_type="build.completed",
+                project=_project_name(ctx),
+                scene_id=lineage.GLOBAL_STEM,
+            )
 
         return ctx
 
@@ -194,7 +226,11 @@ class HarnessRunner:
         started = time.monotonic()
         diagnostics = ""
 
+        before_fingerprints = regression.scene_fingerprints(ctx)
+
         ctx = self._execute(plugin, ctx, snap, started)
+
+        self._widen_reverification_for_regressions(ctx, plugin, before_fingerprints)
 
         self._normalize(ctx, plugin)
         self._stamp_revisions(ctx, plugin)
@@ -270,6 +306,99 @@ class HarnessRunner:
         )
 
         return ctx
+
+    def _widen_reverification_for_regressions(
+        self,
+        ctx: SceneContext,
+        plugin: Plugin,
+        before: dict[str, tuple],
+    ) -> None:
+        """Detect collateral scene-plan edits and drop their stale evidence.
+
+        Closes a real gap (SS15's implicit contract #2, ``regression.py``'s
+        own docstring): ``revert_scene``/``regenerate_one`` are duck-typed
+        and only 5 plugins implement them; every other repair target
+        (``reviser_script`` being the one live example, which rewrites the
+        *entire* script) silently degrades to a full ``target.run(ctx)``,
+        which can rewrite ``scene_plan`` content for stems *other* than
+        whichever one a repair was routed for. Nothing else in the runner
+        would ever notice -- the revision-based staleness in
+        ``lineage.drop_stale_results``/``invalidate_scene`` only fires when
+        ``scene_versions[stem]`` is bumped, which a whole-script rewrite
+        does not do.
+
+        ``regression.scene_fingerprints``/``changed_stems`` exist for
+        exactly this and were never wired in (this was dead code before
+        this fix -- confirmed by grep, referenced only by its own test).
+        Wiring is deliberately unconditional and cheap: it runs around
+        every stage, not just known whole-scope repair targets, because
+        the failure mode this closes is future-proofing against *any*
+        plugin gaining this shape, not just today's one instance.
+
+        Purely additive/widening: dropping a stem's stale ``check_results``
+        entries can only cause it to be re-verified later in the DAG, never
+        skip a check that would otherwise have run.
+        """
+
+        after = regression.scene_fingerprints(ctx)
+
+        # Restricted to stems that already existed *before* this stage ran
+        # -- a brand-new stem (this stage's own scene_plan entry, e.g. the
+        # very first planner) is not a regression, it is that stem's first
+        # appearance, and has no pre-existing check_results to protect.
+        # ``changed_stems`` itself treats "added" the same as "edited"
+        # (correct for its own narrower contract), so the added/edited
+        # distinction is made here, not there.
+        changed = regression.changed_stems(before, after) & before.keys()
+
+        if not changed:
+            return
+
+        for stem in sorted(changed):
+            # lineage.drop_stale_results only removes entries already
+            # stale *by revision*. A silent scene-plan edit does not bump
+            # scene_versions, so nothing is stale by that definition yet --
+            # the whole point of this method is to widen re-verification
+            # beyond what revision comparison alone can see. Force-clear
+            # this stem's existing findings outright so every scene-scoped
+            # verifier still ahead in the DAG treats it as unverified
+            # again, exactly as if its revision had bumped.
+            removed = 0
+
+            for verifier_name, results in list(ctx.check_results.items()):
+                if not isinstance(results, list):
+                    continue
+
+                kept = [
+                    result
+                    for result in results
+                    if not (
+                        isinstance(result, dict)
+                        and str(result.get("stem") or result.get("scene_id") or "")
+                        == stem
+                    )
+                ]
+
+                if len(kept) != len(results):
+                    removed += len(results) - len(kept)
+                    ctx.check_results[verifier_name] = kept
+
+            if self.journal is not None:
+                self.journal.append(
+                    event_type="cache.invalidated",
+                    project=_project_name(ctx),
+                    scene_id=stem,
+                    revision=ctx.scene_versions.get(stem, 0),
+                    status="ok",
+                    payload={
+                        "reason": (
+                            f"{plugin.name} silently changed scene_plan "
+                            f"content for stem {stem!r}; cleared "
+                            f"{removed} existing finding(s) to force "
+                            "re-verification"
+                        ),
+                    },
+                )
 
     def _execute(
         self,
@@ -573,6 +702,21 @@ class HarnessRunner:
             if isinstance(finding, dict)
             and classify(finding) == "blocking"
         ]
+
+
+# ---------------------------------------------------------------------------
+# Durable journal helpers
+# ---------------------------------------------------------------------------
+
+def _project_name(ctx: SceneContext) -> str:
+    """Best-effort project identifier for durable event payloads."""
+
+    project_dir = getattr(ctx, "project_dir", None)
+
+    if project_dir is None:
+        return ""
+
+    return getattr(project_dir, "name", str(project_dir))
 
 
 # ---------------------------------------------------------------------------

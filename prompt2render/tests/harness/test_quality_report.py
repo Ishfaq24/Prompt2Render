@@ -266,3 +266,27 @@ def test_write_quality_report_never_raises_on_bad_input():
     # GateFailure) and must never mask the real outcome.
     result = write_quality_report("not a dict", "/definitely/not/a/real/path")  # type: ignore[arg-type]
     assert result is None
+
+
+def test_verifier_layout_is_mapped_to_spatial_dimension():
+    # Bug fix: verifier_layout -- the real deterministic layout critic --
+    # was entirely absent from VERIFIER_DIMENSIONS, so its findings never
+    # moved overall_score even when it hard-gated a run.
+    from prompt2render.harness.quality_report import VERIFIER_DIMENSIONS
+
+    assert VERIFIER_DIMENSIONS["verifier_layout"] == "spatial"
+
+
+def test_verifier_layout_findings_contribute_to_spatial_dimension():
+    check_results = {
+        "verifier_layout": [
+            {"stem": "07", "status": "fail", "severity": "BLOCKING", "finding_type": "layout_violation"}
+        ],
+    }
+
+    report = build_quality_report(check_results)
+
+    assert report.dimensions["spatial"].total == 1
+    assert report.dimensions["spatial"].blocking == 1
+    assert "verifier_layout" in report.dimensions["spatial"].verifiers
+    assert "verifier_layout" not in report.unmapped_verifiers
