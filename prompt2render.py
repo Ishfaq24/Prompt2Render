@@ -209,6 +209,43 @@ def cmd_build(a):
         d, s = _load(a.slug)
         sys.exit(_run_pipeline(d, s, a))
 
+def _report_self_check(ctx, journal) -> None:
+    """Run the harness self-check (P1-3) and surface what it finds.
+
+    Never a gate -- this never raises and never calls sys.exit. It prints
+    BLOCKING findings (a real, on-disk inconsistency, not a content
+    judgment) and journals a harness.selfcheck summary event either way,
+    so "did the harness's own bookkeeping check out" is answered from
+    build/harness/events.jsonl even when nobody read the console output.
+    """
+
+    try:
+        from prompt2render.harness.selfcheck import run_self_check
+
+        findings = run_self_check(ctx)
+    except Exception as exc:
+        cfg.warn(f"harness self-check itself raised {type(exc).__name__}: {exc}")
+        findings = []
+
+    blocking = [f for f in findings if f.get("severity") == "BLOCKING"]
+
+    for finding in blocking:
+        cfg.warn(f"harness self-check: {finding.get('detail')}")
+
+    if journal is not None:
+        project = ctx.project_dir.name if ctx.project_dir else ""
+        journal.append(
+            event_type="harness.selfcheck",
+            project=project,
+            scene_id="__all__",
+            status="fail" if blocking else "ok",
+            payload={
+                "total_findings": len(findings),
+                "blocking": len(blocking),
+            },
+        )
+
+
 def cmd_harness(a):
     """Run the harness pipeline explicitly."""
     from prompt2render.harness.context import SceneContext
@@ -390,6 +427,12 @@ def cmd_harness(a):
         from prompt2render.harness.revision_history import seed_from_context
         seed_from_context(ctx.project_dir, ctx)
 
+        # P1-3: the harness's own consistency audit -- never a new gate,
+        # only a printed/journaled fact. See selfcheck.py's module
+        # docstring: this is what stands between "an LLM said it fixed
+        # it" and an actual answer about what is on disk.
+        _report_self_check(ctx, journal)
+
         # Tier 3 Phase 15: same reasoning -- the repair controller's
         # decision log is complete regardless of the final gate outcome,
         # and a hard-failed run's repair episodes are exactly the ones
@@ -440,6 +483,9 @@ def cmd_harness(a):
     # P1-2: see the matching comment in the GateFailure branch above.
     from prompt2render.harness.revision_history import seed_from_context
     seed_from_context(ctx.project_dir, ctx)
+
+    # P1-3: see the matching comment in the GateFailure branch above.
+    _report_self_check(ctx, journal)
 
     # Bug fix: write_self_correction_report(final_pass=True) was never
     # called anywhere -- the three existing call sites are all inside
