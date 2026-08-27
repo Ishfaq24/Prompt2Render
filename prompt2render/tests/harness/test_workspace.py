@@ -262,3 +262,97 @@ def test_cleanup_removes_leftover_trees(tmp_path):
     workspace.cleanup_candidates(tmp_path)
 
     assert not scope.root.exists()
+
+
+# --------------------------------------------------------- Manim-mode promote
+
+def _manim_project(tmp_path: Path) -> tuple[SceneContext, Path]:
+    """A context with one accepted Manim scene 03, rendered to sections/03.mp4.
+
+    Mirrors what RendererManimPlugin actually leaves in context.render_artifacts
+    (clip + manifest[0]["mp4"] both set to the same path) -- see
+    test_renderer_manim_finish.py's own regression note on that contract.
+    """
+
+    canonical = tmp_path / "build" / "manim" / "scene_03.py"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_text(ACCEPTED_SOURCE, encoding="utf-8")
+
+    accepted_clip = tmp_path / "sections" / "03.mp4"
+    accepted_clip.parent.mkdir(parents=True, exist_ok=True)
+    accepted_clip.write_bytes(b"accepted clip bytes")
+
+    ctx = SceneContext(project_dir=tmp_path)
+    ctx.scene_versions["03"] = 1
+    ctx.code_artifacts["03"] = CodeArtifact(
+        stem="03", path=canonical, accepted=True, revision=1
+    )
+    ctx.render_artifacts["03"] = RenderArtifact(
+        stem="03",
+        outdir=accepted_clip.parent,
+        clip=accepted_clip,
+        manifest=[{"png": None, "mp4": str(accepted_clip)}],
+        source_revision=1,
+    )
+    return ctx, canonical
+
+
+def test_promote_manim_mode_moves_the_candidate_clip_onto_sections(tmp_path):
+    """Regression: RendererManimFinishPlugin needs RenderArtifact.clip to
+    point at a file that still exists after promote(). Before this fix,
+    promote() only handled the stills path (a whole per-scene render
+    directory to swap); Manim mode has no such directory -- one file per
+    section, shared across all sections in `sections/` -- so
+    canonical_render_dir is always None here, and the candidate's mp4 was
+    silently deleted by scope.root's cleanup while RenderArtifact.clip kept
+    pointing at that now-gone path. A scene that passed judging still
+    crashed downstream in the finish stage: "no rendered clip for section N".
+    """
+    ctx, canonical = _manim_project(tmp_path)
+    scope = workspace.open_candidate(ctx, "03", canonical_code=canonical)
+
+    scope.code_path.write_text("# repaired scene 03\n", encoding="utf-8")
+    candidate_clip = scope.render_dir / "03.mp4"
+    candidate_clip.write_bytes(b"repaired clip bytes")
+    ctx.render_artifacts["03"] = RenderArtifact(
+        stem="03",
+        outdir=scope.render_dir,
+        clip=candidate_clip,
+        manifest=[{"png": None, "mp4": str(candidate_clip)}],
+        source_revision=1,
+    )
+
+    revision = workspace.promote(
+        ctx, scope, canonical_code=canonical, canonical_render_dir=None
+    )
+
+    assert revision == 2
+    render = ctx.render_artifacts["03"]
+
+    # The clip must live somewhere that still exists after scope.root is
+    # cleaned up, and every artifact field pointing at it must agree.
+    assert not scope.root.exists()
+    assert render.clip is not None
+    assert render.clip.exists()
+    assert render.clip == tmp_path / "sections" / "03.mp4"
+    assert render.clip.read_bytes() == b"repaired clip bytes"
+    assert render.manifest[0]["mp4"] == str(render.clip)
+    assert render.outdir == render.clip.parent
+
+
+def test_promote_manim_mode_is_a_noop_when_no_new_clip_was_rendered(tmp_path):
+    """A repair that only touched code (no re-render) must not crash trying
+    to move a clip that was never produced in the candidate."""
+    ctx, canonical = _manim_project(tmp_path)
+    scope = workspace.open_candidate(ctx, "03", canonical_code=canonical)
+    scope.code_path.write_text("# repaired scene 03\n", encoding="utf-8")
+
+    revision = workspace.promote(
+        ctx, scope, canonical_code=canonical, canonical_render_dir=None
+    )
+
+    assert revision == 2
+    render = ctx.render_artifacts["03"]
+    # The pre-existing accepted clip is left exactly where it was.
+    assert render.clip == tmp_path / "sections" / "03.mp4"
+    assert render.clip.exists()

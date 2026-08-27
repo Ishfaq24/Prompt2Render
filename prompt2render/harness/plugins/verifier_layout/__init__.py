@@ -38,6 +38,7 @@ import base64
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +148,11 @@ def _audit_warnings(record: dict[str, Any]) -> list[Any]:
 
 DEFAULT_LAYOUT_MODEL = "gemini-3.7-flash"
 MAX_CODE_CHARS = 24000
+
+# See verifier_semantic's DEFAULT_VERIFIER_WORKERS for the rationale: each
+# scene's VLM layout review is an independent round trip, previously run
+# strictly sequentially across every scene in the programme.
+DEFAULT_VERIFIER_WORKERS = 4
 
 
 def _ensure_keys() -> list[str]:
@@ -421,66 +427,105 @@ class VerifierLayoutPlugin(Plugin):
                 keys = []
 
         if keys:
+            candidates = []
             for entry in getattr(context, "scene_plan", []) or []:
                 stem = str(getattr(entry, "stem", "") or "").strip()
-                if not stem:
-                    continue
-                if stem in stems_with_blocking:
+                if not stem or stem in stems_with_blocking:
                     continue
                 artifact = context.code_artifacts.get(stem)
                 if artifact is None or artifact.path is None or not artifact.path.exists():
                     continue
-                preview = _preview_path(context, stem)
-                has_preview = preview.exists() and _preview_is_fresh(preview, artifact.path)
-                # In repair, force VLM if in_repair even without preview? mirror semantic logic: only if in_repair or has_preview
-                repair_context = getattr(context, "repair_context", {}) or {}
-                in_repair = stem in repair_context if isinstance(repair_context, dict) else False
-                if not has_preview and not in_repair:
-                    continue
-                try:
-                    code = artifact.path.read_text(encoding="utf-8")
-                except Exception:
-                    continue
-                if len(code) > MAX_CODE_CHARS:
-                    code = code[:MAX_CODE_CHARS] + "\n\n# [CODE TRUNCATED FOR REVIEW]\n"
-                # For Manim, preview may need regeneration during repair
-                if in_repair:
-                    try:
-                        from ....project import parse_script
-                        from ....visuals import manim_scene
-                        script = parse_script(context.prompt)
-                        preview.unlink(missing_ok=True)
-                        manim_scene(context.project_dir, script, f"Scene{stem}", entry.index)
-                        has_preview = preview.exists() and _preview_is_fresh(preview, artifact.path)
-                    except Exception:
-                        pass
-                prompt = _build_layout_prompt(entry, code, has_preview=has_preview)
-                image_b64 = base64.b64encode(preview.read_bytes()).decode("ascii") if has_preview else None
-                model = _model_name()
-                try:
-                    content = llm.complete(
-                        prompt,
-                        max_tokens=800,
-                        model_env="P2R_SCENE_MODEL",
-                        default_model=model,
-                        label="layout",
-                        image_base64=image_b64,
-                        json_object=True,
+                candidates.append((stem, entry, artifact))
+
+            workers = max(
+                1,
+                cfg.env_int("P2R_VERIFIER_WORKERS", DEFAULT_VERIFIER_WORKERS),
+            )
+
+            # Each candidate's VLM review is an independent round trip (own
+            # code, own preview); dispatch concurrently rather than one
+            # scene at a time, then apply the resulting findings to the
+            # shared list back on this thread so nothing here races.
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                vlm_results = list(
+                    pool.map(
+                        lambda c: self._vlm_review_one(context, c[0], c[1], c[2], gate),
+                        candidates,
                     )
-                    result = _normalize_result(_extract_json(str(content or "")))
-                    if result is None:
-                        continue
-                    if result["status"] == "fail":
-                        vlm_finding = _make_vlm_layout_finding(stem=stem, result=result, gate=gate)
-                        # Remove any prior pass for this stem (deterministic clean) to avoid duplicate pass
-                        findings = [f for f in findings if not (str(f.get("stem") or "") == stem and str(f.get("finding_type")) == "layout_audit" and str(f.get("status")) == "pass")]
-                        findings.append(vlm_finding)
-                except Exception as exc:
-                    cfg.warn(f"Layout VLM verification failed for {stem}: {exc}")
+                )
+
+            for stem, vlm_finding in vlm_results:
+                if vlm_finding is None:
                     continue
+                # Remove any prior pass for this stem (deterministic clean) to avoid duplicate pass
+                findings = [f for f in findings if not (str(f.get("stem") or "") == stem and str(f.get("finding_type")) == "layout_audit" and str(f.get("status")) == "pass")]
+                findings.append(vlm_finding)
 
         context.check_results[self.name] = findings
         return context
+
+    def _vlm_review_one(
+        self,
+        context: SceneContext,
+        stem: str,
+        entry,
+        artifact,
+        gate: bool,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """One scene's VLM layout review; returns (stem, finding-or-None).
+
+        Split out of ``run()`` so independent scenes' LLM round trips can be
+        dispatched to a thread pool without any of them mutating shared
+        state directly.
+        """
+
+        preview = _preview_path(context, stem)
+        has_preview = preview.exists() and _preview_is_fresh(preview, artifact.path)
+        # In repair, force VLM if in_repair even without preview? mirror semantic logic: only if in_repair or has_preview
+        repair_context = getattr(context, "repair_context", {}) or {}
+        in_repair = stem in repair_context if isinstance(repair_context, dict) else False
+        if not has_preview and not in_repair:
+            return stem, None
+        try:
+            code = artifact.path.read_text(encoding="utf-8")
+        except Exception:
+            return stem, None
+        if len(code) > MAX_CODE_CHARS:
+            code = code[:MAX_CODE_CHARS] + "\n\n# [CODE TRUNCATED FOR REVIEW]\n"
+        # For Manim, preview may need regeneration during repair
+        if in_repair:
+            try:
+                from ....project import parse_script
+                from ....visuals import manim_scene
+                script = parse_script(context.prompt)
+                preview.unlink(missing_ok=True)
+                manim_scene(context.project_dir, script, f"Scene{stem}", entry.index)
+                has_preview = preview.exists() and _preview_is_fresh(preview, artifact.path)
+            except Exception:
+                pass
+        prompt = _build_layout_prompt(entry, code, has_preview=has_preview)
+        image_b64 = base64.b64encode(preview.read_bytes()).decode("ascii") if has_preview else None
+        model = _model_name()
+        try:
+            content = llm.complete(
+                prompt,
+                max_tokens=800,
+                model_env="P2R_SCENE_MODEL",
+                default_model=model,
+                label="layout",
+                image_base64=image_b64,
+                json_object=True,
+            )
+            result = _normalize_result(_extract_json(str(content or "")))
+            if result is None:
+                return stem, None
+            if result["status"] == "fail":
+                return stem, _make_vlm_layout_finding(stem=stem, result=result, gate=gate)
+        except Exception as exc:
+            cfg.warn(f"Layout VLM verification failed for {stem}: {exc}")
+            return stem, None
+
+        return stem, None
 
     def _default_gate(self) -> bool:
         return True

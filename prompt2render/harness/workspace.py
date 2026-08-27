@@ -230,12 +230,43 @@ def promote(
     if scope.code_path.exists():
         _replace(scope.code_path, Path(canonical_code))
 
+    render = context.render_artifacts.get(stem)
+
     if (
         canonical_render_dir is not None
         and scope.render_dir.exists()
         and any(scope.render_dir.iterdir())
     ):
+        # Per-scene render directory (stills path): swap the whole tree.
         _replace(scope.render_dir, Path(canonical_render_dir))
+    elif (
+        render is not None
+        and render.clip is not None
+        and render.clip.exists()
+        and scope.render_dir in render.clip.parents
+    ):
+        # Manim path: _canonical_render_dir() returns None here because
+        # there is no per-scene render directory to swap -- every section's
+        # clip lives together in one shared `sections/` directory. Only the
+        # single rendered file needs to survive scope.root's cleanup below.
+        # Before this, the candidate's mp4 was silently deleted by that
+        # cleanup while RenderArtifact.clip/manifest kept pointing at the
+        # now-gone candidate path -- so a scene that passed judging here
+        # still crashed downstream in the finish stage with "no rendered
+        # clip for section N", even though the fix had genuinely worked.
+        #
+        # The `scope.render_dir in render.clip.parents` guard matters: if
+        # this repair cycle never re-rendered (code-only fix), `render.clip`
+        # still points at the OLD accepted clip in `sections/`, not at
+        # anything under this candidate -- moving it "onto itself" would be
+        # a no-op at best, but must not be attempted as if it were new work.
+        dest = Path(context.project_dir) / "sections" / render.clip.name
+        _replace(render.clip, dest)
+        render.clip = dest
+
+        for entry in render.manifest:
+            if entry.get("mp4"):
+                entry["mp4"] = str(dest)
 
     shutil.rmtree(scope.root, ignore_errors=True)
 
@@ -249,13 +280,13 @@ def promote(
         code.path = Path(canonical_code)
         code.revision = revision
 
-    render = context.render_artifacts.get(stem)
-
     if render is not None:
         render.source_revision = revision
 
         if canonical_render_dir is not None:
             render.outdir = Path(canonical_render_dir)
+        elif render.clip is not None:
+            render.outdir = render.clip.parent
 
     context.candidate = None
 

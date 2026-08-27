@@ -28,6 +28,7 @@ import base64
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,18 @@ from .... import cfg, llm
 DEFAULT_MODEL = "gemini-3.7-flash"
 MAX_CODE_CHARS = 24000
 MAX_PROMPT_CHARS = 50000
+
+# Each scene's semantic review is an independent vision-LLM call (its own
+# code + its own preview image); the wall-clock cost of this verifier used to
+# be sum(per-scene latency) run strictly sequentially -- e.g. 9 scenes at
+# 60-120s each meant 15-20 minutes for this one plugin. The requests are
+# I/O-bound (waiting on the Gemini API), so running them concurrently is a
+# straightforward win with no change in what gets checked. Kept modest by
+# default so a single API key isn't hit with a burst large enough to trip
+# its own rate limit -- llm.complete()'s per-call model/key rotation already
+# handles a 429 gracefully, but more concurrent requests just means more of
+# them racing for the same quota.
+DEFAULT_VERIFIER_WORKERS = 4
 
 
 # ---------------------------------------------------------------------------
@@ -737,246 +750,284 @@ class VerifierSemanticPlugin(Plugin):
 
         gate = self.is_gate()
 
-        for entry in context.scene_plan:
-
-            artifact = (
-                context.code_artifacts.get(
-                    entry.stem
-                )
-            )
-
+        entries = [
+            entry
+            for entry in context.scene_plan
             if (
-                artifact is None
-                or artifact.path is None
-                or not artifact.path.exists()
+                context.code_artifacts.get(entry.stem) is not None
+                and context.code_artifacts[entry.stem].path is not None
+                and context.code_artifacts[entry.stem].path.exists()
+            )
+        ]
+
+        workers = max(
+            1,
+            cfg.env_int("P2R_VERIFIER_WORKERS", DEFAULT_VERIFIER_WORKERS),
+        )
+
+        # Each entry is an independent vision-LLM round trip (own code, own
+        # preview) -- see DEFAULT_VERIFIER_WORKERS for why this runs
+        # concurrently rather than one scene at a time.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for local_findings in pool.map(
+                lambda entry: self._verify_entry(
+                    context,
+                    entry,
+                    gate,
+                    repair_context,
+                    model,
+                ),
+                entries,
             ):
-                continue
-
-            try:
-                code = artifact.path.read_text(
-                    encoding="utf-8"
-                )
-            except Exception as exc:
-                findings.append(
-                    _make_finding(
-                        stem=entry.stem,
-                        gate=gate,
-                        result={
-                            "status": "fail",
-                            "reason": (
-                                "Could not read generated "
-                                f"scene source: {exc}"
-                            ),
-                        },
-                    )
-                )
-
-                continue
-
-            if len(code) > MAX_CODE_CHARS:
-                code = code[
-                    :MAX_CODE_CHARS
-                ] + (
-                    "\n\n# [CODE TRUNCATED FOR REVIEW]\n"
-                )
-
-            # ----------------------------------------------------------
-            # Fresh preview during repair
-            # ----------------------------------------------------------
-
-            preview = _preview_path(
-                context,
-                entry.stem,
-            )
-
-            if entry.stem in repair_context:
-                try:
-                    regenerated = (
-                        _regenerate_preview(
-                            context,
-                            entry,
-                        )
-                    )
-
-                    if regenerated is not None:
-                        preview = regenerated
-
-                except Exception as exc:
-                    findings.append(
-                        _make_finding(
-                            stem=entry.stem,
-                            gate=gate,
-                            result={
-                                "status": "fail",
-                                "reason": str(exc),
-                            },
-                        )
-                    )
-
-                    continue
-
-            # ----------------------------------------------------------
-            # Build prompt
-            # ----------------------------------------------------------
-
-            # A preview that predates the code it depicts is not evidence
-            # about this scene -- see _preview_is_fresh().
-            has_preview = (
-                preview.exists()
-                and _preview_is_fresh(
-                    preview,
-                    artifact.path,
-                )
-            )
-
-            prompt = _build_prompt(
-                entry,
-                code,
-                has_preview=has_preview,
-            )
-
-            image_base64 = (
-                base64.b64encode(
-                    preview.read_bytes()
-                ).decode("ascii")
-                if has_preview
-                else None
-            )
-
-            # ----------------------------------------------------------
-            # LLM call
-            # ----------------------------------------------------------
-            #
-            # Always route through llm.complete(), preview or not. It owns
-            # the deterministic key/model rotation (retry on 429, fall back
-            # to the next model once every key is quota-exhausted) that
-            # every other harness LLM call site already relies on. The old
-            # raw client.chat.completions.create() fallback used whenever a
-            # preview image was attached had none of that: a single 429
-            # (even a transient one) went straight to `except Exception`
-            # below and became a hard BLOCKING semantic_mismatch finding,
-            # gating the whole pipeline on what was actually a quota hiccup.
-
-            # A single transient hiccup -- a malformed/truncated critic
-            # response, or an LLM call that raised despite llm.complete()'s
-            # own key/model rotation -- used to become a permanent BLOCKING
-            # finding on the first try, fail-closed with no second chance.
-            # That is the right call once it's actually reproduced (see
-            # "fail closed" below), but not on a one-off blip: it turned a
-            # momentary overload into a hard gate failure for the whole
-            # harness run. One silent retry before recording anything gives
-            # a blip a chance to clear while still failing closed if the
-            # problem repeats.
-            result = None
-            gave_up = False
-
-            for attempt in (1, 2):
-                try:
-                    content = llm.complete(
-                        prompt,
-                        max_tokens=1400,
-                        model_env="P2R_SCENE_MODEL",
-                        default_model=model,
-                        label="semantic",
-                        image_base64=image_base64,
-                        json_object=True,
-                    )
-
-                    parsed = _normalize_result(
-                        _extract_json(
-                            str(
-                                content or ""
-                            )
-                        )
-                    )
-
-                    if parsed is not None:
-                        result = parsed
-                        break
-
-                    # ------------------------------------------------------
-                    # Fail closed on malformed critic output.
-                    # ------------------------------------------------------
-                    if attempt == 2:
-                        findings.append(
-                            _make_finding(
-                                stem=entry.stem,
-                                gate=gate,
-                                result={
-                                    "status": "fail",
-                                    "reason": (
-                                        "Semantic critic returned "
-                                        "invalid structured output; "
-                                        "verification could not establish "
-                                        "semantic correctness."
-                                    ),
-                                },
-                            )
-                        )
-                        gave_up = True
-                    else:
-                        cfg.warn(
-                            f"Semantic verifier got malformed output for "
-                            f"{entry.stem}; retrying once"
-                        )
-
-                except Exception as exc:
-                    # A semantic verifier that crashes should not silently
-                    # turn into PASS. It is recorded as a verification
-                    # failure -- but only once a retry has also failed.
-                    if attempt == 2:
-                        cfg.warn(
-                            f"Semantic verification failed "
-                            f"for {entry.stem}: {exc}"
-                        )
-
-                        findings.append(
-                            _make_finding(
-                                stem=entry.stem,
-                                gate=gate,
-                                result={
-                                    "status": "fail",
-                                    "reason": (
-                                        "Semantic verification "
-                                        f"failed: {exc}"
-                                    ),
-                                },
-                            )
-                        )
-                        gave_up = True
-                    else:
-                        cfg.warn(
-                            f"Semantic verification transiently failed "
-                            f"for {entry.stem}: {exc}; retrying once"
-                        )
-
-            if gave_up or result is None:
-                continue
-
-            if result[
-                "status"
-            ] == "fail":
-                # Diagnosis-driven routing: do not misclassify geometric/layout evidence as semantic
-                # merely because the VLM happened to discover it during semantic review.
-                if _is_layout_defect(result):
-                    cfg.warn(
-                        f"Semantic verifier suppressed layout-like finding for {entry.stem}: "
-                        f"{result.get('reason','')[:120]} -- delegated to verifier_layout"
-                    )
-                    continue
-                findings.append(
-                    _make_finding(
-                        stem=entry.stem,
-                        gate=gate,
-                        result=result,
-                    )
-                )
+                findings.extend(local_findings)
 
         context.check_results[
             self.name
         ] = findings
 
         return context
+
+    def _verify_entry(
+        self,
+        context: SceneContext,
+        entry,
+        gate: bool,
+        repair_context: dict,
+        model: str,
+    ) -> list[dict[str, Any]]:
+        """Semantic-review one scene; returns 0-1 finding dicts.
+
+        Split out of ``run()`` so each scene's independent LLM round trip
+        can be dispatched to a thread pool: this returns its findings
+        rather than mutating a shared list, so there is nothing here for
+        concurrent calls to race on.
+        """
+
+        local: list[dict[str, Any]] = []
+
+        artifact = context.code_artifacts.get(entry.stem)
+
+        try:
+            code = artifact.path.read_text(
+                encoding="utf-8"
+            )
+        except Exception as exc:
+            local.append(
+                _make_finding(
+                    stem=entry.stem,
+                    gate=gate,
+                    result={
+                        "status": "fail",
+                        "reason": (
+                            "Could not read generated "
+                            f"scene source: {exc}"
+                        ),
+                    },
+                )
+            )
+
+            return local
+
+        if len(code) > MAX_CODE_CHARS:
+            code = code[
+                :MAX_CODE_CHARS
+            ] + (
+                "\n\n# [CODE TRUNCATED FOR REVIEW]\n"
+            )
+
+        # ----------------------------------------------------------
+        # Fresh preview during repair
+        # ----------------------------------------------------------
+
+        preview = _preview_path(
+            context,
+            entry.stem,
+        )
+
+        if entry.stem in repair_context:
+            try:
+                regenerated = (
+                    _regenerate_preview(
+                        context,
+                        entry,
+                    )
+                )
+
+                if regenerated is not None:
+                    preview = regenerated
+
+            except Exception as exc:
+                local.append(
+                    _make_finding(
+                        stem=entry.stem,
+                        gate=gate,
+                        result={
+                            "status": "fail",
+                            "reason": str(exc),
+                        },
+                    )
+                )
+
+                return local
+
+        # ----------------------------------------------------------
+        # Build prompt
+        # ----------------------------------------------------------
+
+        # A preview that predates the code it depicts is not evidence
+        # about this scene -- see _preview_is_fresh().
+        has_preview = (
+            preview.exists()
+            and _preview_is_fresh(
+                preview,
+                artifact.path,
+            )
+        )
+
+        prompt = _build_prompt(
+            entry,
+            code,
+            has_preview=has_preview,
+        )
+
+        image_base64 = (
+            base64.b64encode(
+                preview.read_bytes()
+            ).decode("ascii")
+            if has_preview
+            else None
+        )
+
+        # ----------------------------------------------------------
+        # LLM call
+        # ----------------------------------------------------------
+        #
+        # Always route through llm.complete(), preview or not. It owns
+        # the deterministic key/model rotation (retry on 429, fall back
+        # to the next model once every key is quota-exhausted) that
+        # every other harness LLM call site already relies on. The old
+        # raw client.chat.completions.create() fallback used whenever a
+        # preview image was attached had none of that: a single 429
+        # (even a transient one) went straight to `except Exception`
+        # below and became a hard BLOCKING semantic_mismatch finding,
+        # gating the whole pipeline on what was actually a quota hiccup.
+
+        # A single transient hiccup -- a malformed/truncated critic
+        # response, or an LLM call that raised despite llm.complete()'s
+        # own key/model rotation -- used to become a permanent BLOCKING
+        # finding on the first try, fail-closed with no second chance.
+        # That is the right call once it's actually reproduced (see
+        # "fail closed" below), but not on a one-off blip: it turned a
+        # momentary overload into a hard gate failure for the whole
+        # harness run. One silent retry before recording anything gives
+        # a blip a chance to clear while still failing closed if the
+        # problem repeats.
+        result = None
+        gave_up = False
+
+        for attempt in (1, 2):
+            try:
+                content = llm.complete(
+                    prompt,
+                    max_tokens=1400,
+                    model_env="P2R_SCENE_MODEL",
+                    default_model=model,
+                    label="semantic",
+                    image_base64=image_base64,
+                    json_object=True,
+                )
+
+                parsed = _normalize_result(
+                    _extract_json(
+                        str(
+                            content or ""
+                        )
+                    )
+                )
+
+                if parsed is not None:
+                    result = parsed
+                    break
+
+                # ------------------------------------------------------
+                # Fail closed on malformed critic output.
+                # ------------------------------------------------------
+                if attempt == 2:
+                    local.append(
+                        _make_finding(
+                            stem=entry.stem,
+                            gate=gate,
+                            result={
+                                "status": "fail",
+                                "reason": (
+                                    "Semantic critic returned "
+                                    "invalid structured output; "
+                                    "verification could not establish "
+                                    "semantic correctness."
+                                ),
+                            },
+                        )
+                    )
+                    gave_up = True
+                else:
+                    cfg.warn(
+                        f"Semantic verifier got malformed output for "
+                        f"{entry.stem}; retrying once"
+                    )
+
+            except Exception as exc:
+                # A semantic verifier that crashes should not silently
+                # turn into PASS. It is recorded as a verification
+                # failure -- but only once a retry has also failed.
+                if attempt == 2:
+                    cfg.warn(
+                        f"Semantic verification failed "
+                        f"for {entry.stem}: {exc}"
+                    )
+
+                    local.append(
+                        _make_finding(
+                            stem=entry.stem,
+                            gate=gate,
+                            result={
+                                "status": "fail",
+                                "reason": (
+                                    "Semantic verification "
+                                    f"failed: {exc}"
+                                ),
+                            },
+                        )
+                    )
+                    gave_up = True
+                else:
+                    cfg.warn(
+                        f"Semantic verification transiently failed "
+                        f"for {entry.stem}: {exc}; retrying once"
+                    )
+
+        if gave_up or result is None:
+            return local
+
+        if result[
+            "status"
+        ] == "fail":
+            # Diagnosis-driven routing: do not misclassify geometric/layout evidence as semantic
+            # merely because the VLM happened to discover it during semantic review.
+            if _is_layout_defect(result):
+                cfg.warn(
+                    f"Semantic verifier suppressed layout-like finding for {entry.stem}: "
+                    f"{result.get('reason','')[:120]} -- delegated to verifier_layout"
+                )
+                return local
+            local.append(
+                _make_finding(
+                    stem=entry.stem,
+                    gate=gate,
+                    result=result,
+                )
+            )
+
+        return local
 
     def _default_gate(self) -> bool:
         """Semantic correctness is a hard gate by default."""

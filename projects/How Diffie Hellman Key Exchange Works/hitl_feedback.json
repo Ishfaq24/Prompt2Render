@@ -1,0 +1,14 @@
+{
+
+    "03" :
+    {
+"status": "reject",
+      "reason": "Text  Overlaps,generate manim code carefully ."
+    },
+
+    "05" :
+    {
+"status": "rejects",
+      "reason": "Text Overlaps, generate manim code carefully ."
+    }
+  }

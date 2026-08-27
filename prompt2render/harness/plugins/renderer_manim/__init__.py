@@ -32,8 +32,10 @@ scene is accepted.
 from __future__ import annotations
 
 import ast
+import io
 import os
 import re
+import tokenize
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +151,96 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 # Deterministic Manim compatibility normalization
 # ---------------------------------------------------------------------------
 
+def _apply_outside_raw_strings(
+    text: str,
+    pattern: "re.Pattern[str]",
+    repl: str,
+) -> str:
+    """``pattern.sub(repl, text)``, but never inside a raw string literal.
+
+    A raw string (``r"..."``, ``R'''...'''``, etc.) already means every
+    backslash in it is literal -- inside one, ``\\{`` IS the single-backslash
+    LaTeX escape for a literal brace, already correct. A regex fix aimed at
+    non-raw strings (see its call site) has no way to know it's looking at a
+    raw string's contents unless told, and applying it there doubles an
+    already-correct backslash into a bad one -- exactly the class of bug
+    this exists to prevent (a real crash traced back to this: a raw-string
+    ``MathTex(r"...\\{0,1\\}...")`` argument whose backslashes had been
+    doubled, so LaTeX read ``\\`` as its own line-break command instead of
+    an escaped brace, breaking the ``align*`` environment it was in).
+    Falls back to a whole-text substitution if the source doesn't tokenize
+    (e.g. a syntax error some other check will already be reporting).
+    """
+
+    try:
+        tokens = list(
+            tokenize.generate_tokens(
+                io.StringIO(text).readline
+            )
+        )
+    except Exception:
+        return pattern.sub(repl, text)
+
+    lines = text.splitlines(keepends=True)
+    line_offsets = [0]
+    for line in lines:
+        line_offsets.append(line_offsets[-1] + len(line))
+
+    def offset(row: int, col: int) -> int:
+        return line_offsets[row - 1] + col
+
+    raw_spans: list[tuple[int, int]] = []
+
+    for tok in tokens:
+        if tok.type != tokenize.STRING:
+            continue
+
+        prefix_match = re.match(
+            r"^[a-zA-Z]*",
+            tok.string,
+        )
+        prefix = (
+            prefix_match.group(0).lower()
+            if prefix_match
+            else ""
+        )
+
+        if "r" not in prefix:
+            continue
+
+        raw_spans.append(
+            (
+                offset(*tok.start),
+                offset(*tok.end),
+            )
+        )
+
+    raw_spans.sort()
+
+    out: list[str] = []
+    cursor = 0
+
+    for start, end in raw_spans:
+        if start > cursor:
+            out.append(
+                pattern.sub(
+                    repl,
+                    text[cursor:start],
+                )
+            )
+        out.append(text[start:end])
+        cursor = max(cursor, end)
+
+    out.append(
+        pattern.sub(
+            repl,
+            text[cursor:],
+        )
+    )
+
+    return "".join(out)
+
+
 def _normalize_manim19(code: str) -> str:
     """Normalize a small set of known Manim 0.19 compatibility aliases.
 
@@ -185,11 +277,24 @@ def _normalize_manim19(code: str) -> str:
             code,
         )
 
-    # Known invalid LaTeX string escapes.
-    code = re.sub(
-        r"\\([&%_$#{}~^])",
-        r"\\\\\1",
+    # Known invalid LaTeX string escapes -- e.g. a non-raw string containing
+    # "\{" (an unrecognized-but-tolerated Python escape today, a future
+    # SyntaxError) gets the explicit "\\{" that means the same single
+    # backslash at runtime. Two things this must not do, both previously
+    # real bugs:
+    #   1. Touch a RAW string's contents (r"\{...\}") -- there "\{" is
+    #      *already* the correct single backslash; doubling it there breaks
+    #      otherwise-valid LaTeX (see _apply_outside_raw_strings' docstring
+    #      for the exact crash this caused).
+    #   2. Re-match its own prior output on a second pass -- without the
+    #      negative lookbehind, a cached scene normalized on every harness
+    #      run (see the "cached, skipping" path below) keeps re-matching
+    #      the backslash it just added and escalates the count by one more
+    #      backslash every run.
+    code = _apply_outside_raw_strings(
         code,
+        re.compile(r"(?<!\\)\\([&%_$#{}~^])"),
+        r"\\\\\1",
     )
 
     # Manim 0.19: Scene.wait(0) is a ValueError (duration must be >0).
@@ -1279,6 +1384,62 @@ class RendererManimPlugin(Plugin):
             )
         )
 
+    def _hydrate_render_artifact_from_disk(
+        self,
+        context: SceneContext,
+        stem: str,
+        artifact: CodeArtifact,
+    ) -> RenderArtifact | None:
+        """Recover an already-rendered ``sections/<stem>.mp4`` from a prior
+        process into this run's (otherwise process-local) render_artifacts,
+        so an unchanged scene is not re-rendered every harness invocation.
+
+        Mirrors generator_manim's own on-disk code cache (same file, a few
+        hundred lines up): that cache already makes "code unchanged" a
+        no-op, but the renderer previously had no matching check, so an
+        identical code artifact still triggered a full Manim re-render
+        (minutes per scene) on every run. Applies the same staleness rule
+        generator_manim uses for align vs. code: if the code is newer than
+        the clip, the clip is stale and must not be treated as cached.
+        """
+
+        if not context.project_dir:
+            return None
+
+        clip = context.project_dir / "sections" / f"{stem}.mp4"
+
+        if not clip.exists():
+            return None
+
+        try:
+            if artifact.path and artifact.path.exists():
+                if artifact.path.stat().st_mtime > clip.stat().st_mtime + 1.0:
+                    return None
+        except OSError:
+            return None
+
+        from .... import cfg
+
+        cfg.say(
+            f"section {stem}: render cached, skipping"
+        )
+
+        return RenderArtifact(
+            stem=stem,
+            outdir=clip.parent,
+            clip=clip,
+            manifest=[
+                {
+                    "png": None,
+                    "mp4": str(clip),
+                }
+            ],
+            source_revision=lineage.current_revision(
+                context,
+                stem,
+            ),
+        )
+
     def _render_one(
         self,
         context: SceneContext,
@@ -1471,6 +1632,16 @@ class RendererManimPlugin(Plugin):
             existing = context.render_artifacts.get(
                 stem
             )
+
+            if existing is None:
+                existing = self._hydrate_render_artifact_from_disk(
+                    context,
+                    stem,
+                    artifact,
+                )
+
+                if existing is not None:
+                    context.render_artifacts[stem] = existing
 
             # A locked (hitl "accept") stem with an existing render is done —
             # skip unconditionally, even if a stray repair_context/reject
@@ -1815,6 +1986,16 @@ REFERENCE PATTERN (imitate this structure — not the specific text/content):
    - Code(code_string=..., language=..., formatter_style=..., add_line_numbers=True, paragraph_config={{"font_size": 24}}) is the correct call shape. Never pass code=, style=, theme=, insert_line_numbers=, or a bare font_size= — none of those exist on Code() anymore.
    - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
    - Do not pass include_background= to Text, MathTex, or Tex.
+   - MathTex/Tex LaTeX escaping: write the argument as a raw string, e.g.
+     `MathTex(r"\\mathbb{{Z}}_{{23}} = \\{{0, 1, \\dots, 22\\}}")`. Inside that raw
+     string, a literal LaTeX special character (`{{`, `}}`, `_`, `%`, `$`,
+     `#`, `&`, `~`, `^`) needs exactly ONE backslash (`\\{{`, `\\}}`, `\\_`, ...)
+     — never two. `\\\\{{` inside a raw string is LaTeX's own line-break
+     command followed by a bare, unescaped brace, not an escaped brace —
+     inside `align`/`align*` (or any environment where `\\\\` means newline)
+     that breaks compilation outright (`latex error converting to dvi`).
+     Never write `\\\\{{`, `\\\\}}`, `\\\\_`, `\\\\%`, `\\\\$`, `\\\\#`, `\\\\&`, `\\\\~`, or
+     `\\\\^` inside a raw-string MathTex/Tex argument.
    - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
    - Prefer Text(...).scale_to_fit_width(...) or a deterministic font_size reduction over a large fixed font_size — never assume a string fits just because a shorter one did.
 
@@ -2050,6 +2231,16 @@ STATES:
    - Code(code_string=..., language=..., formatter_style=..., add_line_numbers=True, paragraph_config={{"font_size": 24}}) is the correct call shape. Never pass code=, style=, theme=, insert_line_numbers=, or a bare font_size= — none of those exist on Code() anymore.
    - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
    - Do not pass include_background= to Text, MathTex, or Tex.
+   - MathTex/Tex LaTeX escaping: write the argument as a raw string, e.g.
+     `MathTex(r"\\mathbb{{Z}}_{{23}} = \\{{0, 1, \\dots, 22\\}}")`. Inside that raw
+     string, a literal LaTeX special character (`{{`, `}}`, `_`, `%`, `$`,
+     `#`, `&`, `~`, `^`) needs exactly ONE backslash (`\\{{`, `\\}}`, `\\_`, ...)
+     — never two. `\\\\{{` inside a raw string is LaTeX's own line-break
+     command followed by a bare, unescaped brace, not an escaped brace —
+     inside `align`/`align*` (or any environment where `\\\\` means newline)
+     that breaks compilation outright (`latex error converting to dvi`).
+     Never write `\\\\{{`, `\\\\}}`, `\\\\_`, `\\\\%`, `\\\\$`, `\\\\#`, `\\\\&`, `\\\\~`, or
+     `\\\\^` inside a raw-string MathTex/Tex argument.
    - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
    - Prefer Text(...).scale_to_fit_width(...) or a deterministic font_size reduction over a large fixed font_size — never assume a string fits just because a shorter one did.
 
