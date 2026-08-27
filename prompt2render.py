@@ -433,6 +433,16 @@ def cmd_harness(a):
         # it" and an actual answer about what is on disk.
         _report_self_check(ctx, journal)
 
+        # P2-1: run metrics -- pure aggregation over the repair
+        # controller's own decision log and log.jsonl's already-recorded
+        # duration_s. Never raises.
+        from prompt2render.harness.metrics import write_metrics_report
+        write_metrics_report(
+            ctx.project_dir,
+            repair_controller.decisions if repair_controller is not None else [],
+            log_path=log_path,
+        )
+
         # Tier 3 Phase 15: same reasoning -- the repair controller's
         # decision log is complete regardless of the final gate outcome,
         # and a hard-failed run's repair episodes are exactly the ones
@@ -486,6 +496,14 @@ def cmd_harness(a):
 
     # P1-3: see the matching comment in the GateFailure branch above.
     _report_self_check(ctx, journal)
+
+    # P2-1: see the matching comment in the GateFailure branch above.
+    from prompt2render.harness.metrics import write_metrics_report
+    write_metrics_report(
+        ctx.project_dir,
+        repair_controller.decisions if repair_controller is not None else [],
+        log_path=log_path,
+    )
 
     # Bug fix: write_self_correction_report(final_pass=True) was never
     # called anywhere -- the three existing call sites are all inside

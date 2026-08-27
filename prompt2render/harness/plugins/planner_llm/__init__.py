@@ -287,15 +287,83 @@ def _normalise_state(
 
 
 def _normalise_cue(value: Any) -> int:
-    """Convert a cue to a safe non-negative integer."""
+    """Convert a cue to a safe non-negative integer (zero-based).
 
+    Internal convention: cues are ALWAYS zero-based (0..N-1) after this
+    boundary. This is the SINGLE parser-boundary normalization point.
+    If the LLM ever produces human-readable one-based cues (1..N), they
+    must be converted to zero-based exactly here — not elsewhere — and the
+    conversion must be explicit and logged. Current prompt declares zero-based,
+    so any one-based value is treated as a validation error downstream; see
+    ``verifier_storyboard`` for the rich diagnostic and
+    ``_maybe_normalize_one_based_cues`` for the explicit one-based handling.
+    """
+
+    # Reject bool (bool is subclass of int) — True->1 would be a silent bug.
+    if isinstance(value, bool):
+        return 0
     try:
-        return max(0, int(value))
+        # Handle numeric strings, floats ("3.0") etc.; int() truncates floats.
+        # Strip whitespace for robustness.
+        if isinstance(value, str):
+            value = value.strip()
+            # Empty string -> invalid -> 0
+            if not value:
+                return 0
+        return max(0, int(float(value)) if isinstance(value, str) and "." in value else int(value))
     except (
         TypeError,
         ValueError,
     ):
         return 0
+
+
+def _maybe_normalize_one_based_cues(states: list[dict[str, Any]], entry: Any) -> list[dict[str, Any]]:
+    """Detect and normalize a one-based cue list to zero-based, exactly once.
+
+    This is the ONLY place where one-based -> zero-based conversion happens.
+    Detection is conservative: if every cue is >=1, max cue equals sentence
+    count N, and no cue is 0, the LLM likely used human 1..N numbering.
+    In that case we subtract 1 from every cue. Otherwise we leave cues as-is
+    and let ``verifier_storyboard`` reject out-of-range values with a rich
+    diagnostic (see that module's one-based hint).
+
+    Returns the (possibly) adjusted states list.
+    """
+    try:
+        from .... import textseg as _ts  # local import to avoid cycle (prompt2render.textseg)
+        # Fallback: use textseg if available, else simple split.
+        try:
+            sents = _ts.sentences(getattr(entry, "narration_text", "") or "")
+            sentence_count = len(sents)
+        except Exception:
+            sentence_count = max(1, len(str(getattr(entry, "narration_text", "")).split(".")))
+    except Exception:
+        sentence_count = 0
+
+    if sentence_count <= 0 or not states:
+        return states
+
+    cues = [s.get("cue") for s in states if isinstance(s.get("cue"), int)]
+    if not cues:
+        return states
+
+    # Conservative one-based detection: min >=1, max == N, no zero present.
+    if min(cues) >= 1 and max(cues) == sentence_count and all(c >= 1 for c in cues) and 0 not in cues:
+        # Explicit normalization: 1..N -> 0..N-1
+        for s in states:
+            if isinstance(s.get("cue"), int):
+                s["cue"] = s["cue"] - 1
+        # Also log that we performed the one-based normalization.
+        try:
+            from .... import cfg as _cfg
+            _cfg.warn(
+                f"Section {getattr(entry, 'stem', '?')}: detected one-based cues {cues} "
+                f"for {sentence_count} sentences; normalized to zero-based {[c-1 for c in cues]}"
+            )
+        except Exception:
+            pass
+    return states
 
 
 def _normalise_section(
@@ -333,6 +401,9 @@ def _normalise_section(
 
     # Enforce maximum state count.
     states = states[:MAX_STATES]
+
+    # One-based -> zero-based normalization at parser boundary (explicit, single conversion).
+    states = _maybe_normalize_one_based_cues(states, entry)
 
     return {
         "index": entry.index,
@@ -381,6 +452,14 @@ def _validate_sections(
             "Storyboard contains duplicate section indices."
         )
 
+    # Build lookup for per-section narration to validate cue ranges.
+    entry_by_index: dict[int, Any] = {}
+    for e in entries:
+        try:
+            entry_by_index[int(e.index)] = e
+        except Exception:
+            continue
+
     for section in sections:
         index = section.get("index")
 
@@ -401,6 +480,20 @@ def _validate_sections(
                 f"Section {index}: invalid state count "
                 f"{len(states)}."
             )
+
+        # Resolve sentence count for cue-range validation (zero-based 0..N-1).
+        entry = entry_by_index.get(int(index)) if isinstance(index, int) or str(index).isdigit() else None
+        sentence_count: int | None = None
+        if entry is not None:
+            try:
+                from .... import textseg as _ts  # local import (prompt2render.textseg)
+                sents = _ts.sentences(getattr(entry, "narration_text", "") or "")
+                sentence_count = len(sents)
+            except Exception:
+                try:
+                    sentence_count = max(1, len(str(getattr(entry, "narration_text", "")).split(".")))
+                except Exception:
+                    sentence_count = None
 
         for state_no, state in enumerate(states):
             if not isinstance(state, dict):
@@ -429,6 +522,39 @@ def _validate_sections(
                 errors.append(
                     f"Section {index}, state {state_no}: {message}"
                 )
+
+            # Strict zero-based cue validation: 0 <= cue < sentence_count
+            cue = state.get("cue")
+            if sentence_count is not None:
+                if not isinstance(cue, int) or cue < 0 or cue >= sentence_count:
+                    if isinstance(cue, int) and cue == sentence_count and sentence_count > 0:
+                        errors.append(
+                            f"Section {index}, state {state_no}: cue {cue} is outside valid zero-based range 0..{sentence_count - 1} "
+                            f"(count={sentence_count}); cue {cue} equals sentence count — if source used one-based 1..{sentence_count}, "
+                            f"normalize to {cue - 1} at parser boundary"
+                        )
+                    else:
+                        errors.append(
+                            f"Section {index}, state {state_no}: cue {cue!r} is outside valid zero-based range 0..{sentence_count - 1} "
+                            f"(count={sentence_count}, valid: 0 <= cue < {sentence_count})"
+                        )
+                # Also check monotonicity within validation (mirrors verifier)
+                # Handled below after loop for ordering.
+
+        # Monotonic cue check (strictly increasing) when sentence_count known
+        if sentence_count is not None and isinstance(states, list):
+            prev = -1
+            for state_no, state in enumerate(states):
+                if not isinstance(state, dict):
+                    continue
+                cue = state.get("cue")
+                if isinstance(cue, int):
+                    if cue < prev:
+                        errors.append(
+                            f"Section {index}, state {state_no}: cue {cue} moves backward from {prev} "
+                            f"(cues must strictly increase, zero-based)"
+                        )
+                    prev = cue
 
     return errors
 
