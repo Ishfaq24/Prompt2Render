@@ -577,6 +577,15 @@ class GeneratorCodePlugin(Plugin):
         retries = self._retries()
         jobs = self._jobs()
 
+        # Preserve existing scenes when requested — prevents "every new run
+        # overwrites scene files that I don't need". Controlled via config
+        # `overwrite: false` or env `P2R_PRESERVE_SCENES=1`.
+        preserve = False
+        if str(self.config.get("overwrite", "true")).strip().lower() in {"0", "false", "no", "off"}:
+            preserve = True
+        if os.environ.get("P2R_PRESERVE_SCENES", "").strip().lower() in {"1", "true", "yes"}:
+            preserve = True
+
         todo = []
         for section in script.sections:
             dst = scene_path(context.project_dir, section.stem)
@@ -586,6 +595,13 @@ class GeneratorCodePlugin(Plugin):
                 cfg.say(
                     f"section {section.stem}: scene already written, "
                     "skipping (delete it to regenerate)"
+                )
+                _record_artifact(context, section.stem)
+                continue
+            if preserve and dst.exists():
+                cfg.say(
+                    f"section {section.stem}: scene exists and preserve is on, "
+                    "skipping (set overwrite:true or unset P2R_PRESERVE_SCENES to regenerate)"
                 )
                 _record_artifact(context, section.stem)
                 continue
