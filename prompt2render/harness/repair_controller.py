@@ -53,6 +53,7 @@ from .journal import EventJournal
 from .lifecycle import InvalidTransition, SceneState
 from .lifecycle import transition as lifecycle_transition
 from .plugin import Plugin
+from .revision_history import RevisionEntry, record_revision
 from .scene_quality import (
     SceneQuality,
     Verdict,
@@ -138,6 +139,16 @@ class RepairDecisionRecord:
     #: actually changed between the accepted baseline and this candidate,
     #: not merely whether the net verdict was better/worse/equal.
     finding_diff: dict[str, list[str]] = field(default_factory=dict)
+
+    #: The repair goal/invariants this cycle operated under (P1-1) --
+    #: {category, subtype, allowed_changes, protected_properties,
+    #: repair_instruction}, read from the router's already-existing
+    #: ``RepairPlan`` (``repair_router/__init__.py``'s ``_contract_for``).
+    #: That mechanism already implements the target architecture's "repair
+    #: goal + invariants + category-constrained allowed_changes" -- this
+    #: field just makes it visible in the decision log instead of only
+    #: living inside the prompt text sent to the LLM.
+    repair_contract: dict[str, Any] = field(default_factory=dict)
 
     decision: str = Decision.VERIFIER_FAILED.value
     rejection_reason: str = ""
@@ -245,6 +256,7 @@ class RepairController:
             source_plugin=source_plugin,
             routed_to=list(plan.targets),
             previous_revision=lineage.current_revision(context, stem),
+            repair_contract=self._extract_repair_contract(plan),
             triggering_findings=[
                 copy.deepcopy(f) for f in findings if isinstance(f, dict)
             ],
@@ -335,7 +347,11 @@ class RepairController:
         )
         self._journal(
             context, "scene.repair.started", stem, record.candidate_revision,
-            payload={"finding_type": plan.finding_type, "routed_to": list(plan.targets)},
+            payload={
+                "finding_type": plan.finding_type,
+                "routed_to": list(plan.targets),
+                "repair_contract": record.repair_contract,
+            },
         )
 
         try:
@@ -770,12 +786,34 @@ class RepairController:
         if context is not None:
             self._journal_repair_outcome(context, record, decision)
             self._transition_after_repair(context, record.stem, decision)
+            self._record_revision_history(context, record, decision)
 
         return record
 
     # ------------------------------------------------------------------
     # Durable journal + lifecycle -- both fail-safe, never derail a cycle
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_repair_contract(plan: Any) -> dict[str, Any]:
+        """Read the router's repair goal/invariants off a ``RepairPlan``.
+
+        Defensive against simplified test doubles (``test_layout_semantic
+        .py``'s ``_Plan``, and this module's own test fixtures) which only
+        implement ``finding_type``/``targets``/``routable`` -- an absent
+        attribute yields an empty/default value rather than an
+        ``AttributeError`` breaking a repair cycle over pure observability.
+        """
+
+        return {
+            "category": getattr(plan, "category", "") or "",
+            "subtype": getattr(plan, "subtype", None),
+            "allowed_changes": list(getattr(plan, "allowed_changes", None) or []),
+            "protected_properties": list(
+                getattr(plan, "protected_properties", None) or []
+            ),
+            "repair_instruction": getattr(plan, "repair_instruction", "") or "",
+        }
 
     @staticmethod
     def _project_name(context: SceneContext) -> str:
@@ -891,6 +929,42 @@ class RepairController:
         # requiring the caller to know which path this cycle took.
         self._safe_transition(context, stem, SceneState.REJECTED, reason=decision.value)
         self._safe_transition(context, stem, SceneState.ROLLED_BACK, reason=decision.value)
+
+    def _record_revision_history(
+        self,
+        context: SceneContext,
+        record: RepairDecisionRecord,
+        decision: Decision,
+    ) -> None:
+        """Persist this cycle's outcome to ``revisions.json`` (P1-2).
+
+        Only real, individually-repairable scenes are tracked -- whole-
+        video findings (``lineage.GLOBAL_STEM``) have no per-scene
+        revision to record against. Every decision is recorded, not just
+        acceptances: a rejected attempt's reasoning is otherwise lost the
+        moment ``workspace.discard`` removes its sidecar files.
+        """
+
+        if not lineage.is_scene_stem(record.stem):
+            return
+
+        entry = RevisionEntry(
+            revision=record.candidate_revision,
+            parent_revision=record.previous_revision,
+            timestamp=record.timestamp,
+            reason=f"repair:{record.trigger_finding_type}",
+            decision=decision.value,
+            repair_contract=record.repair_contract,
+            finding_diff=record.finding_diff,
+            quality=record.candidate_quality,
+        )
+
+        record_revision(
+            getattr(context, "project_dir", None),
+            record.stem,
+            entry,
+            accepted=(decision is Decision.ACCEPTED),
+        )
 
     @staticmethod
     def _read_candidate_source(scope: Any) -> str:

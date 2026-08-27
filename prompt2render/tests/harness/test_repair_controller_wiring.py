@@ -271,3 +271,80 @@ def test_repeated_stuck_repair_is_flagged_no_progress_on_second_cycle():
 
         second = controller.repair_scene(ctx, STEM, finding, "verifier_layout")
         assert second.decision == Decision.NO_PROGRESS.value
+
+
+# ------------------------------------------------------ repair contract ---
+# P1-1: repair goals/invariants already exist as RepairPlan (repair_router/
+# __init__.py's _contract_for) -- this only checks the contract is now
+# surfaced onto the decision record and journal, not duplicated.
+
+class _RealPlanRouter:
+    """Uses the REAL RepairRouterPlugin.plan() (not a stub), to prove the
+    extraction reads genuine category/allowed_changes/protected_properties
+    values, not just field presence on a hand-rolled test double."""
+
+    def __init__(self, on_execute):
+        from prompt2render.harness.plugins.repair_router import RepairRouterPlugin
+
+        self.on_execute = on_execute
+        self._router = RepairRouterPlugin()
+        self._router.attach(plugins_by_name={"generator_code": _DummyTarget()})
+
+    def plan(self, finding, source):
+        return self._router.plan(finding, source)
+
+    def execute(self, plan, context):
+        self.on_execute(context)
+
+        class _Execution:
+            ok = True
+            targets_run = ["generator_code"]
+            errors = []
+
+        return _Execution()
+
+    def emit(self, name, **kw):
+        pass
+
+
+class _DummyTarget:
+    name = "generator_code"
+
+
+def test_repair_contract_from_the_real_router_is_recorded_and_journaled():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        ctx, _ = _seed_context(tmp_path)
+        journal = EventJournal(tmp_path / "events.jsonl")
+
+        def write_candidate(context):
+            context.candidate.code_path.write_text("# candidate\n")
+
+        router = _RealPlanRouter(write_candidate)
+        verif = _VerifierClean()
+        controller = RepairController(
+            router=router,
+            plugins_by_name={
+                "verifier_layout": verif, "verifier_semantic": verif,
+                "verifier_spatial": verif, "verifier_temporal": verif,
+            },
+            log_path=None,
+            journal=journal,
+        )
+
+        record = controller.repair_scene(
+            ctx, STEM,
+            [{"stem": STEM, "status": "fail", "finding_type": "layout_violation",
+              "category": "LAYOUT", "mismatch_subtype": "CROWDING",
+              "detail": "caption crowding"}],
+            "verifier_layout",
+        )
+
+        assert record.decision == Decision.ACCEPTED.value
+        assert "position" in record.repair_contract["allowed_changes"]
+        assert "values" in record.repair_contract["protected_properties"]
+        assert "layout-only" in record.repair_contract["repair_instruction"].lower()
+
+        started = journal.read(event_type="scene.repair.started", scene_id=STEM)
+        assert len(started) == 1
+        assert "position" in started[0]["payload"]["repair_contract"]["allowed_changes"]

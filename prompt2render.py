@@ -382,6 +382,14 @@ def cmd_harness(a):
         # never raises, so this can't mask the real GateFailure below.
         from prompt2render.harness.quality_report import write_quality_report
         write_quality_report(ctx.check_results, ctx.project_dir)
+
+        # P1-2: backfill build/harness/revisions.json for any scene that
+        # reached a positive revision this run but has no repair-cycle
+        # history yet (never repaired, or repaired in an earlier process
+        # whose in-memory scene_versions did not survive). Never raises.
+        from prompt2render.harness.revision_history import seed_from_context
+        seed_from_context(ctx.project_dir, ctx)
+
         # Tier 3 Phase 15: same reasoning -- the repair controller's
         # decision log is complete regardless of the final gate outcome,
         # and a hard-failed run's repair episodes are exactly the ones
@@ -428,6 +436,10 @@ def cmd_harness(a):
 
     from prompt2render.harness.quality_report import write_quality_report
     write_quality_report(ctx.check_results, ctx.project_dir)
+
+    # P1-2: see the matching comment in the GateFailure branch above.
+    from prompt2render.harness.revision_history import seed_from_context
+    seed_from_context(ctx.project_dir, ctx)
 
     # Bug fix: write_self_correction_report(final_pass=True) was never
     # called anywhere -- the three existing call sites are all inside
