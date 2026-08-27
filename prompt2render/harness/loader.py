@@ -521,6 +521,7 @@ def build_repair_controller(
     config_path: Path | None = None,
     logger: Any = None,
     log_path: Path | None = None,
+    journal: Any = None,
 ):
     """Assemble the authoritative repair controller for a pipeline.
 
@@ -577,6 +578,7 @@ def build_repair_controller(
             "max_total_repairs",
             DEFAULT_MAX_TOTAL_REPAIRS,
         ),
+        journal=journal,
     )
 
 

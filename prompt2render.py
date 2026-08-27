@@ -319,6 +319,15 @@ def cmd_harness(a):
     logger = StructuredLogger(log_path)
     bus = EventBus()
 
+    # Durable, append-only build event journal -- the replayable record of
+    # what happened to each scene, distinct from log.jsonl (per-plugin
+    # invocation) and repair_log.jsonl (per-repair-cycle decisions). See
+    # harness/journal.py's module docstring for why this is a separate
+    # file rather than a reformatting of either.
+    from prompt2render.harness.journal import EventJournal
+
+    journal = EventJournal(d / "build" / "harness" / "events.jsonl")
+
     # The repair controller is the single authority over the repair
     # lifecycle: detect -> snapshot -> repair -> re-verify every scene
     # verifier -> compare against the accepted scene -> accept or restore.
@@ -331,6 +340,7 @@ def cmd_harness(a):
         config=cfg_dict,
         logger=logger,
         log_path=d / "build" / "harness" / "repair_log.jsonl",
+        journal=journal,
     )
 
     if repair_controller is not None:
@@ -357,6 +367,7 @@ def cmd_harness(a):
         logger,
         bus,
         repair_controller=repair_controller,
+        journal=journal,
     )
 
     cfg.say(f"running harness over {a.slug}: " + " -> ".join(p.name for p in plugins))

@@ -48,12 +48,17 @@ from typing import Any
 
 from . import lineage, workspace
 from .context import SceneContext
+from .convergence import CandidateSignature, ConvergenceTracker, StopReason
+from .journal import EventJournal
+from .lifecycle import InvalidTransition, SceneState
+from .lifecycle import transition as lifecycle_transition
 from .plugin import Plugin
 from .scene_quality import (
     SceneQuality,
     Verdict,
     classify,
     compare,
+    diff_findings,
     new_blocking_types,
 )
 
@@ -96,6 +101,14 @@ class Decision(str, Enum):
     NOT_ROUTABLE = "not_routable"
     REPAIR_ERRORED = "repair_errored"
 
+    #: Convergence tracker (P0-4): the immediately preceding cycle for this
+    #: scene left the exact same blocking finding-type signature in place.
+    NO_PROGRESS = "no_progress"
+
+    #: Convergence tracker: this cycle's finding-type signature reproduces
+    #: one already seen at least one cycle earlier (A -> B -> A).
+    REPAIR_OSCILLATION = "repair_oscillation"
+
 
 @dataclass
 class RepairDecisionRecord:
@@ -120,6 +133,12 @@ class RepairDecisionRecord:
     previous_quality: dict[str, Any] = field(default_factory=dict)
     candidate_quality: dict[str, Any] = field(default_factory=dict)
     comparison: dict[str, Any] = field(default_factory=dict)
+
+    #: resolved/introduced/unchanged blocking finding types (P0-3) -- what
+    #: actually changed between the accepted baseline and this candidate,
+    #: not merely whether the net verdict was better/worse/equal.
+    finding_diff: dict[str, list[str]] = field(default_factory=dict)
+
     decision: str = Decision.VERIFIER_FAILED.value
     rejection_reason: str = ""
     repairs_used_for_scene: int = 0
@@ -156,11 +175,23 @@ class RepairController:
         log_path: Path | None = None,
         max_repairs_per_scene: int = DEFAULT_MAX_REPAIRS_PER_SCENE,
         max_total_repairs: int = DEFAULT_MAX_TOTAL_REPAIRS,
+        journal: EventJournal | None = None,
+        convergence: ConvergenceTracker | None = None,
     ) -> None:
         self.router = router
         self.plugins_by_name = dict(plugins_by_name or {})
         self.logger = logger
         self.log_path = Path(log_path) if log_path else None
+
+        #: Durable event journal (P0-1). Optional so every existing caller
+        #: (tests, tools/harness_run.py before it is updated) keeps working.
+        self.journal = journal
+
+        #: Cross-cycle no-progress/oscillation detector (P0-4). One tracker
+        #: per controller instance, matching how ``repairs_per_scene``
+        #: already accumulates across cycles for the life of one harness
+        #: run.
+        self.convergence = convergence or ConvergenceTracker()
 
         self.max_repairs_per_scene = max(0, int(max_repairs_per_scene))
         self.max_total_repairs = max(0, int(max_total_repairs))
@@ -226,6 +257,7 @@ class RepairController:
                 record,
                 Decision.NOT_ROUTABLE,
                 "whole-video finding has no single scene to repair",
+                context=context,
             )
 
         if not plan.routable:
@@ -233,6 +265,7 @@ class RepairController:
                 record,
                 Decision.NOT_ROUTABLE,
                 f"no repair route for finding_type {plan.finding_type!r}",
+                context=context,
             )
 
         if not self.budget_remaining(stem):
@@ -246,6 +279,7 @@ class RepairController:
                     f"(total {self.total_repairs}/{self.max_total_repairs}); "
                     "preserving the last accepted state"
                 ),
+                context=context,
             )
 
         # A rejected candidate still consumes budget -- otherwise a scene
@@ -287,12 +321,21 @@ class RepairController:
         )
         record.candidate_revision = scope.revision
 
+        self._safe_transition(
+            context, stem, SceneState.REPAIRING,
+            reason=f"repair:{plan.finding_type}",
+        )
+
         self.router.emit(
             "repair.started",
             scene_id=stem,
             finding_type=plan.finding_type,
             cycle=record.cycle_id,
             routed_to=plan.targets,
+        )
+        self._journal(
+            context, "scene.repair.started", stem, record.candidate_revision,
+            payload={"finding_type": plan.finding_type, "routed_to": list(plan.targets)},
         )
 
         try:
@@ -308,14 +351,29 @@ class RepairController:
                     Decision.REPAIR_ERRORED,
                     "; ".join(execution.errors)
                     or "repair execution failed",
+                    context=context,
                     restored_revision=scope.base_revision,
                 )
 
+            self._journal(
+                context, "scene.repair.candidate", stem, scope.revision,
+                payload={"code_path": str(scope.code_path)},
+            )
+            self._safe_transition(context, stem, SceneState.RENDERING)
+
             self._render_candidate(context, stem, record)
+            self._journal(context, "scene.repair.rendered", stem, scope.revision)
+            self._safe_transition(context, stem, SceneState.RENDERED)
+
             self._verify_candidate(context, stem, record)
+            self._journal(context, "scene.repair.verified", stem, scope.revision)
+            self._safe_transition(context, stem, SceneState.VERIFYING)
 
             candidate_quality = SceneQuality.collect(context, stem)
             record.candidate_quality = candidate_quality.to_dict()
+            record.finding_diff = diff_findings(
+                accepted_quality, candidate_quality,
+            ).to_dict()
 
             verdict = self._judge(
                 plan,
@@ -326,15 +384,48 @@ class RepairController:
                 record,
             )
 
+            # Convergence check (P0-4): consulted after the candidate has
+            # been fully verified, so the stop reason is recorded with
+            # complete evidence, and only on the path that would otherwise
+            # reject -- an accepted candidate is, by the acceptance rule
+            # itself, genuine progress and does not need second-guessing.
+            stop_reason = self.convergence.record(
+                stem,
+                CandidateSignature.of(
+                    self._read_candidate_source(scope),
+                    candidate_quality.blocking_types.keys(),
+                ),
+            )
+
             if verdict is not None:
+                decision, reason = verdict
+
+                if stop_reason is StopReason.NO_PROGRESS:
+                    decision, reason = (
+                        Decision.NO_PROGRESS,
+                        f"no progress: identical blocking finding-type "
+                        f"signature as the immediately preceding repair "
+                        f"cycle ({reason})",
+                    )
+                elif stop_reason is StopReason.REPAIR_OSCILLATION:
+                    decision, reason = (
+                        Decision.REPAIR_OSCILLATION,
+                        f"oscillation: this blocking finding-type "
+                        f"signature already occurred earlier in this "
+                        f"scene's repair history ({reason})",
+                    )
+
                 self._restore(context, scope, accepted_results)
 
                 return self._finish(
                     record,
-                    verdict[0],
-                    verdict[1],
+                    decision,
+                    reason,
+                    context=context,
                     restored_revision=scope.base_revision,
                 )
+
+            self.convergence.reset(stem)
 
             revision = workspace.promote(
                 context,
@@ -352,6 +443,7 @@ class RepairController:
                 record,
                 Decision.ACCEPTED,
                 "",
+                context=context,
             )
 
         except (Exception, SystemExit) as exc:
@@ -366,6 +458,7 @@ class RepairController:
                 record,
                 Decision.REPAIR_ERRORED,
                 f"repair cycle raised: {type(exc).__name__}: {exc}",
+                context=context,
                 restored_revision=scope.base_revision,
             )
 
@@ -643,6 +736,7 @@ class RepairController:
         decision: Decision,
         reason: str,
         *,
+        context: SceneContext | None = None,
         restored_revision: int | None = None,
     ) -> RepairDecisionRecord:
         record.decision = decision.value
@@ -670,7 +764,152 @@ class RepairController:
             except Exception:
                 pass
 
+        # context is optional so this stays callable from anywhere _finish
+        # was already called from without one -- every real call site does
+        # pass it, this is only a safety net for future/test callers.
+        if context is not None:
+            self._journal_repair_outcome(context, record, decision)
+            self._transition_after_repair(context, record.stem, decision)
+
         return record
+
+    # ------------------------------------------------------------------
+    # Durable journal + lifecycle -- both fail-safe, never derail a cycle
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _project_name(context: SceneContext) -> str:
+        project_dir = getattr(context, "project_dir", None)
+
+        if project_dir is None:
+            return ""
+
+        return getattr(project_dir, "name", str(project_dir))
+
+    def _journal(
+        self,
+        context: SceneContext,
+        event_type: str,
+        stem: str,
+        revision: int,
+        *,
+        status: str = "ok",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        if self.journal is None:
+            return
+
+        self.journal.append(
+            event_type=event_type,
+            project=self._project_name(context),
+            scene_id=stem,
+            revision=revision,
+            status=status,
+            payload=payload or {},
+        )
+
+    def _journal_repair_outcome(
+        self,
+        context: SceneContext,
+        record: RepairDecisionRecord,
+        decision: Decision,
+    ) -> None:
+        if decision is Decision.ACCEPTED:
+            event_type, status = "scene.accepted", "ok"
+        elif record.restored_revision is not None:
+            # A candidate was opened and then discarded -- a genuine
+            # rollback, not merely "never got to try".
+            event_type, status = "scene.rollback", "fail"
+        else:
+            # NOT_ROUTABLE / REPAIR_BUDGET_EXHAUSTED -- no candidate was
+            # ever opened for this cycle.
+            event_type, status = "scene.rejected", "fail"
+
+        self._journal(
+            context,
+            event_type,
+            record.stem,
+            record.candidate_revision,
+            status=status,
+            payload={
+                "decision": decision.value,
+                "reason": record.rejection_reason,
+                "finding_diff": record.finding_diff,
+            },
+        )
+
+    def _safe_transition(
+        self,
+        context: SceneContext,
+        stem: str,
+        to_state: SceneState,
+        *,
+        reason: str = "",
+    ) -> None:
+        """Attempt a lifecycle transition; never let a mismatch break a cycle.
+
+        Lifecycle tracking is observational (matching the fail-safe posture
+        already established by ``journal``/``quality_report``) -- an
+        ``InvalidTransition`` here means the state machine's model of this
+        scene's history and the repair controller's own bookkeeping have
+        drifted, which is worth recording, not worth crashing a real build
+        over.
+        """
+
+        try:
+            lifecycle_transition(context, stem, to_state, journal=self.journal, reason=reason)
+        except InvalidTransition as exc:
+            self._journal(
+                context, "harness.selfcheck", stem,
+                context.scene_versions.get(str(stem), 0),
+                status="skip",
+                payload={"note": f"lifecycle transition skipped: {exc}"},
+            )
+
+    def _transition_after_repair(
+        self,
+        context: SceneContext,
+        stem: str,
+        decision: Decision,
+    ) -> None:
+        if decision is Decision.ACCEPTED:
+            self._safe_transition(context, stem, SceneState.ACCEPTED, reason="repair accepted")
+            self.convergence.reset(stem)
+            return
+
+        if decision in (Decision.NOT_ROUTABLE, Decision.REPAIR_BUDGET_EXHAUSTED):
+            # Nothing was attempted -- no candidate was ever opened, so the
+            # scene's state is exactly what it already was.
+            return
+
+        # Every other decision discarded a candidate. Try REJECTED first
+        # (valid from VERIFYING, the common case where a candidate was
+        # fully evaluated) then ROLLED_BACK (valid from REJECTED, and also
+        # directly from REPAIRING for an early-exit failure that never
+        # reached VERIFYING) -- _safe_transition silently skips whichever
+        # hop does not apply to the actual current state rather than
+        # requiring the caller to know which path this cycle took.
+        self._safe_transition(context, stem, SceneState.REJECTED, reason=decision.value)
+        self._safe_transition(context, stem, SceneState.ROLLED_BACK, reason=decision.value)
+
+    @staticmethod
+    def _read_candidate_source(scope: Any) -> str:
+        """Best-effort read of a candidate's source text, for hashing.
+
+        Never raises -- a candidate that failed before writing any source
+        (e.g. the repair target crashed) still needs a signature so the
+        convergence tracker has something deterministic to compare.
+        """
+
+        try:
+            path = getattr(scope, "code_path", None)
+
+            if path is not None and Path(path).exists():
+                return Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+
+        return ""
 
     def _write(
         self,
