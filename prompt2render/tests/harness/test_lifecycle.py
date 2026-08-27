@@ -163,3 +163,19 @@ def test_transition_emits_scene_state_event(tmp_path):
     assert events[0]["payload"]["from"] == "planned"
     assert events[0]["payload"]["to"] == "generated"
     assert events[0]["payload"]["reason"] == "generator_code"
+
+
+def test_planned_can_enter_repairing_directly():
+    # Real-run evidence (build/harness/events.jsonl on a live project): a
+    # scene whose very first generation attempt crashes before ever
+    # producing a generated=True CodeArtifact still gets routed to repair
+    # for the resulting crash finding -- PLANNED, not FAILED, at that
+    # point. Confirmed here so the gap this closed cannot silently
+    # regress.
+    ctx = SceneContext()
+    ctx.scene_states["05"] = SceneState.PLANNED.value
+
+    result = transition(ctx, "05", SceneState.REPAIRING)
+
+    assert result is SceneState.REPAIRING
+    assert current_state(ctx, "05") is SceneState.REPAIRING

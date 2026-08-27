@@ -51,7 +51,16 @@ class SceneState(str, Enum):
 #: can still be re-repaired later if a downstream verifier changes its
 #: mind), so both keep an outgoing edge back into REPAIRING.
 TRANSITIONS: dict[SceneState, frozenset[SceneState]] = {
-    SceneState.PLANNED: frozenset({SceneState.GENERATED}),
+    # PLANNED -> REPAIRING (in addition to the expected PLANNED ->
+    # GENERATED) was added after real-run evidence: a scene whose very
+    # first generation attempt crashes before ever producing a
+    # CodeArtifact with generated=True (observed live as a Manim
+    # generation/compile crash routed to repair before the scene had ever
+    # reached GENERATED) legitimately enters repair directly from
+    # PLANNED, not from FAILED. Confirmed via build/harness/events.jsonl
+    # on a real project (harness.selfcheck "transition skipped" entries
+    # before this fix) rather than assumed from the target diagram alone.
+    SceneState.PLANNED: frozenset({SceneState.GENERATED, SceneState.REPAIRING}),
     SceneState.GENERATED: frozenset({SceneState.RENDERING}),
     SceneState.RENDERING: frozenset({SceneState.RENDERED, SceneState.FAILED}),
     SceneState.RENDERED: frozenset({SceneState.VERIFYING}),

@@ -700,6 +700,176 @@ def cmd_ablation(a):
     )
 
 
+def cmd_events(a):
+    """Print durable build events from build/harness/events.jsonl (P1-4).
+
+    Purely read-only inspection over an artifact the harness already
+    writes (harness/journal.py) -- no SceneContext is reconstructed, no
+    plugin runs.
+    """
+    from prompt2render.harness.journal import EventJournal
+
+    d, _ = _load(a.slug)
+    path = d / "build" / "harness" / "events.jsonl"
+
+    if not path.exists():
+        sys.exit(
+            f"[prompt2render] no {path} -- run `prompt2render harness "
+            f"{a.slug}` at least once first"
+        )
+
+    records = EventJournal(path).read(
+        scene_id=getattr(a, "scene", None),
+        event_type=getattr(a, "type", None),
+        limit=getattr(a, "limit", None),
+    )
+
+    if getattr(a, "json", False):
+        import json as _json
+        print(_json.dumps(records, ensure_ascii=False, indent=2))
+        return
+
+    for record in records:
+        payload = record.get("payload") or {}
+        detail = ""
+
+        if payload:
+            import json as _json
+            detail = " " + _json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+        print(
+            f"[{record.get('seq')}] {record.get('timestamp')} "
+            f"{record.get('event_type')} scene={record.get('scene_id')} "
+            f"rev={record.get('revision')} status={record.get('status')}{detail}"
+        )
+
+
+def cmd_scene_history(a):
+    """Print a scene's persisted revision history (P1-4).
+
+    Reads build/harness/revisions.json (harness/revision_history.py)
+    directly -- no SceneContext, no plugin runs.
+    """
+    from prompt2render.harness.revision_history import load_revision_history
+
+    d, _ = _load(a.slug)
+    stem = f"{a.section:02d}" if isinstance(a.section, int) else str(a.section)
+
+    data = load_revision_history(d)
+    scene = data.get("scenes", {}).get(stem)
+
+    if scene is None:
+        sys.exit(
+            f"[prompt2render] no revision history for scene {stem!r} in "
+            f"{a.slug} -- run `prompt2render harness {a.slug}` first, or "
+            "check the section number"
+        )
+
+    print(f"scene {stem}: current={scene.get('current')} accepted={scene.get('accepted')}")
+
+    for entry in scene.get("revisions", []):
+        contract = entry.get("repair_contract") or {}
+        diff = entry.get("finding_diff") or {}
+        print(
+            f"  rev {entry.get('revision')} (parent {entry.get('parent_revision')}) "
+            f"{entry.get('timestamp')} decision={entry.get('decision')} "
+            f"reason={entry.get('reason')!r}"
+        )
+        if contract.get("category"):
+            print(
+                f"    contract: category={contract.get('category')} "
+                f"allowed={contract.get('allowed_changes')} "
+                f"protected={contract.get('protected_properties')}"
+            )
+        if diff.get("resolved") or diff.get("introduced"):
+            print(
+                f"    findings: resolved={diff.get('resolved')} "
+                f"introduced={diff.get('introduced')} unchanged={diff.get('unchanged')}"
+            )
+
+
+def _load_context_for_selfcheck(project_dir):
+    """Best-effort SceneContext reconstruction from on-disk artifacts alone.
+
+    Not a general-purpose project loader -- SceneContext is not persisted
+    (a known, documented limitation; see revision_history.seed_from_context's
+    docstring), and building a full one would mean re-deriving scene_plan,
+    narration, and every artifact exactly as the real plugins do. This is
+    scoped to precisely what harness/selfcheck.py's checks read: code
+    artifacts (existence + revision, from revisions.json), render artifacts
+    (manifest, from build/scenes/<stem>/manifest.json), and scene_versions.
+    """
+    from prompt2render.harness.context import CodeArtifact, RenderArtifact, SceneContext
+    from prompt2render.harness.revision_history import load_revision_history
+
+    ctx = SceneContext(project_dir=project_dir)
+    history = load_revision_history(project_dir)
+
+    for stem, scene in history.get("scenes", {}).items():
+        revision = int(scene.get("current", 0) or 0)
+
+        if revision <= 0:
+            continue
+
+        ctx.scene_versions[stem] = revision
+
+        for code_dir in ("build/scenes", "build/manim"):
+            candidate = project_dir / code_dir / f"scene_{stem}.py"
+
+            if candidate.exists():
+                ctx.code_artifacts[stem] = CodeArtifact(
+                    stem=stem, path=candidate, generated=True,
+                    accepted=(revision == int(scene.get("accepted", 0) or 0)),
+                    revision=revision,
+                )
+                break
+
+        manifest_path = project_dir / "build" / "scenes" / stem / "manifest.json"
+
+        if manifest_path.exists():
+            try:
+                import json as _json
+                manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                manifest = []
+
+            ctx.render_artifacts[stem] = RenderArtifact(
+                stem=stem,
+                outdir=manifest_path.parent,
+                manifest=manifest if isinstance(manifest, list) else [],
+                source_revision=revision,
+            )
+
+    return ctx
+
+
+def cmd_harness_check(a):
+    """Run the harness self-check standalone against a project's current
+    on-disk state (P1-3), without re-running the pipeline.
+    """
+    from prompt2render.harness.selfcheck import run_self_check
+
+    d, _ = _load(a.slug)
+    ctx = _load_context_for_selfcheck(d)
+    findings = run_self_check(ctx)
+
+    if not findings:
+        cfg.say(f"harness-check {a.slug}: consistent -- no findings")
+        return
+
+    blocking = [f for f in findings if f.get("severity") == "BLOCKING"]
+
+    for finding in findings:
+        marker = "FAIL" if finding.get("severity") == "BLOCKING" else "WARN"
+        print(f"[{marker}] {finding.get('stem')}: {finding.get('detail')}")
+
+    if blocking:
+        sys.exit(
+            f"[prompt2render] harness-check {a.slug}: {len(blocking)} "
+            f"blocking inconsistency(ies)"
+        )
+
+
 def cmd_auto(a):
     """script.md -> script.md, if it doesn't exist yet -> final.mp4, unattended.
 
@@ -877,6 +1047,26 @@ def main() -> None:
     ab.add_argument("--config", help="path to harness config.yaml")
     ab.add_argument("--out", help="output JSON path (default: "
                                    "<project>/build/harness/ablation_results.json)")
+
+    ev = add("events", cmd_events,
+             "inspect build/harness/events.jsonl (the durable per-scene "
+             "build event log)")
+    ev.add_argument("slug")
+    ev.add_argument("--scene", help="filter to one scene stem, e.g. 07")
+    ev.add_argument("--type", help="filter to one event_type, e.g. scene.rollback")
+    ev.add_argument("--limit", type=int, help="keep only the last N matching events")
+    ev.add_argument("--json", action="store_true", help="print raw JSON records")
+
+    sh = add("scene-history", cmd_scene_history,
+             "print one scene's persisted revision history "
+             "(build/harness/revisions.json)")
+    sh.add_argument("slug")
+    sh.add_argument("--section", type=int, required=True, help="section number, e.g. 7")
+
+    hc = add("harness-check", cmd_harness_check,
+             "run the harness self-check against a project's current "
+             "on-disk state, without re-running the pipeline")
+    hc.add_argument("slug")
 
     al = add("align", cmd_align, "force-align the narration to word level")
     al.add_argument("slug"); al.add_argument("--only")
