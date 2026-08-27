@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from prompt2render.harness.journal import EventJournal, VALID_EVENT_TYPES
+from prompt2render.harness.journal import EventJournal, VALID_EVENT_TYPES, replay
 
 
 # --------------------------------------------------------------- append ---
@@ -176,3 +176,187 @@ def test_read_tolerates_corrupt_line(tmp_path):
 
     records = journal.read()
     assert [r["event_type"] for r in records] == ["scene.planned", "scene.generated"]
+
+
+# ------------------------------------------------------------- replay ----
+# P2-2: reconstruct per-scene lifecycle state and decision history purely
+# from durable events -- no SceneContext, no repair_log.jsonl.
+
+def test_replay_tracks_scene_state_transitions(tmp_path):
+    journal = EventJournal(tmp_path / "events.jsonl")
+    journal.append(event_type="scene.state", project="demo", scene_id="07", revision=0,
+                    payload={"from": "planned", "to": "generated"})
+    journal.append(event_type="scene.state", project="demo", scene_id="07", revision=0,
+                    payload={"from": "generated", "to": "rendering"})
+
+    state = replay(journal.read())
+
+    assert state.scenes["07"].state == "rendering"
+
+
+def test_replay_tracks_accepted_revision_and_decision_history(tmp_path):
+    journal = EventJournal(tmp_path / "events.jsonl")
+    journal.append(event_type="scene.accepted", project="demo", scene_id="07", revision=2,
+                    payload={"decision": "accepted", "reason": ""})
+
+    state = replay(journal.read())
+    scene = state.scenes["07"]
+
+    assert scene.accepted_revision == 2
+    assert scene.current_revision == 2
+    assert len(scene.decisions) == 1
+    assert scene.decisions[0]["decision"] == "accepted"
+
+
+def test_replay_does_not_advance_accepted_revision_for_dry_run(tmp_path):
+    journal = EventJournal(tmp_path / "events.jsonl")
+    journal.append(event_type="scene.rollback", project="demo", scene_id="07", revision=2,
+                    payload={"decision": "accepted", "reason": "[dry-run] would accept", "dry_run": True})
+
+    state = replay(journal.read())
+    scene = state.scenes["07"]
+
+    # current_revision still reflects the candidate revision that was
+    # evaluated; accepted_revision must not move for a dry run.
+    assert scene.current_revision == 2
+    assert scene.accepted_revision == 0
+    assert scene.decisions[0]["dry_run"] is True
+
+
+def test_replay_tracks_rejected_scene_without_advancing_accepted(tmp_path):
+    journal = EventJournal(tmp_path / "events.jsonl")
+    journal.append(event_type="scene.rollback", project="demo", scene_id="07", revision=2,
+                    payload={"decision": "regression_rejected", "reason": "worse"})
+
+    state = replay(journal.read())
+    scene = state.scenes["07"]
+
+    assert scene.accepted_revision == 0
+    assert scene.current_revision == 2
+    assert scene.decisions[0]["decision"] == "regression_rejected"
+
+
+def test_replay_tracks_build_status_from_the_last_build_event(tmp_path):
+    journal = EventJournal(tmp_path / "events.jsonl")
+    journal.append(event_type="build.started", project="demo", scene_id="__all__")
+    journal.append(event_type="build.failed", project="demo", scene_id="__all__")
+
+    state = replay(journal.read())
+    assert state.build_status == "fail"
+
+
+def test_replay_ignores_whole_video_pseudo_stem_for_scene_tracking(tmp_path):
+    journal = EventJournal(tmp_path / "events.jsonl")
+    journal.append(event_type="cache.invalidated", project="demo", scene_id="__all__")
+
+    state = replay(journal.read())
+    assert "__all__" not in state.scenes
+
+
+def test_replay_processes_events_in_seq_order_regardless_of_input_order(tmp_path):
+    journal = EventJournal(tmp_path / "events.jsonl")
+    journal.append(event_type="scene.state", project="demo", scene_id="07",
+                    payload={"to": "generated"})
+    journal.append(event_type="scene.state", project="demo", scene_id="07",
+                    payload={"to": "rendering"})
+
+    events = journal.read()
+    reversed_events = list(reversed(events))  # deliberately out of order
+
+    state = replay(reversed_events)
+    # If replay respected input order instead of seq, this would read
+    # "generated" (the last item in the reversed list).
+    assert state.scenes["07"].state == "rendering"
+
+
+def test_replay_matches_live_repair_controller_state():
+    """Replay must agree with what RepairController actually did -- not
+    merely be internally self-consistent. Drives one real accepted repair
+    cycle through RepairController (same dummy-router pattern as
+    test_repair_controller_wiring.py) and compares."""
+    import tempfile
+    from prompt2render.harness.context import CodeArtifact, RenderArtifact, SceneContext
+    from prompt2render.harness.lifecycle import current_state
+    from prompt2render.harness.repair_controller import RepairController
+
+    STEM = "07"
+
+    class _Plan:
+        finding_type = "layout_violation"
+        targets = ["generator_code"]
+        routable = True
+
+    class _Router:
+        def __init__(self, on_execute):
+            self.on_execute = on_execute
+
+        def plan(self, finding, source):
+            return _Plan()
+
+        def execute(self, plan, context):
+            self.on_execute(context)
+
+            class _Execution:
+                ok = True
+                targets_run = ["generator_code"]
+                errors = []
+
+            return _Execution()
+
+        def emit(self, name, **kw):
+            pass
+
+    class _VerifierClean:
+        name = "verifier_layout"
+
+        def enabled(self):
+            return True
+
+        def run(self, ctx):
+            ctx.check_results["verifier_layout"] = [
+                {"stem": STEM, "status": "pass", "finding_type": "layout_audit", "category": "LAYOUT"}
+            ]
+            return ctx
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        canonical = tmp_path / "build" / "scenes" / f"scene_{STEM}.py"
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_text("# accepted\n")
+        render_dir = tmp_path / "build" / "scenes" / STEM
+        render_dir.mkdir(parents=True, exist_ok=True)
+
+        ctx = SceneContext(project_dir=tmp_path)
+        ctx.scene_versions[STEM] = 1
+        ctx.code_artifacts[STEM] = CodeArtifact(
+            stem=STEM, path=canonical, generated=True, accepted=True, revision=1,
+        )
+        ctx.render_artifacts[STEM] = RenderArtifact(stem=STEM, outdir=render_dir, manifest=[{"png": "a"}])
+        ctx.check_results["verifier_layout"] = [
+            {"stem": STEM, "status": "fail", "finding_type": "layout_violation",
+             "category": "LAYOUT", "severity": "BLOCKING", "detail": "crowding"}
+        ]
+
+        def write_candidate(context):
+            context.candidate.code_path.write_text("# candidate\n")
+
+        journal = EventJournal(tmp_path / "events.jsonl")
+        controller = RepairController(
+            router=_Router(write_candidate),
+            plugins_by_name={"verifier_layout": _VerifierClean()},
+            log_path=None,
+            journal=journal,
+        )
+
+        record = controller.repair_scene(
+            ctx, STEM,
+            [{"stem": STEM, "status": "fail", "finding_type": "layout_violation",
+              "category": "LAYOUT", "severity": "BLOCKING", "detail": "crowding"}],
+            "verifier_layout",
+        )
+
+        replayed = replay(journal.read())
+
+        assert record.accepted is True
+        assert replayed.scenes[STEM].state == current_state(ctx, STEM).value
+        assert replayed.scenes[STEM].accepted_revision == record.candidate_revision

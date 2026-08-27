@@ -64,12 +64,32 @@ def _find_anchor(phrase: str, sents: list[dict], after: float) -> float | None:
 
 def _state_starts(manifest: list[dict], sents: list[dict],
                   dur: float) -> list[float]:
-    """One start time per *state* (ignoring reveal sub-steps)."""
+    """One start time per *state* (ignoring reveal sub-steps).
+
+    Internal cue convention is zero-based (0..N-1). We strictly validate
+    rather than silently clamping — a clamp would hide the exact
+    ``cue 7 is outside 0..6`` class of bug that ``verifier_storyboard``
+    hard-gates upstream. Clamping is therefore a bug, not a defense.
+    """
     heads = [m for m in manifest if m["step"] == 0]
     starts: list[float] = []
     for m in heads:
-        cue = min(m["cue"], len(sents) - 1) if sents else 0
-        base = sents[cue]["start"] if sents else 0.0
+        raw_cue = m.get("cue", 0)
+        try:
+            cue = int(raw_cue)
+        except (TypeError, ValueError):
+            raise SystemExit(
+                f"[timeline] state {m.get('name','?')} has non-integer cue {raw_cue!r}"
+            )
+        if sents:
+            if not (0 <= cue < len(sents)):
+                raise SystemExit(
+                    f"[timeline] state {m.get('name','?')} references cue {cue}, "
+                    f"but section has {len(sents)} sentences (valid zero-based range: 0..{len(sents)-1})"
+                )
+            base = sents[cue]["start"]
+        else:
+            base = 0.0
         if m.get("anchor"):
             hit = _find_anchor(m["anchor"], sents, base)
             if hit is not None:

@@ -789,11 +789,31 @@ class PlannerLlmPlugin(Plugin):
                 "scene plan is empty."
             )
 
-        payload = self._build_payload(
+        # Overwrite guard: reuse existing storyboard if present and still valid,
+        # unless forced. This prevents "every new run overwrites scene files
+        # that I don't need" — the storyboard is the source of scene generation,
+        # so preserving it avoids downstream scene churn when nothing changed.
+        repair_feedback = self._repair_feedback(
             context
         )
+        force = bool(self.config.get("force", False)) or os.environ.get("P2R_FORCE_STORYBOARD", "").strip().lower() in {"1", "true", "yes", "force"}
+        storyboard_path = _harness_dir(context.project_dir) / STORYBOARD_FILE
+        if not force and not repair_feedback and storyboard_path.exists():
+            try:
+                existing = json.loads(storyboard_path.read_text(encoding="utf-8"))
+                # Quick validation: correct section count and structure
+                if isinstance(existing, dict) and isinstance(existing.get("sections"), list):
+                    # Validate via existing _validate_sections to avoid serving a broken artifact
+                    errs = _validate_sections(entries, existing.get("sections", []))
+                    if not errs:
+                        # Reuse existing artifact — do not call LLM, do not overwrite
+                        context.storyboard_plan = existing
+                        cfg.say(f"storyboard: reusing existing {STORYBOARD_FILE} (use force to regenerate)")
+                        return context
+            except Exception:
+                pass  # fall through to regeneration
 
-        repair_feedback = self._repair_feedback(
+        payload = self._build_payload(
             context
         )
 

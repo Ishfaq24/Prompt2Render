@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -285,8 +286,124 @@ class EventJournal:
         return records
 
 
+# ---------------------------------------------------------------------------
+# Replay (P2-2)
+# ---------------------------------------------------------------------------
+
+#: Event types that mark a candidate's final outcome for one scene.
+_DECISION_EVENT_TYPES = frozenset({"scene.accepted", "scene.rejected", "scene.rollback"})
+
+
+@dataclass
+class SceneReplayState:
+    """One scene's lifecycle, reconstructed purely from durable events."""
+
+    stem: str
+    state: str | None = None
+    current_revision: int = 0
+    accepted_revision: int = 0
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stem": self.stem,
+            "state": self.state,
+            "current_revision": self.current_revision,
+            "accepted_revision": self.accepted_revision,
+            "decisions": list(self.decisions),
+        }
+
+
+@dataclass
+class ReplayState:
+    """The harness's own state, reconstructed purely from durable events.
+
+    "Purely" is the point: nothing here reads ``SceneContext``,
+    ``repair_log.jsonl``, or ``revisions.json`` -- if this disagrees with
+    any of those, either the journal is missing events or one of the
+    other artifacts drifted, and that disagreement is itself the kind of
+    fact :mod:`selfcheck` exists to catch.
+    """
+
+    scenes: dict[str, SceneReplayState] = field(default_factory=dict)
+    build_status: str = "unknown"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scenes": {stem: scene.to_dict() for stem, scene in self.scenes.items()},
+            "build_status": self.build_status,
+        }
+
+
+def replay(events: list[dict[str, Any]]) -> ReplayState:
+    """Reconstruct per-scene lifecycle state and decision history from a
+    plain list of event dicts (as returned by :meth:`EventJournal.read`).
+
+    Processes events in ``seq`` order regardless of the order they were
+    passed in -- a caller that filtered or otherwise reordered a
+    :meth:`EventJournal.read` result still replays correctly.
+    """
+
+    result = ReplayState()
+
+    for record in sorted(events, key=lambda r: int(r.get("seq", 0) or 0)):
+        event_type = str(record.get("event_type", ""))
+        stem = str(record.get("scene_id", ""))
+
+        if event_type in ("build.started", "build.completed", "build.failed"):
+            result.build_status = {
+                "build.started": "running",
+                "build.completed": "ok",
+                "build.failed": "fail",
+            }[event_type]
+            continue
+
+        if not stem or stem == "__all__":
+            continue
+
+        scene = result.scenes.setdefault(stem, SceneReplayState(stem=stem))
+
+        try:
+            revision = int(record.get("revision", 0) or 0)
+        except (TypeError, ValueError):
+            revision = 0
+
+        if revision > scene.current_revision:
+            scene.current_revision = revision
+
+        if event_type == "scene.state":
+            payload = record.get("payload") or {}
+            to_state = payload.get("to")
+
+            if to_state:
+                scene.state = str(to_state)
+
+        elif event_type in _DECISION_EVENT_TYPES:
+            payload = record.get("payload") or {}
+            is_dry_run = bool(payload.get("dry_run"))
+
+            scene.decisions.append(
+                {
+                    "seq": record.get("seq"),
+                    "timestamp": record.get("timestamp"),
+                    "event_type": event_type,
+                    "decision": payload.get("decision"),
+                    "reason": payload.get("reason"),
+                    "dry_run": is_dry_run,
+                }
+            )
+
+            if event_type == "scene.accepted" and not is_dry_run:
+                scene.accepted_revision = revision
+
+    return result
+
+
 __all__ = [
     "EventJournal",
+    "ReplayState",
+    "SceneReplayState",
     "VALID_EVENT_TYPES",
     "VALID_STATUSES",
+    "replay",
 ]
