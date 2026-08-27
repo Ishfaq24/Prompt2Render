@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import textwrap
 import threading
