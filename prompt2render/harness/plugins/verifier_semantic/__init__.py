@@ -259,42 +259,38 @@ def _normalize_result(
     ):
         return None
 
-    status = str(
-        result.get(
-            "status",
-            "",
-        )
-    ).strip().lower()
+    status = str(result.get("status", "")).strip().lower()
 
-    if status not in {
-        "pass",
-        "fail",
-    }:
+    # Accept the spec's three-state schema: pass | fail | unavailable.
+    # ``unavailable`` is normalized but handled by the caller as
+    # VERIFICATION_UNAVAILABLE rather than a semantic failure.
+    if status not in {"pass", "fail", "unavailable"}:
         return None
 
-    reason = str(
-        result.get(
-            "reason",
-            "",
-        )
-    ).strip()
-
+    reason = str(result.get("reason", result.get("summary", ""))).strip()
     normalized = {
         "status": status,
         "reason": reason,
     }
-
-    # Preserve optional structured reviewer fields if supplied.
-    for key in (
-        "violations",
-        "evidence",
-        "severity",
-        "confidence",
-        "fix",
-    ):
+    # Preserve spec's predictable schema fields
+    for key in ("violations", "evidence", "severity", "confidence", "fix", "findings", "score", "summary"):
         if key in result:
             normalized[key] = result[key]
-
+    # Validate optional numeric fields when present (bounded)
+    if "score" in normalized:
+        try:
+            s = float(normalized["score"])
+            if not (0 <= s <= 100):
+                return None
+        except Exception:
+            return None
+    if "confidence" in normalized:
+        try:
+            c = float(normalized["confidence"])
+            if not (0 <= c <= 1):
+                return None
+        except Exception:
+            return None
     return normalized
 
 
@@ -506,13 +502,18 @@ def _preview_path(
     context: SceneContext,
     stem: str,
 ) -> Path:
-    return (
-        context.project_dir
-        / "build"
-        / "manim"
-        / "previews"
-        / f"Scene{stem}.png"
-    )
+    try:
+        from ..preview import preview_path_for
+
+        return preview_path_for(context, stem)
+    except Exception:
+        return (
+            context.project_dir
+            / "build"
+            / "manim"
+            / "previews"
+            / f"Scene{stem}.png"
+        )
 
 
 def _preview_is_fresh(
@@ -687,53 +688,71 @@ class VerifierSemanticPlugin(Plugin):
         if not keys:
             cfg.warn(
                 "No GEMINI_API_KEY found; "
-                "semantic verification skipped."
+                "semantic verification unavailable."
             )
+            from ...finding import verification_unavailable, Category
 
-            context.check_results[
-                self.name
-            ] = [
-                {
-                    "status": "skip",
-                    "finding_type": (
-                        "semantic_verification_unavailable"
-                    ),
-                    "detail": (
-                        "No LLM API key is available "
-                        "for semantic verification."
-                    ),
-                }
-            ]
-
+            context.check_results[self.name] = []
+            for entry in context.scene_plan or []:
+                stem = str(getattr(entry, "stem", "") or "").strip()
+                if not stem:
+                    continue
+                artifact = context.code_artifacts.get(stem)
+                if artifact is None or artifact.path is None or not artifact.path.exists():
+                    continue
+                context.check_results[self.name].append(
+                    verification_unavailable(
+                        verifier=self.name,
+                        stem=stem,
+                        reason="No LLM API key is available for semantic verification.",
+                        category=Category.SEMANTIC,
+                    )
+                )
+            # If no scene had code, still need one global unavailable marker
+            if not context.check_results[self.name]:
+                context.check_results[self.name].append(
+                    verification_unavailable(
+                        verifier=self.name,
+                        stem="__all__",
+                        reason="No LLM API key is available for semantic verification.",
+                        category=Category.SEMANTIC,
+                    )
+                )
             return context
 
         model = _model_name()
 
         try:
-            # Sanity-check that a client is even constructible before
-            # spending time on any scene. The actual per-call client is
-            # created internally by llm.complete() for whichever key/model
-            # it ends up rotating to.
-            _client(
-                keys[0]
-            )
+            _client(keys[0])
         except Exception as exc:
-            cfg.warn(
-                f"Semantic verifier unavailable: {exc}"
-            )
+            cfg.warn(f"Semantic verifier unavailable: {exc}")
+            from ...finding import verification_unavailable, Category
 
-            context.check_results[
-                self.name
-            ] = [
-                {
-                    "status": "skip",
-                    "finding_type": (
-                        "semantic_verification_unavailable"
-                    ),
-                    "detail": str(exc),
-                }
-            ]
-
+            context.check_results[self.name] = []
+            for entry in context.scene_plan or []:
+                stem = str(getattr(entry, "stem", "") or "").strip()
+                if not stem:
+                    continue
+                artifact = context.code_artifacts.get(stem)
+                if artifact is None or artifact.path is None or not artifact.path.exists():
+                    continue
+                context.check_results[self.name].append(
+                    verification_unavailable(
+                        verifier=self.name,
+                        stem=stem,
+                        reason=str(exc),
+                        category=Category.SEMANTIC,
+                    )
+                )
+            if not context.check_results[self.name]:
+                context.check_results[self.name].append(
+                    verification_unavailable(
+                        verifier=self.name,
+                        stem="__all__",
+                        reason=str(exc),
+                        category=Category.SEMANTIC,
+                    )
+                )
             return context
 
         repair_context = getattr(
@@ -950,22 +969,27 @@ class VerifierSemanticPlugin(Plugin):
                     break
 
                 # ------------------------------------------------------
-                # Fail closed on malformed critic output.
+                # Fail closed on malformed critic output -- after a bounded
+                # retry, report VERIFICATION_UNAVAILABLE, not a fabricated
+                # semantic_mismatch. Do not mark semantic verification as
+                # passed and preserve the raw failure reason.
                 # ------------------------------------------------------
                 if attempt == 2:
+                    from ...finding import verification_unavailable, Category
+
+                    raw = (content or "")[:600] if isinstance(content, str) else ""
+                    reason = (
+                        "Semantic critic returned invalid structured output; "
+                        "verification could not establish semantic correctness."
+                    )
+                    if raw:
+                        reason += f" Raw output (truncated): {raw!r}"
                     local.append(
-                        _make_finding(
+                        verification_unavailable(
+                            verifier="verifier_semantic",
                             stem=entry.stem,
-                            gate=gate,
-                            result={
-                                "status": "fail",
-                                "reason": (
-                                    "Semantic critic returned "
-                                    "invalid structured output; "
-                                    "verification could not establish "
-                                    "semantic correctness."
-                                ),
-                            },
+                            reason=reason,
+                            category=Category.SEMANTIC,
                         )
                     )
                     gave_up = True
@@ -976,26 +1000,16 @@ class VerifierSemanticPlugin(Plugin):
                     )
 
             except Exception as exc:
-                # A semantic verifier that crashes should not silently
-                # turn into PASS. It is recorded as a verification
-                # failure -- but only once a retry has also failed.
                 if attempt == 2:
-                    cfg.warn(
-                        f"Semantic verification failed "
-                        f"for {entry.stem}: {exc}"
-                    )
+                    from ...finding import verification_unavailable, Category
 
+                    cfg.warn(f"Semantic verification failed for {entry.stem}: {exc}")
                     local.append(
-                        _make_finding(
+                        verification_unavailable(
+                            verifier="verifier_semantic",
                             stem=entry.stem,
-                            gate=gate,
-                            result={
-                                "status": "fail",
-                                "reason": (
-                                    "Semantic verification "
-                                    f"failed: {exc}"
-                                ),
-                            },
+                            reason=f"Semantic verification failed: {exc}",
+                            category=Category.SEMANTIC,
                         )
                     )
                     gave_up = True
@@ -1006,6 +1020,19 @@ class VerifierSemanticPlugin(Plugin):
                     )
 
         if gave_up or result is None:
+            return local
+
+        if result.get("status") == "unavailable":
+            from ...finding import verification_unavailable, Category
+
+            local.append(
+                verification_unavailable(
+                    verifier="verifier_semantic",
+                    stem=entry.stem,
+                    reason=result.get("reason", "semantic verification unavailable"),
+                    category=Category.SEMANTIC,
+                )
+            )
             return local
 
         if result[

@@ -277,22 +277,51 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
     normalise(made[-1], dst, seconds)
 
     # Extract the final frame as a preview image for visual layout auditing.
-    preview_dst = proj / "build" / "manim" / "previews"
-    preview_dst.mkdir(parents=True, exist_ok=True)
-    preview_img = preview_dst / f"Scene{sec.stem}.png"
+    # Robust, candidate-aware, and size-verified -- see harness.preview for
+    # the full contract. Candidate renders must never clobber the accepted
+    # preview; extraction failures are diagnosed explicitly rather than
+    # swallowed, so downstream verifiers can report VERIFICATION_UNAVAILABLE
+    # instead of crashing with FileNotFoundError or silently passing.
     try:
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-v", "error",
-                "-sseof", "-0.1", "-i", str(dst),
-                "-frames:v", "1", str(preview_img),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
+        from prompt2render.harness.preview import PREVIEW_MIN_BYTES, extract_preview
+        import tempfile, shutil
+
+        # Candidate-aware preview path: when out_dir is a sidecar
+        # (build/harness/candidates/<stem>/rev<N>/render), keep the preview
+        # isolated under that candidate's own previews/ directory so the
+        # accepted build/manim/previews/SceneXX.png is never overwritten
+        # before verification decides.
+        if out_dir is not None and "candidates" in Path(out_dir).parts:
+            # out_dir == <root>/render -> root is parent
+            cand_root = Path(out_dir).parent
+            preview_dst = cand_root / "previews"
+            preview_img = preview_dst / f"Scene{sec.stem}.png"
+            # Also ensure canonical preview is not touched -- nothing to do.
+        else:
+            preview_dst = proj / "build" / "manim" / "previews"
+            preview_img = preview_dst / f"Scene{sec.stem}.png"
+
+        preview_dst.mkdir(parents=True, exist_ok=True)
+
+        ok, diag = extract_preview(dst, preview_img)
+        if not ok:
+            cfg.warn(f"preview extraction failed for {sec.stem}: {diag}")
+            # Do not leave a truncated preview behind
+            try:
+                if preview_img.exists() and preview_img.stat().st_size < PREVIEW_MIN_BYTES:
+                    preview_img.unlink(missing_ok=True)
+            except Exception:
+                pass
+        # On success, verify again that the file meets the threshold
+        elif preview_img.exists():
+            try:
+                sz = preview_img.stat().st_size
+                if sz < PREVIEW_MIN_BYTES:
+                    cfg.warn(f"preview for {sec.stem} too small ({sz} bytes) at {preview_img}")
+            except OSError as exc:
+                cfg.warn(f"preview for {sec.stem} not readable: {exc}")
+    except Exception as exc:
+        cfg.warn(f"preview extraction for {sec.stem} raised {type(exc).__name__}: {exc}")
 
     cfg.say(
         f"rendered {scene} -> {dst.name}"

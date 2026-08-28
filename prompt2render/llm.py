@@ -32,14 +32,44 @@ ENDPOINT = (
 # be exhausted before a "-lite" model is tried at all — lite models trade
 # quality for cost/quota and are a last resort, not an early fallback.
 CANONICAL_MODELS = [
-    "gemini-3.7-flash",
+    "gemini-2.5-flash"
     "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.7-flash-lite",
+    "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
+   
 ]
 
+# Keep explicit legacy aliases that should map to canonical without being
+# treated as "unknown" (e.g. gemini-2.5-flash-preview).
+_MODEL_ALIASES = {
+    "gemini-2.5-flash": "gemini-2.5-flash",
+    "gemini-3.6-flash":"gemini-3.6-flash",
+        "gemini-3.5-flash":"gemini-3.5-flash"
+}
+
 MODEL_FALLBACKS = CANONICAL_MODELS.copy()
+
+
+def _parse_gemini_models_env() -> list[str] | None:
+    """Parse P2R_GEMINI_MODELS if set (JSON array or comma-separated)."""
+    raw = os.environ.get("P2R_GEMINI_MODELS", "").strip()
+    if not raw:
+        return None
+    # Try JSON
+    try:
+        import json
+        val = json.loads(raw)
+        if isinstance(val, list):
+            cleaned = [str(x).strip() for x in val if str(x).strip()]
+            if cleaned:
+                return cleaned
+    except Exception:
+        pass
+    # Fallback: comma-separated
+    parts = [p.strip().strip('"').strip("'") for p in raw.strip("[]").split(",")]
+    cleaned = [p for p in parts if p]
+    return cleaned or None
 
 
 def model_chain(
@@ -51,22 +81,39 @@ def model_chain(
     Known canonical model:
         start -> progressively lower models
 
-    Unknown/custom model:
-        custom model only
+    P2R_GEMINI_MODELS env (JSON array) overrides canonical when set:
+        explicit ordered list from env
 
-    This prevents an unknown or older model from silently jumping to a
-    stronger canonical model.
+    Unknown/custom model:
+        primary + full canonical fallback (so a NOT_FOUND primary still
+        recovers to a known good model instead of exhausting immediately).
+
+    This preserves the old "no silent jump to stronger" for truly custom
+    models only when the env override is not set, while ensuring a typo or
+    deprecated model like gemini-2.5-flash does not brick the whole harness.
     """
-    primary = (
-        os.environ.get(model_env, "").strip()
-        or default_model
-    )
+    # Env override takes precedence (user explicitly configured ordered list)
+    env_chain = _parse_gemini_models_env()
+    if env_chain is not None:
+        primary = os.environ.get(model_env, "").strip() or default_model
+        # Ensure primary is first if not already in env list
+        if primary and primary not in env_chain:
+            # Check alias
+            if primary in _MODEL_ALIASES:
+                primary = _MODEL_ALIASES[primary]
+            return [primary] + [m for m in env_chain if m != primary]
+        return env_chain
+
+    primary_raw = os.environ.get(model_env, "").strip() or default_model
+    primary = _MODEL_ALIASES.get(primary_raw, primary_raw)
 
     if primary in CANONICAL_MODELS:
         index = CANONICAL_MODELS.index(primary)
         return CANONICAL_MODELS[index:]
 
-    return [primary]
+    # Unknown: try primary first, then fallback to canonical (so NOT_FOUND
+    # does not exhaust immediately). Keep order deterministic.
+    return [primary] + CANONICAL_MODELS
 
 
 def _backup_key_sort(item: tuple[str, str]) -> tuple[int, str]:

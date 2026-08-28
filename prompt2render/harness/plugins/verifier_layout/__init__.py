@@ -179,7 +179,12 @@ def _model_name() -> str:
 
 
 def _preview_path(context: SceneContext, stem: str) -> Path:
-    return context.project_dir / "build" / "manim" / "previews" / f"Scene{stem}.png"
+    try:
+        from ..preview import preview_path_for
+
+        return preview_path_for(context, stem)
+    except Exception:
+        return context.project_dir / "build" / "manim" / "previews" / f"Scene{stem}.png"
 
 
 def _preview_is_fresh(preview: Path, source: Path) -> bool:
@@ -187,6 +192,21 @@ def _preview_is_fresh(preview: Path, source: Path) -> bool:
         return preview.stat().st_mtime >= source.stat().st_mtime
     except OSError:
         return False
+
+
+def _check_preview_exists(preview: Path) -> tuple[bool, str]:
+    """Robust preview existence/size check per preview helper contract."""
+    if not preview.exists():
+        return False, f"required preview artifact missing at {preview}"
+    try:
+        size = preview.stat().st_size
+        from ..preview import PREVIEW_MIN_BYTES
+
+        if size < PREVIEW_MIN_BYTES:
+            return False, f"preview file too small ({size} bytes) at {preview}"
+    except OSError as exc:
+        return False, f"preview not readable at {preview}: {exc}"
+    return True, ""
 
 
 def _extract_json(content: str) -> dict[str, Any] | None:
@@ -331,13 +351,17 @@ class VerifierLayoutPlugin(Plugin):
         for stem, artifact in context.render_artifacts.items():
             record = getattr(artifact, "audit", None)
             if record is None:
-                findings.append({
-                    "status": "skip",
-                    "stem": stem,
-                    "finding_type": "layout_audit_unavailable",
-                    "category": Category.LAYOUT.value,
-                    "detail": "No layout audit record was recorded for this scene.",
-                })
+                from ...finding import verification_unavailable
+
+                findings.append(
+                    verification_unavailable(
+                        verifier=self.name,
+                        stem=stem,
+                        reason="required preview artifact missing -- no layout audit recorded for this scene",
+                        category=Category.LAYOUT,
+                    )
+                )
+                stems_with_blocking.add(stem)
                 continue
             if not isinstance(record, dict):
                 findings.append({
@@ -346,6 +370,8 @@ class VerifierLayoutPlugin(Plugin):
                     "finding_type": "layout_audit_invalid",
                     "category": Category.LAYOUT.value,
                     "detail": "RenderArtifact.audit is not a dictionary.",
+                    "verifier": self.name,
+                    "verifier_state": "VERIFICATION_UNAVAILABLE",
                 })
                 stems_with_blocking.add(stem)
                 continue
@@ -477,34 +503,120 @@ class VerifierLayoutPlugin(Plugin):
         Split out of ``run()`` so independent scenes' LLM round trips can be
         dispatched to a thread pool without any of them mutating shared
         state directly.
-        """
 
+        Preview handling is robust and candidate-aware via
+        :mod:`prompt2render.harness.preview`. A missing or truncated preview
+        after a bounded regeneration attempt becomes
+        ``VERIFICATION_UNAVAILABLE`` (BLOCKING) rather than a crash or a
+        silent PASS -- the bug that produced
+        ``FileNotFoundError: .../previews/Scene01.png`` during re-verification.
+        """
+        # Candidate-aware preview resolution
         preview = _preview_path(context, stem)
-        has_preview = preview.exists() and _preview_is_fresh(preview, artifact.path)
-        # In repair, force VLM if in_repair even without preview? mirror semantic logic: only if in_repair or has_preview
+        has_preview = False
+        try:
+            ok, _ = _check_preview_exists(preview)
+            has_preview = ok and _preview_is_fresh(preview, artifact.path)
+        except Exception:
+            has_preview = False
+
         repair_context = getattr(context, "repair_context", {}) or {}
         in_repair = stem in repair_context if isinstance(repair_context, dict) else False
+
+        # If no preview and we're not in a repair cycle, there is no VLM to
+        # run -- this verifier is supplementary for Manim and the deterministic
+        # audit already decided. Do not fabricate a blocking finding here;
+        # the deterministic audit's own VERIFICATION_UNAVAILABLE (when its
+        # RenderArtifact.audit is missing) is the correct signal for a
+        # renderer that never produced any audit at all.
         if not has_preview and not in_repair:
             return stem, None
+
+        # Attempt to ensure a preview exists (candidate-aware). Use the
+        # central helper which extracts from the rendered clip if needed.
+        if not has_preview:
+            try:
+                from ..preview import ensure_preview
+
+                ensured, diag = ensure_preview(context, stem)
+                if ensured is not None and ensured.exists():
+                    preview = ensured
+                    has_preview = _preview_is_fresh(preview, artifact.path) if artifact.path else True
+                    # Still verify size
+                    ok, _ = _check_preview_exists(preview)
+                    has_preview = ok and has_preview
+                else:
+                    # Preview could not be ensured -- this is a verification
+                    # infrastructure failure, not a layout defect.
+                    from ...finding import verification_unavailable, Category
+
+                    if gate:
+                        return stem, verification_unavailable(
+                            verifier=self.name,
+                            stem=stem,
+                            reason=f"required preview artifact missing -- could not ensure preview for layout verification: {diag}",
+                            category=Category.LAYOUT,
+                        )
+                    return stem, None
+            except Exception as exc:
+                from ...finding import verification_unavailable, Category
+
+                if gate:
+                    return stem, verification_unavailable(
+                        verifier=self.name,
+                        stem=stem,
+                        reason=f"required preview artifact missing -- {exc}",
+                        category=Category.LAYOUT,
+                    )
+                return stem, None
+
         try:
             code = artifact.path.read_text(encoding="utf-8")
-        except Exception:
-            return stem, None
+        except Exception as exc:
+            from ...finding import verification_unavailable, Category
+
+            return stem, verification_unavailable(
+                verifier=self.name,
+                stem=stem,
+                reason=f"could not read scene source for layout verification: {exc}",
+                category=Category.LAYOUT,
+            )
+
         if len(code) > MAX_CODE_CHARS:
             code = code[:MAX_CODE_CHARS] + "\n\n# [CODE TRUNCATED FOR REVIEW]\n"
-        # For Manim, preview may need regeneration during repair
-        if in_repair:
+
+        # Deterministic preview filename, size-verified, race-safe
+        image_b64 = None
+        if has_preview:
             try:
-                from ....project import parse_script
-                from ....visuals import manim_scene
-                script = parse_script(context.prompt)
-                preview.unlink(missing_ok=True)
-                manim_scene(context.project_dir, script, f"Scene{stem}", entry.index)
-                has_preview = preview.exists() and _preview_is_fresh(preview, artifact.path)
-            except Exception:
-                pass
+                # Re-check existence/size immediately before read to avoid
+                # TOCTOU race that previously produced FileNotFoundError
+                ok, diag = _check_preview_exists(preview)
+                if not ok:
+                    from ...finding import verification_unavailable, Category
+
+                    if gate:
+                        return stem, verification_unavailable(
+                            verifier=self.name,
+                            stem=stem,
+                            reason=f"required preview artifact missing: {diag}",
+                            category=Category.LAYOUT,
+                        )
+                    return stem, None
+                image_b64 = base64.b64encode(preview.read_bytes()).decode("ascii")
+            except (OSError, FileNotFoundError) as exc:
+                from ...finding import verification_unavailable, Category
+
+                if gate:
+                    return stem, verification_unavailable(
+                        verifier=self.name,
+                        stem=stem,
+                        reason=f"required preview artifact missing: {exc}",
+                        category=Category.LAYOUT,
+                    )
+                return stem, None
+
         prompt = _build_layout_prompt(entry, code, has_preview=has_preview)
-        image_b64 = base64.b64encode(preview.read_bytes()).decode("ascii") if has_preview else None
         model = _model_name()
         try:
             content = llm.complete(
@@ -516,14 +628,58 @@ class VerifierLayoutPlugin(Plugin):
                 image_base64=image_b64,
                 json_object=True,
             )
-            result = _normalize_result(_extract_json(str(content or "")))
+            # Robust structured-output handling: strict JSON, bounded repair
+            parsed = _extract_json(str(content or ""))
+            # Attempt a single normalization/repair pass for truncated JSON
+            result = _normalize_result(parsed)
+            if result is None and parsed is not None:
+                # Try to repair common truncations (missing closing brace)
+                try:
+                    import json as _json
+
+                    # Bounded repair: if the raw content looked like a JSON
+                    # prefix, try adding missing braces (at most once)
+                    raw = str(content or "").strip()
+                    if raw.count("{") > raw.count("}"):
+                        repaired = raw + "}" * (raw.count("{") - raw.count("}"))
+                        result = _normalize_result(_extract_json(repaired))
+                except Exception:
+                    result = None
+
             if result is None:
-                return stem, None
+                from ...finding import verification_unavailable, Category
+
+                raw = (str(content)[:400] if content else "")
+                return stem, verification_unavailable(
+                    verifier=self.name,
+                    stem=stem,
+                    reason=f"Layout critic returned invalid structured output; verification unavailable. Raw (truncated): {raw!r}",
+                    category=Category.LAYOUT,
+                )
+
+            if result.get("status") == "unavailable":
+                from ...finding import verification_unavailable, Category
+
+                return stem, verification_unavailable(
+                    verifier=self.name,
+                    stem=stem,
+                    reason=result.get("reason", "layout verification unavailable"),
+                    category=Category.LAYOUT,
+                )
+
             if result["status"] == "fail":
                 return stem, _make_vlm_layout_finding(stem=stem, result=result, gate=gate)
         except Exception as exc:
+            from ...finding import verification_unavailable, Category
+
             cfg.warn(f"Layout VLM verification failed for {stem}: {exc}")
-            return stem, None
+            # VLM infrastructure failure -- unavailable, not a layout defect
+            return stem, verification_unavailable(
+                verifier=self.name,
+                stem=stem,
+                reason=f"Layout VLM verification failed: {exc}",
+                category=Category.LAYOUT,
+            )
 
         return stem, None
 

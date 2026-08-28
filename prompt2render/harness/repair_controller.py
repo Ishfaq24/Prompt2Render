@@ -155,6 +155,12 @@ class RepairDecisionRecord:
     repairs_used_for_scene: int = 0
     errors: list[str] = field(default_factory=list)
     timestamp: str = ""
+    # Research-grade timing / cost evidence (sections 15-16)
+    render_time_s: float = 0.0
+    verification_time_s: float = 0.0
+    inference_cost: float | None = None
+    # Machine-readable changed files for this cycle
+    changed_files: list[str] = field(default_factory=list)
 
     #: P1-4/Phase 18: true when this cycle ran under a dry-run request --
     #: ``decision`` still reflects what WOULD have happened (including
@@ -410,6 +416,17 @@ class RepairController:
             self._journal(context, "scene.repair.verified", stem, scope.revision)
             self._safe_transition(context, stem, SceneState.VERIFYING)
 
+            # Write canonical per-scene report for the candidate revision.
+            # This is the evidence the next generation must consume. Written
+            # with explicit revision so the accepted latest report is not
+            # overwritten until promotion.
+            try:
+                from .scene_report import write_scene_report, archive_revision
+                write_scene_report(context, stem, revision=scope.revision)
+                archive_revision(context, stem, revision=scope.revision)
+            except Exception:
+                pass
+
             candidate_quality = SceneQuality.collect(context, stem)
             record.candidate_quality = candidate_quality.to_dict()
             record.finding_diff = diff_findings(
@@ -492,6 +509,15 @@ class RepairController:
             )
             record.candidate_revision = revision
 
+            # Promoted: update the canonical latest report to this newly
+            # accepted revision and archive all four artifacts.
+            try:
+                from .scene_report import write_scene_report, archive_revision
+                write_scene_report(context, stem)
+                archive_revision(context, stem, revision=revision)
+            except Exception:
+                pass
+
             # The scene genuinely changed: everything downstream of it,
             # including out/final.mp4, is stale by revision comparison.
             context.repair_context.pop(str(stem), None)
@@ -523,6 +549,40 @@ class RepairController:
     # Judgement -- the acceptance rule
     # ------------------------------------------------------------------
 
+    def _has_verification_unavailable(
+        self,
+        quality: SceneQuality,
+        context: SceneContext,
+        stem: str,
+    ) -> list[str]:
+        """Scene stems that have a VERIFICATION_UNAVAILABLE BLOCKING finding."""
+        found: list[str] = []
+        target = str(stem)
+        for plugin_name, results in (context.check_results or {}).items():
+            if not isinstance(results, list):
+                continue
+            for finding in results:
+                if not isinstance(finding, dict):
+                    continue
+                owner = str(finding.get("stem") or finding.get("scene_id") or "")
+                if owner != target:
+                    continue
+                ft = str(finding.get("finding_type", "")).strip()
+                vs = str(finding.get("verifier_state", "")).strip()
+                is_unavailable = ft == "verification_unavailable" or vs == "VERIFICATION_UNAVAILABLE"
+                # Legacy narrow check: any BLOCKING verification_unavailable
+                if is_unavailable and finding.get("severity") == "BLOCKING":
+                    found.append(f"{plugin_name}:{ft}")
+                # Also treat render/execution hard failures as unavailable for
+                # acceptance purposes (they are not layout/semantic but still
+                # make the candidate not certifiable).
+                if ft in {"manim_crash", "execution_failure", "stills_render_failure", "render_failure"}:
+                    sev = str(finding.get("severity", "")).strip().upper()
+                    status = str(finding.get("status", "")).strip().lower()
+                    if sev == "BLOCKING" or status == "fail":
+                        found.append(f"{plugin_name}:{ft}")
+        return found
+
     def _judge(
         self,
         plan: Any,
@@ -533,6 +593,42 @@ class RepairController:
         record: RepairDecisionRecord,
     ) -> tuple[Decision, str] | None:
         """Return ``None`` to accept, or ``(decision, reason)`` to reject."""
+
+        # Rule B -- VERIFICATION_UNAVAILABLE for a required verifier => REJECT
+        # This precedes the generic blocking checks so the reason is explicit:
+        # "verification unavailable" rather than merely "new blocking finding".
+        unavailable = self._has_verification_unavailable(candidate, context, stem)
+        if unavailable:
+            return (
+                Decision.VERIFIER_FAILED,
+                f"candidate has VERIFICATION_UNAVAILABLE for required verifier: {', '.join(sorted(set(unavailable)))}",
+            )
+
+        # Rule C -- render/execution failure => REJECT (also covered above,
+        # but keep explicit message for execution_status dimension).
+        # Check for empty render artifact or missing clip after render step.
+        rend = context.render_artifacts.get(str(stem))
+        if rend is not None:
+            manifest = getattr(rend, "manifest", None) or []
+            clip = rend.clip_path() if hasattr(rend, "clip_path") else getattr(rend, "clip", None)
+            has_output = bool(manifest) or (clip is not None and Path(clip).exists() if isinstance(clip, (str, Path)) else False)
+            # If the candidate's render produced no output at all, it's a
+            # failed execution even if no explicit finding was emitted yet.
+            # The accepted scene had output (otherwise it wouldn't have been
+            # accepted), so this is a regression.
+            if not has_output:
+                # Only flag if the accepted had output
+                accepted_rend = record.previous_quality.get("stem")  # fallback
+                # Use the accepted quality's has_evidence as proxy; simpler:
+                # if candidate has no manifest/clip but accepted did, reject.
+                # Check the snapshot's previous_quality blocking etc. is not
+                # needed -- just check that candidate render is empty while
+                # we have a previous revision.
+                if record.previous_revision > 0:
+                    return (
+                        Decision.VERIFIER_FAILED,
+                        "candidate render/execution produced no output (missing manifest and clip)",
+                    )
 
         # Rule 1a -- no newly-introduced blocking finding types.
         introduced = new_blocking_types(accepted, candidate)
@@ -634,6 +730,53 @@ class RepairController:
             if plugin is None or not plugin.enabled():
                 continue
 
+            # Dependency-aware orchestration: if the renderer already
+            # failed to produce output for this stem, visual observers and
+            # verifiers that require a rendered artifact cannot meaningfully
+            # run. Mark them as VERIFICATION_UNAVAILABLE rather than letting
+            # them crash with FileNotFoundError or silently pass.
+            if name in SCENE_OBSERVERS + ("verifier_spatial", "verifier_layout", "verifier_motion", "verifier_temporal"):
+                rend = context.render_artifacts.get(str(stem))
+                # observer_visual and downstream spatial/layout/motion/temporal
+                # all need a clip/manifest. If none exists, record
+                # unavailable and skip the actual run to avoid cascading
+                # misleading errors.
+                if rend is None or (not getattr(rend, "manifest", None) and rend.clip_path() is None):
+                    from .finding import verification_unavailable, Category
+
+                    # Map plugin to category for the unavailable finding
+                    cat_map = {
+                        "observer_visual": Category.TECHNICAL,
+                        "verifier_spatial": Category.SPATIAL,
+                        "verifier_layout": Category.LAYOUT,
+                        "verifier_motion": Category.SPATIAL,
+                        "verifier_temporal": Category.TEMPORAL,
+                    }
+                    cat = cat_map.get(name, Category.TECHNICAL)
+                    # For observer, we don't emit a finding (it never does);
+                    # for verifiers, emit an explicit unavailable so
+                    # final_pass and _judge can see it.
+                    if name != "observer_visual":
+                        context.check_results.setdefault(name, []).append(
+                            verification_unavailable(
+                                verifier=name,
+                                stem=stem,
+                                reason=f"required render artifact missing -- {name} cannot run without a rendered clip",
+                                category=cat,
+                            )
+                        )
+                        # Record for the decision log
+                        record.verifier_results.setdefault(name, []).append(
+                            verification_unavailable(
+                                verifier=name,
+                                stem=stem,
+                                reason="required render artifact missing",
+                                category=cat,
+                            )
+                        )
+                    record.errors.append(f"{name} skipped: render artifact missing for {stem}")
+                    continue
+
             try:
                 result = plugin.run(context)
 
@@ -641,10 +784,38 @@ class RepairController:
                     context = result
 
             except (Exception, SystemExit) as exc:
+                # A verifier crash must never be silent PASS -- record it as
+                # VERIFICATION_UNAVAILABLE so the candidate is rejected and
+                # final_pass cannot be True.
+                from .finding import verification_unavailable, Category
+
                 record.errors.append(
                     f"{name} re-verification failed: "
                     f"{type(exc).__name__}: {exc}"
                 )
+                try:
+                    # Best-effort mapping for category
+                    cat = Category.TECHNICAL
+                    if "layout" in name:
+                        cat = Category.LAYOUT
+                    elif "spatial" in name:
+                        cat = Category.SPATIAL
+                    elif "semantic" in name:
+                        cat = Category.SEMANTIC
+                    elif "temporal" in name:
+                        cat = Category.TEMPORAL
+                    elif "execution" in name:
+                        cat = Category.STRUCTURAL
+                    context.check_results.setdefault(name, []).append(
+                        verification_unavailable(
+                            verifier=name,
+                            stem=stem,
+                            reason=f"{name} crashed: {type(exc).__name__}: {exc}",
+                            category=cat,
+                        )
+                    )
+                except Exception:
+                    pass
                 continue
 
             produced = context.check_results.get(name)
@@ -1004,6 +1175,51 @@ class RepairController:
         if not lineage.is_scene_stem(record.stem):
             return
 
+        # Build rich manifest fields for the research ledger
+        try:
+            changed_files = []
+            # Candidate source and render are the two files that may have
+            # changed in this cycle. We record them even when the candidate
+            # was discarded, so the manifest answers "what was attempted".
+            if record.candidate_revision:
+                changed_files.append(f"scene_{record.stem}.py:rev{record.candidate_revision}")
+            verifier_statuses: dict[str, str] = {}
+            all_findings: list[dict[str, Any]] = []
+            for vname, vresults in (record.verifier_results or {}).items():
+                if isinstance(vresults, list) and vresults:
+                    # Summarise verifier status by its most severe finding
+                    has_blocking = any(
+                        isinstance(f, dict) and str(f.get("severity", "")).upper() == "BLOCKING" for f in vresults
+                    )
+                    has_fail = any(isinstance(f, dict) and str(f.get("status", "")).lower() == "fail" for f in vresults)
+                    if has_blocking or has_fail:
+                        verifier_statuses[vname] = "fail"
+                    elif any(isinstance(f, dict) and str(f.get("status", "")).lower() in {"warn"} for f in vresults):
+                        verifier_statuses[vname] = "warn"
+                    elif any(isinstance(f, dict) and str(f.get("status", "")).lower() == "pass" for f in vresults):
+                        verifier_statuses[vname] = "pass"
+                    else:
+                        verifier_statuses[vname] = "skip"
+                    all_findings.extend([dict(f) for f in vresults if isinstance(f, dict)])
+                else:
+                    verifier_statuses[vname] = "unknown"
+            # Also include triggering findings
+            for tf in record.triggering_findings or []:
+                if isinstance(tf, dict):
+                    all_findings.append(dict(tf))
+            # Render status
+            rend = context.render_artifacts.get(record.stem) if context else None
+            if rend is None:
+                render_status = "missing"
+            elif getattr(rend, "manifest", None) or getattr(rend, "clip", None):
+                render_status = "rendered"
+            else:
+                render_status = "failed"
+        except Exception:
+            changed_files = []
+            render_status = ""
+            verifier_statuses = {}
+            all_findings = list(record.triggering_findings or [])
         entry = RevisionEntry(
             revision=record.candidate_revision,
             parent_revision=record.previous_revision,
@@ -1013,6 +1229,14 @@ class RepairController:
             repair_contract=record.repair_contract,
             finding_diff=record.finding_diff,
             quality=record.candidate_quality,
+            triggering_finding=dict(record.triggering_findings[0]) if record.triggering_findings else {},
+            changed_files=changed_files,
+            render_status=render_status,
+            verifier_statuses=verifier_statuses,
+            findings=all_findings,
+            quality_before=dict(record.previous_quality or {}),
+            quality_after=dict(record.candidate_quality or {}),
+            rejection_reason=record.rejection_reason if decision.value != "accepted" else "",
         )
 
         record_revision(

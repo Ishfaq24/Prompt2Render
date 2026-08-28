@@ -550,49 +550,97 @@ def _repair_feedback(
     context: SceneContext,
     stem: str,
 ) -> str:
-    """Build bounded repair feedback for one scene."""
+    """Build bounded repair feedback for one scene.
 
+    Report-driven: if a canonical scene report exists for this stem, it is
+    rendered via ``scene_report.build_repair_context`` (structured findings,
+    evidence, recommended actions, content/layout constraints) and combined
+    with the current source and preview availability. The legacy
+    ``repair_context`` strings are still appended for backward compatibility,
+    but the structured report is the primary evidence.
+    """
+
+    parts: list[str] = []
+
+    # 1. Structured report-driven context (the invariant the spec requires)
+    try:
+        from ...scene_report import build_repair_context, load_scene_report
+
+        report = load_scene_report(getattr(context, "project_dir", None), stem)
+        if report is not None:
+            # Current source
+            cur_src = None
+            try:
+                art = context.code_artifacts.get(stem)
+                if art is not None and art.path is not None and art.path.exists():
+                    cur_src = art.path.read_text(encoding="utf-8", errors="replace")
+                else:
+                    # Also try canonical path when candidate is open the artifact points at candidate
+                    from pathlib import Path as _P
+                    cand = _P(getattr(context, "project_dir", "") or "") / "build" / "manim" / f"scene_{stem}.py"
+                    if cand.exists():
+                        cur_src = cand.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                cur_src = None
+
+            # Preview availability
+            preview_available = False
+            try:
+                from ...preview import canonical_preview_path
+                pp = canonical_preview_path(getattr(context, "project_dir", None), stem)
+                # Also check candidate preview if open
+                from ... import workspace as _ws
+                if _ws.is_candidate_open(context, stem):
+                    from ...preview import preview_path_for
+                    pp = preview_path_for(context, stem)
+                if pp.exists() and pp.stat().st_size > 1024:
+                    preview_available = True
+            except Exception:
+                preview_available = False
+
+            # Best report for comparison (if available, but we use current report's own passing props)
+            rev = int(report.get("revision", 0))
+            rc = build_repair_context(
+                stem=stem,
+                revision=rev,
+                report=report,
+                current_source=cur_src,
+                preview_available=preview_available,
+            )
+            if rc:
+                parts.append(rc)
+            # Also include the current source verbatim so the model revises rather than regenerates from scratch
+            if cur_src:
+                # Truncate to keep prompt bounded but preserve enough to revise
+                snippet = cur_src[:12000]
+                parts.append(f"\nCURRENT MANIM SOURCE (revise this, do not regenerate from scratch):\n```python\n{snippet}\n```\n")
+                parts.append("Preserve components that already passed verification. Modify only components implicated by the report unless broader restructuring is necessary.")
+    except Exception:
+        pass
+
+    # 2. Legacy repair_context messages (diagnostics, contract)
     repair_context = getattr(
         context,
         "repair_context",
         {},
     )
 
-    if not isinstance(
-        repair_context,
-        dict,
-    ):
-        return ""
+    if isinstance(repair_context, dict):
+        messages = repair_context.get(stem, [])
+        if isinstance(messages, list):
+            clean = [
+                str(message).strip()
+                for message in messages
+                if str(message).strip()
+            ]
+            if clean:
+                parts.append(
+                    "\n\nPRIOR REPAIR FEEDBACK:\n"
+                    + "\n".join(f"- {message}" for message in clean)
+                )
 
-    messages = repair_context.get(
-        stem,
-        [],
-    )
-
-    if not isinstance(
-        messages,
-        list,
-    ):
-        return ""
-
-    clean = [
-        str(message).strip()
-        for message in messages
-        if str(message).strip()
-    ]
-
-    if not clean:
-        return ""
-
-    feedback = (
-        "\n\nPRIOR REPAIR FEEDBACK:\n"
-        + "\n".join(
-            f"- {message}"
-            for message in clean
-        )
-    )
-
-    return feedback[-MAX_REPAIR_FEEDBACK:]
+    combined = "\n\n".join(p for p in parts if p)
+    return combined[-MAX_REPAIR_FEEDBACK:] if combined else ""
 
 
 # ---------------------------------------------------------------------------
@@ -2387,8 +2435,16 @@ RULES:
     def _generate_code(
         self,
         prompt: str,
+        *,
+        image_base64: str | None = None,
     ) -> str:
-        """Generate code through the project's LLM abstraction."""
+        """Generate code through the project's LLM abstraction.
+
+        When ``image_base64`` is provided the preview image is sent alongside
+        the text prompt (multimodal). The underlying ``llm.complete`` already
+        supports this for verification; reuse it for generation so the model
+        sees what the failure actually looks like, not just its description.
+        """
 
         from .... import llm
 
@@ -2407,6 +2463,7 @@ RULES:
                     DEFAULT_MODEL,
                 ),
                 label="manim",
+                image_base64=image_base64,
             )
 
             return str(code or "")
@@ -2521,10 +2578,9 @@ RULES:
             exist_ok=True,
         )
 
-        py_file = (
-            outdir
-            / f"scene_{stem}.py"
-        )
+        # Candidate-aware: while a repair candidate for this stem is open the
+        # accepted file must stay untouched. _scene_py_path handles this.
+        py_file = _scene_py_path(context, stem)
 
         duration, timing_table, sentences = (
             _load_timing(
@@ -2600,8 +2656,31 @@ RULES:
                 sentences,
             )
 
+        # Preview-aware regeneration: when this stem is under repair and a
+        # preview exists, send it alongside the text prompt so the model sees
+        # what the failure actually looks like (spec section 10).
+        preview_b64: str | None = None
         try:
-            code = dsl_code if prompt is None else self._generate_code(prompt)
+            if stem in (getattr(context, "repair_context", {}) or {}):
+                from ...preview import preview_path_for, canonical_preview_path
+                # Prefer candidate preview if open, otherwise canonical
+                try:
+                    pp = preview_path_for(context, stem)
+                except Exception:
+                    pp = canonical_preview_path(getattr(context, "project_dir", None), stem)
+                if pp.exists() and pp.stat().st_size > 1024:
+                    import base64 as _b64
+                    preview_b64 = _b64.b64encode(pp.read_bytes()).decode("ascii")
+        except Exception:
+            preview_b64 = None
+
+        try:
+            if dsl_code is not None:
+                code = dsl_code
+            elif prompt is not None:
+                code = self._generate_code(prompt, image_base64=preview_b64)
+            else:
+                code = ""
 
             code = self._clean_generated_code(
                 code

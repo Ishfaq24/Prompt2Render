@@ -420,6 +420,21 @@ def cmd_harness(a):
         from prompt2render.harness.quality_report import write_quality_report
         write_quality_report(ctx.check_results, ctx.project_dir)
 
+        # Canonical per-scene reports (section 3)
+        try:
+            from prompt2render.harness.scene_report import write_scene_report, archive_revision
+            for _stem in list(getattr(ctx, "scene_plan", []) or []):
+                _s = str(getattr(_stem, "stem", "") or "").strip()
+                if _s:
+                    write_scene_report(ctx, _s)
+                    archive_revision(ctx, _s)
+            for _s in list(getattr(ctx, "code_artifacts", {}) or {}):
+                if _s and _s not in {str(getattr(e, "stem", "")) for e in (getattr(ctx, "scene_plan", []) or [])}:
+                    write_scene_report(ctx, _s)
+                    archive_revision(ctx, _s)
+        except Exception:
+            pass
+
         # P1-2: backfill build/harness/revisions.json for any scene that
         # reached a positive revision this run but has no repair-cycle
         # history yet (never repaired, or repaired in an earlier process
@@ -442,6 +457,21 @@ def cmd_harness(a):
             repair_controller.decisions if repair_controller is not None else [],
             log_path=log_path,
         )
+
+        # Experiment summary (section 19): same aggregation discipline as
+        # metrics/quality_report -- pure function over already-produced
+        # evidence, never raises, written on both outcomes so a failed run's
+        # trajectory is still reportable.
+        try:
+            from prompt2render.harness.experiment_summary import write_experiment_summary
+            write_experiment_summary(
+                ctx.project_dir,
+                ctx,
+                repair_controller.decisions if repair_controller is not None else [],
+                log_path=log_path,
+            )
+        except Exception:
+            pass
 
         # Tier 3 Phase 15: same reasoning -- the repair controller's
         # decision log is complete regardless of the final gate outcome,
@@ -490,6 +520,24 @@ def cmd_harness(a):
     from prompt2render.harness.quality_report import write_quality_report
     write_quality_report(ctx.check_results, ctx.project_dir)
 
+    # Canonical per-scene reports (section 3): one JSON per scene under
+    # build/reports/scenes/<id>.json plus per-revision archives. Written on
+    # both success and GateFailure so the next generation sees evidence.
+    try:
+        from prompt2render.harness.scene_report import write_scene_report, archive_revision
+        for _stem in list(getattr(ctx, "scene_plan", []) or []):
+            _s = str(getattr(_stem, "stem", "") or "").strip()
+            if _s:
+                write_scene_report(ctx, _s)
+                archive_revision(ctx, _s)
+        # Also cover stems that have a code artifact but no scene_plan entry
+        for _s in list(getattr(ctx, "code_artifacts", {}) or {}):
+            if _s and _s not in {str(getattr(e, "stem", "")) for e in (getattr(ctx, "scene_plan", []) or [])}:
+                write_scene_report(ctx, _s)
+                archive_revision(ctx, _s)
+    except Exception:
+        pass
+
     # P1-2: see the matching comment in the GateFailure branch above.
     from prompt2render.harness.revision_history import seed_from_context
     seed_from_context(ctx.project_dir, ctx)
@@ -504,6 +552,17 @@ def cmd_harness(a):
         repair_controller.decisions if repair_controller is not None else [],
         log_path=log_path,
     )
+
+    try:
+        from prompt2render.harness.experiment_summary import write_experiment_summary
+        write_experiment_summary(
+            ctx.project_dir,
+            ctx,
+            repair_controller.decisions if repair_controller is not None else [],
+            log_path=log_path,
+        )
+    except Exception:
+        pass
 
     # Bug fix: write_self_correction_report(final_pass=True) was never
     # called anywhere -- the three existing call sites are all inside
@@ -888,6 +947,71 @@ def cmd_harness_check(a):
         )
 
 
+def cmd_report(a):
+    """Produce the experiment summary report (section 19) for a project.
+
+    Reads ``build/harness/experiment_summary.json`` if already produced by a
+    prior ``harness`` run, otherwise builds it on the fly from the current
+    on-disk state (check_results from self_correction_report, repair decisions
+    from repair_log, etc.) and writes it. Never requires a live LLM or render.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    d, _ = _load(a.slug)
+    # Try to build from live context if harness was just run, otherwise fall back to persisted files
+    summary_path = d / "build" / "harness" / "experiment_summary.json"
+    if summary_path.exists() and not getattr(a, "rebuild", False):
+        try:
+            data = _json.loads(summary_path.read_text(encoding="utf-8"))
+            print(_json.dumps(data, ensure_ascii=False, indent=2))
+            if getattr(a, "json", False):
+                return
+            # Also print human-readable summary
+            print(f"\nExperiment summary for {a.slug}:")
+            for k in ["total_scenes", "successful_scenes", "failed_scenes", "blocking_findings", "warnings", "repair_attempts", "accepted_repairs", "rejected_repairs", "regression_rejections", "verification_unavailable_events", "render_failures", "mean_repair_cycles", "median_repair_cycles", "repair_success_rate", "regression_rate", "mean_temporal_error", "mean_layout_score", "mean_semantic_score", "mean_pedagogical_score", "render_time", "verification_time", "inference_cost", "final_pass"]:
+                print(f"  {k}: {data.get(k)}")
+            return
+        except Exception:
+            pass
+
+    # Fallback: reconstruct minimal ctx from on-disk artifacts
+    ctx = _load_context_for_selfcheck(d)
+    # Also load check_results from self_correction_report if available
+    sc_path = d / "out" / "self_correction_report.json"
+    if sc_path.exists():
+        try:
+            sc = _json.loads(sc_path.read_text(encoding="utf-8"))
+            ctx.check_results = sc.get("verification_results", {}) or ctx.check_results
+        except Exception:
+            pass
+    # Load decisions from repair_log.jsonl
+    decisions = []
+    repair_log = d / "build" / "harness" / "repair_log.jsonl"
+    if repair_log.exists():
+        try:
+            for line in repair_log.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    decisions.append(_json.loads(line))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    from prompt2render.harness.experiment_summary import build_experiment_summary, write_experiment_summary
+    log_path = d / "build" / "harness" / "log.jsonl"
+    summary = build_experiment_summary(ctx, decisions, log_path=log_path)
+    # Also write it
+    try:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(_json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+    print(_json.dumps(summary, ensure_ascii=False, indent=2))
+
+
 def cmd_auto(a):
     """script.md -> script.md, if it doesn't exist yet -> final.mp4, unattended.
 
@@ -1085,6 +1209,12 @@ def main() -> None:
              "run the harness self-check against a project's current "
              "on-disk state, without re-running the pipeline")
     hc.add_argument("slug")
+
+    rp = add("report", cmd_report,
+             "print the experiment summary (section 19: total scenes, repair rates, scores, timings)")
+    rp.add_argument("slug")
+    rp.add_argument("--json", action="store_true", help="only print JSON")
+    rp.add_argument("--rebuild", action="store_true", help="rebuild the summary from on-disk state instead of using the cached file")
 
     al = add("align", cmd_align, "force-align the narration to word level")
     al.add_argument("slug"); al.add_argument("--only")

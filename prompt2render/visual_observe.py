@@ -228,6 +228,36 @@ def sample_points(
                 offset = elapsed + state.run_time + state.wait * 0.5
                 timestamp = min(offset, clip_duration - 0.05)
 
+                # Do not sample during the entrance animation itself:
+                # wait*0.5 ensures we are well into the settled hold
+                # period after run_time has finished. If wait is zero
+                # (degenerate, but allowed -- see motion_sample_points),
+                # fall back to end of run_time minus a small margin so we
+                # sample the *final* frame of the animation, not the first.
+                if state.wait == 0 and state.run_time > 0:
+                    # Sample at run_time end minus 0.05, but ensure we are
+                    # not sampling the very first 0.3s of the clip where a
+                    # FadeIn/Write entrance is still in progress.
+                    alt = elapsed + state.run_time - 0.05
+                    if alt > 0.4:
+                        timestamp = min(alt, clip_duration - 0.05)
+                    else:
+                        timestamp = min(offset, clip_duration - 0.05)
+
+                # Suppress sampling before the scene has had time to
+                # present its first settled content -- a frame at 0.09s
+                # is mid-entrance, not evidence of an empty scene.
+                if timestamp < 0.5 and len(points) == 0:
+                    # Push the first sample to at least 0.5s when possible,
+                    # or skip it if the clip is too short to have a settled
+                    # frame (genuinely empty will still be caught by later
+                    # samples or fallback).
+                    if clip_duration >= 0.6:
+                        timestamp = min(0.5, clip_duration - 0.05)
+                    else:
+                        elapsed += span
+                        continue
+
                 if timestamp > 0:
                     points.append((state.name, round(timestamp, 3)))
 
@@ -238,10 +268,25 @@ def sample_points(
 
     count = max(1, fallback_count)
 
-    return [
+    # Fallback: evenly spaced, but never before 0.5s for the first sample
+    # to avoid false positives from entrance animation. A genuinely empty
+    # scene will still be detected because later samples will also be low.
+    raw = [
         (f"sample_{i}", round(clip_duration * (i + 1) / (count + 1), 3))
         for i in range(count)
     ]
+    # Ensure first sample is at least 0.5s when clip is long enough
+    if raw and raw[0][1] < 0.5 and clip_duration >= 0.8:
+        # Shift all samples forward proportionally, keeping last before end
+        shift = 0.5 - raw[0][1]
+        adjusted = []
+        for name, ts in raw:
+            new_ts = min(ts + shift, clip_duration - 0.05)
+            if new_ts > 0.1:
+                adjusted.append((name, round(new_ts, 3)))
+        # If adjustment collapses samples (very short clip), keep at least one
+        return adjusted if adjusted else raw
+    return raw
 
 
 def motion_sample_points(
@@ -420,6 +465,12 @@ def observe_clip(
 
     scratch_dir.mkdir(parents=True, exist_ok=True)
 
+    # Track per-sample fractions to distinguish intentional entrance
+    # animation (low ink only at very early timestamp) from a genuinely
+    # empty scene (low ink throughout). A single early low sample that
+    # is followed by later high-ink samples is not a layout failure --
+    # it is the expected FadeIn/Write settling period.
+    samples: list[tuple[str, float, float | None]] = []
     warnings: list[str] = []
     measured = 0
 
@@ -435,6 +486,7 @@ def observe_clip(
             continue
 
         measured += 1
+        samples.append((name, timestamp, fraction))
 
         if fraction < min_ink_fraction:
             warnings.append(
@@ -448,6 +500,27 @@ def observe_clip(
             "cv2/ffmpeg unavailable, or every sampled frame failed to "
             "extract/decode."
         )
+
+    # Suppress early-sample-only warnings when later samples show content:
+    # an intro animation at 0.09s with 0.08% ink is intentional, not a
+    # genuinely empty scene (which would have low ink at ALL samples).
+    has_high_later = any(
+        frac is not None and frac >= min_ink_fraction
+        for _, ts, frac in samples
+        if ts >= 0.5
+    )
+    if has_high_later and warnings:
+        # Re-build warnings keeping only samples that are still low after
+        # the entrance period (>=0.5s). An early 0.09s low sample that is
+        # the only low one disappears, while a genuinely empty scene
+        # (low at later timestamps too) keeps its warnings.
+        warnings = [
+            f"WARN [visual_absence] state '{name}' at {ts:.2f}s: "
+            f"{frac:.4%} of the frame is non-background "
+            "(expected visible content)"
+            for name, ts, frac in samples
+            if frac is not None and frac < min_ink_fraction and ts >= 0.5
+        ]
 
     return {
         "status": "warn" if warnings else "pass",

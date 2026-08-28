@@ -117,6 +117,17 @@ class Severity(str, Enum):
     INFO = "INFO"
 
 
+#: Explicit verifier execution states -- these must never be conflated.
+#: A verifier that crashes, times out, produces invalid output, or cannot
+#: find its required artifact must become VERIFICATION_UNAVAILABLE,
+#: never PASS.
+class VerifierState(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    VERIFICATION_UNAVAILABLE = "VERIFICATION_UNAVAILABLE"
+    SKIPPED = "SKIPPED"
+
+
 _SEVERITY_TO_STATUS: dict[
     Severity,
     str,
@@ -337,11 +348,57 @@ class Finding:
         )
 
 
+def verification_unavailable(
+    *,
+    verifier: str,
+    stem: str,
+    reason: str,
+    category: Category | str = Category.TECHNICAL,
+) -> dict[str, Any]:
+    """Create a canonical ``VERIFICATION_UNAVAILABLE`` finding.
+
+    This is the **only** correct representation for:
+        - missing preview image
+        - semantic critic invalid JSON
+        - verifier process crash / timeout
+        - missing scene artifact / metadata
+        - unavailable renderer output
+
+    It is always ``BLOCKING`` and ``status == "fail"`` so gates treat it
+    as a hard failure rather than silently passing. The ``finding_type``
+    is fixed to ``verification_unavailable`` and both ``verifier`` and
+    ``reason`` are stored explicitly for diagnostics.
+    """
+    cat = category.value if isinstance(category, Category) else str(category)
+    stem = str(stem or "").strip() or "__all__"
+    verifier = str(verifier or "").strip()
+    reason = str(reason or "").strip() or "verification unavailable"
+    fid = next_finding_id("verify")
+    # Use Finding for consistent ID/category/severity handling, then
+    # override finding_type / add verifier-specific keys.
+    base = Finding(
+        finding_id=fid,
+        scene_id=stem,
+        category=Category(cat) if cat in Category._value2member_map_ else Category.TECHNICAL,
+        severity=Severity.BLOCKING,
+        message=reason,
+        finding_type="verification_unavailable",
+    ).as_check_result()
+    base["verifier"] = verifier
+    base["reason"] = reason
+    # Keep detail/message compatible with existing consumers
+    base["detail"] = reason
+    base["verifier_state"] = VerifierState.VERIFICATION_UNAVAILABLE.value
+    return base
+
+
 __all__ = [
     "Category",
     "Severity",
+    "VerifierState",
     "Finding",
     "next_finding_id",
+    "verification_unavailable",
     "LayoutSubtype",
     "SemanticSubtype",
     "StructuralSubtype",

@@ -41,7 +41,17 @@ REVISION_HISTORY_SCHEMA_VERSION = "1.0"
 
 @dataclass
 class RevisionEntry:
-    """One repair attempt's outcome for one scene."""
+    """One repair attempt's outcome for one scene.
+
+    Extended for the research harness (sections 5/15/16): beyond the
+    original revision/parent/reason/decision, this now records the full
+    machine-readable evidence needed to reconstruct a trajectory --
+    triggering finding, changed files, render status, verifier statuses,
+    findings, quality before/after, and rejection reason -- so
+    ``revisions.json`` alone answers the paper's "what was attempted"
+    without re-running anything. All new fields default to empty so
+    older code reading this file remains compatible.
+    """
 
     revision: int
     parent_revision: int
@@ -51,6 +61,15 @@ class RevisionEntry:
     repair_contract: dict[str, Any] = field(default_factory=dict)
     finding_diff: dict[str, Any] = field(default_factory=dict)
     quality: dict[str, Any] = field(default_factory=dict)
+    # Research extensions -- see module docstring
+    triggering_finding: dict[str, Any] = field(default_factory=dict)
+    changed_files: list[str] = field(default_factory=list)
+    render_status: str = ""
+    verifier_statuses: dict[str, str] = field(default_factory=dict)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    quality_before: dict[str, Any] = field(default_factory=dict)
+    quality_after: dict[str, Any] = field(default_factory=dict)
+    rejection_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

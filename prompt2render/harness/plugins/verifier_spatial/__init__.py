@@ -228,21 +228,15 @@ class VerifierSpatialPlugin(Plugin):
             # ----------------------------------------------------------
 
             if record is None:
+                from ...finding import verification_unavailable
+
                 findings.append(
-                    {
-                        "status": "skip",
-                        "stem": stem,
-                        "finding_type": (
-                            "spatial_audit_unavailable"
-                        ),
-                        "category": (
-                            Category.SPATIAL.value
-                        ),
-                        "detail": (
-                            "No SceneKit audit record was "
-                            "recorded for this rendered scene."
-                        ),
-                    }
+                    verification_unavailable(
+                        verifier=self.name,
+                        stem=stem,
+                        reason="No SceneKit audit record was recorded for this rendered scene -- spatial verification unavailable.",
+                        category=Category.SPATIAL,
+                    )
                 )
                 continue
 

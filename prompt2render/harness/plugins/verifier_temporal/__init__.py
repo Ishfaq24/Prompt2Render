@@ -304,23 +304,60 @@ class VerifierTemporalPlugin(Plugin):
             # ----------------------------------------------------------
 
             if clip_path is None:
-                findings.append(
-                    {
-                        "status": "skip",
-                        "stem": entry.stem,
-                        "finding_type": (
-                            "temporal_verification_unavailable"
-                        ),
-                        "category": (
-                            Category.TEMPORAL.value
-                        ),
-                        "detail": (
-                            "No rendered Manim MP4 was found "
-                            "for this scene."
-                        ),
-                    }
-                )
+                # Backend-aware: this verifier is Manim-specific. If the
+                # scene's source is not Manim (still pipeline) or there is no
+                # Manim artifact at all, temporal verification for this stem is
+                # not applicable -- emit a skip rather than a blocking
+                # VERIFICATION_UNAVAILABLE. The stills path's timing is covered
+                # by timeline/encode, not by this Manim duration check.
+                # Only when the source IS Manim but the clip is missing is that
+                # a genuine verification-infrastructure failure.
+                is_manim_expected = False
+                try:
+                    ca = context.code_artifacts.get(entry.stem)
+                    if ca is not None and ca.path is not None and ca.path.exists():
+                        src = ca.path.read_text(encoding="utf-8", errors="replace")
+                        # Reuse the same heuristic execution verifier uses
+                        lower = src.lower()
+                        has_manim = "from manim import" in lower or "import manim" in lower
+                        has_scene = "class scene" in lower
+                        if has_manim and has_scene:
+                            is_manim_expected = True
+                        else:
+                            # Fallback: if the artifact lives under build/manim
+                            # it was produced by the Manim generator regardless
+                            # of the import text heuristic.
+                            if "build/manim" in str(ca.path).replace("\\", "/"):
+                                is_manim_expected = True
+                    else:
+                        # No code artifact at all -- cannot determine backend,
+                        # treat as not Manim for this check (execution verifier
+                        # will already have emitted a blocking finding).
+                        is_manim_expected = False
+                except Exception:
+                    is_manim_expected = False
 
+                if is_manim_expected:
+                    from ...finding import verification_unavailable
+
+                    findings.append(
+                        verification_unavailable(
+                            verifier=self.name,
+                            stem=entry.stem,
+                            reason="No rendered Manim MP4 was found for this scene -- temporal verification unavailable.",
+                            category=Category.TEMPORAL,
+                        )
+                    )
+                else:
+                    findings.append(
+                        {
+                            "status": "skip",
+                            "stem": entry.stem,
+                            "finding_type": "temporal_skip",
+                            "category": Category.TEMPORAL.value,
+                            "detail": "No Manim clip expected for this scene (stills backend) -- temporal verification skipped.",
+                        }
+                    )
                 continue
 
             # ----------------------------------------------------------
@@ -334,23 +371,16 @@ class VerifierTemporalPlugin(Plugin):
                 )
 
             except Exception as exc:
-                findings.append(
-                    {
-                        "status": "skip",
-                        "stem": entry.stem,
-                        "finding_type": (
-                            "temporal_target_unavailable"
-                        ),
-                        "category": (
-                            Category.TEMPORAL.value
-                        ),
-                        "detail": (
-                            "Could not derive narration "
-                            f"duration: {exc}"
-                        ),
-                    }
-                )
+                from ...finding import verification_unavailable
 
+                findings.append(
+                    verification_unavailable(
+                        verifier=self.name,
+                        stem=entry.stem,
+                        reason=f"Could not derive narration duration -- temporal verification unavailable: {exc}",
+                        category=Category.TEMPORAL,
+                    )
+                )
                 continue
 
             # ----------------------------------------------------------
