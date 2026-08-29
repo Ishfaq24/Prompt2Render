@@ -120,6 +120,54 @@ def _ensure_llm_keys() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Model routing + provenance (Phases 15-17)
+# ---------------------------------------------------------------------------
+
+def _generation_model_env(role: str) -> str:
+    """The env var selecting this generation role's model."""
+
+    try:
+        from ...model_routing import effective_model_env
+
+        return effective_model_env(role)
+    except Exception:
+        return "P2R_SCENE_MODEL"
+
+
+def _record_generation_meta(
+    context: SceneContext,
+    stem: str,
+    model_env: str,
+    fallback_offset: int,
+) -> None:
+    """Record which model generated this scene, plus any fallbacks used.
+
+    The repair controller persists this as ``generation.json`` for the
+    revision -- model fallbacks are never silent. Never raises.
+    """
+
+    try:
+        from .... import llm
+
+        primary = os.environ.get(model_env, "").strip() or "gemini-3.7-flash"
+        records = llm.fallback_records()[fallback_offset:]
+
+        meta = getattr(context, "generation_meta", None)
+
+        if not isinstance(meta, dict):
+            meta = {}
+            context.generation_meta = meta
+
+        meta[str(stem)] = {
+            "model_env": str(model_env or ""),
+            "model_primary": primary,
+            "fallbacks": [dict(record) for record in records],
+        }
+    except Exception:
+        return
+
+
+# ---------------------------------------------------------------------------
 # Filesystem helpers
 # ---------------------------------------------------------------------------
 
@@ -267,7 +315,66 @@ def _repair_feedback(
     context: SceneContext,
     stem: str,
 ) -> str:
-    """Convert accumulated repair diagnostics into bounded feedback."""
+    """Convert accumulated repair evidence into bounded feedback.
+
+    Report-driven (matches the Manim path): the canonical scene report --
+    the verification evidence for this scene's current revision -- is
+    rendered via ``scene_report.build_repair_context`` and combined with
+    the current source, so regeneration revises the existing scene instead
+    of starting blind. Legacy ``repair_context`` diagnostics (including the
+    controller's change contract) are appended afterwards and therefore
+    survive the trailing truncation.
+    """
+
+    parts: list[str] = []
+
+    try:
+        from ...scene_report import build_repair_context, load_scene_report
+
+        report = load_scene_report(
+            getattr(context, "project_dir", None), stem
+        )
+
+        if report is not None:
+            current_source = None
+            artifact = context.code_artifacts.get(stem)
+
+            if (
+                artifact is not None
+                and artifact.path is not None
+                and Path(artifact.path).exists()
+            ):
+                try:
+                    current_source = Path(artifact.path).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    current_source = None
+
+            report_context = build_repair_context(
+                stem=stem,
+                revision=int(report.get("revision", 0) or 0),
+                report=report,
+                current_source=current_source,
+                backend="SceneKit",
+            )
+
+            if report_context:
+                parts.append(report_context)
+
+            if current_source:
+                parts.append(
+                    "\nCURRENT SCENE SOURCE (revise this, do not "
+                    "regenerate from scratch):\n```python\n"
+                    f"{current_source[:12000]}\n```\n"
+                    "Preserve components that already passed verification. "
+                    "Modify only components implicated by the report unless "
+                    "broader restructuring is necessary."
+                )
+    except Exception:
+        # Report-driven context is enrichment; the legacy path below must
+        # keep working even if the report layer is unavailable.
+        pass
 
     repair_context = getattr(
         context,
@@ -279,7 +386,7 @@ def _repair_feedback(
         repair_context,
         dict,
     ):
-        return ""
+        repair_context = {}
 
     messages = repair_context.get(
         stem,
@@ -290,7 +397,7 @@ def _repair_feedback(
         messages,
         list,
     ):
-        return ""
+        messages = []
 
     clean = [
         str(message).strip()
@@ -298,19 +405,19 @@ def _repair_feedback(
         if str(message).strip()
     ]
 
-    if not clean:
-        return ""
-
-    text = (
-        "\n\nPRIOR REPAIR FEEDBACK:\n"
-        + "\n".join(
-            f"- {message}"
-            for message in clean
+    if clean:
+        parts.append(
+            "\nPRIOR REPAIR FEEDBACK:\n"
+            + "\n".join(
+                f"- {message}"
+                for message in clean
+            )
         )
-    )
+
+    combined = "\n\n".join(part for part in parts if part)
 
     # Prevent pathological feedback growth.
-    return text[-MAX_REPAIR_FEEDBACK:]
+    return combined[-MAX_REPAIR_FEEDBACK:] if combined else ""
 
 
 def _harness_feedback(
@@ -349,6 +456,7 @@ def _generate_and_check_one(
     index: int,
     stem: str,
     retries: int,
+    model_env: str | None = None,
 ) -> None:
     """Generate one scene, then send it to the harness immediately.
 
@@ -374,13 +482,23 @@ def _generate_and_check_one(
     attempt = 0
 
     while True:
+        try:
+            from .... import llm as _llm
+
+            fallback_offset = len(_llm.fallback_records())
+        except Exception:
+            fallback_offset = 0
+
         generate(
             context.project_dir,
             script,
             index,
             retries=retries,
             extra_feedback=extra_feedback,
+            model_env=model_env,
         )
+
+        _record_generation_meta(context, stem, model_env or "", fallback_offset)
 
         _record_artifact(context, stem)
 
@@ -621,6 +739,8 @@ class GeneratorCodePlugin(Plugin):
         if continuity:
             n = 1
 
+        model_env = _generation_model_env("generator")
+
         if n <= 1 or len(todo) == 1:
             for section in todo:
                 _generate_and_check_one(
@@ -629,6 +749,7 @@ class GeneratorCodePlugin(Plugin):
                     section.index,
                     section.stem,
                     retries,
+                    model_env=model_env,
                 )
         else:
             cfg.say(f"storyboarding {len(todo)} sections, {n} at a time")
@@ -641,6 +762,7 @@ class GeneratorCodePlugin(Plugin):
                         section.index,
                         section.stem,
                         retries,
+                        model_env,
                     )
                     for section in todo
                 ]
@@ -750,6 +872,15 @@ class GeneratorCodePlugin(Plugin):
             canonical,
         )
 
+        model_env = _generation_model_env("repair")
+
+        try:
+            from .... import llm as _llm
+
+            fallback_offset = len(_llm.fallback_records())
+        except Exception:
+            fallback_offset = 0
+
         generate(
             context.project_dir,
             script,
@@ -757,7 +888,10 @@ class GeneratorCodePlugin(Plugin):
             retries=retries,
             extra_feedback=extra_feedback,
             dst=path if path != canonical else None,
+            model_env=model_env,
         )
+
+        _record_generation_meta(context, stem, model_env, fallback_offset)
 
         # --------------------------------------------------------------
         # Postcondition

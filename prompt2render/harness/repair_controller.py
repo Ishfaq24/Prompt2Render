@@ -46,7 +46,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from . import lineage, workspace
+from . import evidence, lineage, visual_state, workspace
 from .context import SceneContext
 from .convergence import CandidateSignature, ConvergenceTracker, StopReason
 from .journal import EventJournal
@@ -89,6 +89,22 @@ SCENE_RENDERERS = ("renderer_stills", "renderer_manim")
 
 DEFAULT_MAX_REPAIRS_PER_SCENE = 3
 DEFAULT_MAX_TOTAL_REPAIRS = 12
+
+#: Quality dimensions guarded as hard invariants during acceptance (Phase 9).
+#: A candidate may improve one dimension, but it must not regress a
+#: dimension that was already clean in the accepted revision by more than
+#: ``DIMENSION_REGRESSION_TOLERANCE`` -- no aggregate score overrides this.
+DIMENSION_SCORE_KEYS = (
+    "structural_score",
+    "layout_score",
+    "semantic_score",
+    "pedagogical_score",
+    "temporal_score",
+)
+
+#: Points of per-dimension drop tolerated for a previously-clean dimension
+#: (100 -> 98 accepts; 100 -> 70 rejects, per the acceptance policy).
+DIMENSION_REGRESSION_TOLERANCE = 5.0
 
 
 class Decision(str, Enum):
@@ -354,7 +370,46 @@ class RepairController:
         # the full evidential state, not just the files.
         accepted_results = self._snapshot_scene_results(context, stem)
 
+        # Evidence bundle + change contract BEFORE any mutation: the parent
+        # revision's report is the actionable memory for this regeneration.
+        try:
+            accepted_bundle = evidence.build_evidence_bundle(context, stem)
+            contract = evidence.build_change_contract(
+                stem=stem,
+                parent_revision=record.previous_revision,
+                findings=list(record.triggering_findings),
+                bundle=accepted_bundle,
+            )
+            record.repair_contract = {**record.repair_contract, **contract}
+            evidence.write_evidence_bundle(
+                context.project_dir,
+                stem,
+                record.previous_revision,
+                accepted_bundle,
+            )
+        except Exception:
+            # Contract building is observational enrichment -- a failure
+            # here must never block the repair cycle itself.
+            pass
+
         canonical_code = self._canonical_code_path(context, stem)
+
+        # Visual memory (Phase 12): the accepted revision's structured
+        # visual state is captured BEFORE the candidate renders, while the
+        # accepted artifacts are still the only ones in place.
+        try:
+            parent_visual = visual_state.collect_visual_state(context, stem)
+            visual_state.write_visual_state(
+                context.project_dir,
+                stem,
+                record.previous_revision,
+                parent_visual,
+            )
+        except Exception:
+            parent_visual = None
+
+        setattr(record, "_parent_visual_state", parent_visual)
+        setattr(record, "_candidate_visual_state", None)
 
         scope = workspace.open_candidate(
             context,
@@ -386,6 +441,23 @@ class RepairController:
         )
 
         try:
+            # The contract is the generator's instruction set for this
+            # cycle: appended to repair_context so every generator's
+            # feedback path (SceneKit and Manim alike) receives the same
+            # explicit problems/targets/preserve/forbidden terms.
+            try:
+                contract_text = evidence.contract_prompt_text(
+                    record.repair_contract
+                )
+
+                if contract_text:
+                    history = context.repair_context.setdefault(str(stem), [])
+
+                    if contract_text not in history:
+                        history.append(contract_text)
+            except Exception:
+                pass
+
             execution = self.router.execute(plan, context)
             record.routed_to = list(execution.targets_run)
             record.errors.extend(execution.errors)
@@ -409,6 +481,22 @@ class RepairController:
             self._safe_transition(context, stem, SceneState.RENDERING)
 
             self._render_candidate(context, stem, record)
+
+            try:
+                candidate_visual = visual_state.collect_visual_state(
+                    context, stem
+                )
+                visual_state.write_visual_state(
+                    context.project_dir,
+                    stem,
+                    scope.revision,
+                    candidate_visual,
+                )
+            except Exception:
+                candidate_visual = None
+
+            setattr(record, "_candidate_visual_state", candidate_visual)
+
             self._journal(context, "scene.repair.rendered", stem, scope.revision)
             self._safe_transition(context, stem, SceneState.RENDERED)
 
@@ -424,6 +512,43 @@ class RepairController:
                 from .scene_report import write_scene_report, archive_revision
                 write_scene_report(context, stem, revision=scope.revision)
                 archive_revision(context, stem, revision=scope.revision)
+                evidence.write_evidence_bundle(
+                    context.project_dir,
+                    stem,
+                    scope.revision,
+                    evidence.build_evidence_bundle(
+                        context, stem, revision=scope.revision
+                    ),
+                )
+                evidence.write_change_contract(
+                    context.project_dir,
+                    stem,
+                    scope.revision,
+                    record.repair_contract,
+                )
+                meta = evidence.build_generation_meta(
+                    context,
+                    stem,
+                    revision=scope.revision,
+                    parent_revision=scope.base_revision,
+                    trigger_finding_type=plan.finding_type,
+                )
+                gen_meta = getattr(context, "generation_meta", None)
+
+                if isinstance(gen_meta, dict):
+                    stem_meta = gen_meta.get(str(stem))
+
+                    if isinstance(stem_meta, dict):
+                        meta["model_env"] = str(stem_meta.get("model_env", "") or "")
+                        meta["model_primary"] = str(stem_meta.get("model_primary", "") or "")
+                        meta["fallbacks"] = list(stem_meta.get("fallbacks", []) or [])
+
+                evidence.write_generation_meta(
+                    context.project_dir,
+                    stem,
+                    scope.revision,
+                    meta,
+                )
             except Exception:
                 pass
 
@@ -515,6 +640,15 @@ class RepairController:
                 from .scene_report import write_scene_report, archive_revision
                 write_scene_report(context, stem)
                 archive_revision(context, stem, revision=revision)
+                evidence.write_evidence_bundle(
+                    context.project_dir,
+                    stem,
+                    revision,
+                    evidence.build_evidence_bundle(
+                        context, stem, revision=revision
+                    ),
+                )
+                evidence.sync_accepted_dir(context, stem)
             except Exception:
                 pass
 
@@ -675,6 +809,64 @@ class RepairController:
                 f"cannot establish the candidate is at least as good: "
                 f"{comparison.reason}",
             )
+
+        # Rule 4 -- per-dimension hard invariants (Phase 9/10). Compare
+        # counts cannot see WHERE quality moved between dimensions: a
+        # candidate that trades two passing-layout checks for two semantic
+        # warnings keeps every total identical while silently degrading a
+        # dimension the accepted revision had clean. A dimension that
+        # passed in the accepted revision is a hard constraint, tolerant
+        # only of noise-level movement.
+        accepted_total = sum(
+            int(record.previous_quality.get(key, 0) or 0)
+            for key in ("blocking", "warnings", "passes", "skips")
+        )
+
+        if accepted_total > 0:
+            candidate_quality = record.candidate_quality or candidate.to_dict()
+
+            for dimension in DIMENSION_SCORE_KEYS:
+                previous = float(
+                    record.previous_quality.get(dimension, 100) or 0
+                )
+                current = float(candidate_quality.get(dimension, 100) or 0)
+
+                if (
+                    previous >= 95.0
+                    and (previous - current) > DIMENSION_REGRESSION_TOLERANCE
+                ):
+                    name = dimension.replace("_score", "")
+
+                    return (
+                        Decision.REGRESSION_REJECTED,
+                        f"hard dimension regression: {name} "
+                        f"{previous:.0f} -> {current:.0f} (tolerance "
+                        f"{DIMENSION_REGRESSION_TOLERANCE:.0f}); a higher "
+                        "score elsewhere does not override it",
+                    )
+
+        # Rule 5 -- visual-diff guard (Phase 13). A LOCAL or REGIONAL
+        # repair that churns the visual inventory (states vanish, frames
+        # drop, audit warnings multiply) fixed something else than what it
+        # was asked to fix. SCENE-scoped repairs are allowed to restructure.
+        parent_visual = getattr(record, "_parent_visual_state", None)
+        candidate_visual = getattr(record, "_candidate_visual_state", None)
+
+        if parent_visual and candidate_visual:
+            repair_scope = str(
+                record.repair_contract.get("repair_scope", "") or ""
+            )
+
+            if repair_scope in (evidence.SCOPE_LOCAL, evidence.SCOPE_REGIONAL):
+                diff = visual_state.visual_diff(parent_visual, candidate_visual)
+
+                if diff.get("regression_suspected"):
+                    return (
+                        Decision.REGRESSION_REJECTED,
+                        "visual regression in a "
+                        f"{repair_scope.lower()} repair: "
+                        + "; ".join(diff.get("flags", [])),
+                    )
 
         return None
 
@@ -1100,6 +1292,18 @@ class RepairController:
                 "reason": record.rejection_reason,
                 "finding_diff": record.finding_diff,
                 "dry_run": record.dry_run,
+                # Phase 14 failure attribution: CAUSE / DETECTED_BY /
+                # TARGET / REPAIR / RESULT for later failure-class analysis.
+                "attribution": {
+                    "cause": record.trigger_finding_type,
+                    "detected_by": record.source_plugin,
+                    "target": list(record.routed_to),
+                    "repair": {
+                        "scope": str(record.repair_contract.get("repair_scope", "")),
+                        "category": str(record.repair_contract.get("category", "")),
+                    },
+                    "result": decision.value,
+                },
             },
         )
 

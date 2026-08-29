@@ -81,10 +81,21 @@ class StaticTableRoutingPolicy(RoutingPolicy):
         "layout_audit": ["generator_code"],
         "spatial_audit": ["generator_code"],
         "caption_collision": ["generator_code"],
+        "caption_overflow": ["generator_code"],
+        "layout_overflow": ["generator_code"],
         "text_overflow": ["generator_code"],
+        "text_overlap": ["generator_code"],
         "crowding": ["generator_code"],
         "overlap": ["generator_code"],
         "out_of_bounds": ["generator_code"],
+        # Deterministic preflight classes (Phase 18): code-local repairs
+        "undefined_identifier": ["generator_code"],
+        "undefined_method": ["generator_code"],
+        "invalid_manim_api": ["generator_code"],
+        "execution_trace_failure": ["generator_code"],
+        # Content/temporal classes named by the evidence taxonomy
+        "missing_visual_concept": ["generator_code"],
+        "timing_mismatch": ["generator_code"],
     }
 
     #: Post-render VLM findings are routed back to the verifier that owns

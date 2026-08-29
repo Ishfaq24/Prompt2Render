@@ -944,12 +944,19 @@ class VerifierSemanticPlugin(Plugin):
         result = None
         gave_up = False
 
+        try:
+            from ...model_routing import effective_model_env
+
+            semantic_model_env = effective_model_env("semantic_verifier")
+        except Exception:
+            semantic_model_env = "P2R_SCENE_MODEL"
+
         for attempt in (1, 2):
             try:
                 content = llm.complete(
                     prompt,
                     max_tokens=1400,
-                    model_env="P2R_SCENE_MODEL",
+                    model_env=semantic_model_env,
                     default_model=model,
                     label="semantic",
                     image_base64=image_base64,

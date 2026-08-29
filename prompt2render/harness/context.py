@@ -528,6 +528,17 @@ class SceneContext:
         default_factory=list
     )
 
+    #: Per-scene generation provenance keyed by stem: the model env/primary
+    #: model used and any fallbacks performed while generating it. Read by
+    #: the repair controller when persisting ``generation.json`` per
+    #: revision; generators populate it on a best-effort basis.
+    generation_meta: dict[
+        str,
+        dict[str, Any],
+    ] = field(
+        default_factory=dict
+    )
+
     # ------------------------------------------------------------------
     # Execution provenance
     # ------------------------------------------------------------------

@@ -149,6 +149,29 @@ def _finding(
     return result
 
 
+def _classify_manim_error(message: str) -> str:
+    """Typed routing key for one deterministic Manim preflight error.
+
+    Distinct types matter downstream: the repair router and the evidence
+    layer map ``undefined_identifier`` to a code-local repair and
+    ``invalid_manim_api`` to a Manim-API repair, instead of treating every
+    static error as one undifferentiated execution failure.
+    """
+
+    text = str(message or "")
+
+    if "is not defined" in text:
+        return "undefined_identifier"
+
+    if "does not exist" in text:
+        return "undefined_method"
+
+    if "does not accept" in text:
+        return "invalid_manim_api"
+
+    return "execution_failure"
+
+
 def _safe_narration_cue(
     context: SceneContext,
     stem: str,
@@ -365,9 +388,7 @@ def check_scene_artifact(
                         "PRE-FLIGHT EXECUTION CHECK: "
                         f"{message}"
                     ),
-                    finding_type=(
-                        "execution_failure"
-                    ),
+                    finding_type=_classify_manim_error(message),
                     gate=gate,
                 )
             )

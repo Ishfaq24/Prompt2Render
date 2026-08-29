@@ -336,6 +336,7 @@ def build_repair_context(
     previous_source: str | None = None,
     preview_available: bool = False,
     best_report: dict[str, Any] | None = None,
+    backend: str = "Manim",
 ) -> str:
     """Construct the report-conditioned repair prompt fragment.
 
@@ -352,7 +353,7 @@ def build_repair_context(
     lines: list[str] = []
     lines.append(f"SCENE REVISION CONTEXT -- Scene {stem} revision {revision}")
     lines.append("")
-    lines.append("You are revising an existing Manim educational scene. This scene has already been rendered and evaluated.")
+    lines.append(f"You are revising an existing {backend} educational scene. This scene has already been rendered and evaluated.")
     lines.append("You MUST use the verifier report below as evidence. Do not redesign the entire scene.")
     lines.append("")
     # Animation brief / narration are injected by the caller via the main prompt; we focus on report here
@@ -408,7 +409,7 @@ def build_repair_context(
     lines.append("- Do not introduce new overlaps, safe-area violations, or unreadable text.")
     lines.append("- Maintain title/main-visual/supporting-labels/caption zones and safe margins.")
     lines.append("- Keep caption inside caption zone, readable font, wrapped if long.")
-    lines.append("- Generate the corrected Manim source only.")
+    lines.append(f"- Generate the corrected {backend} source only.")
 
     if preview_available:
         lines.append("")

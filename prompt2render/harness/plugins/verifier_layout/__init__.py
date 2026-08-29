@@ -619,10 +619,16 @@ class VerifierLayoutPlugin(Plugin):
         prompt = _build_layout_prompt(entry, code, has_preview=has_preview)
         model = _model_name()
         try:
+            from ...model_routing import effective_model_env
+
+            layout_model_env = effective_model_env("verifier")
+        except Exception:
+            layout_model_env = "P2R_SCENE_MODEL"
+        try:
             content = llm.complete(
                 prompt,
                 max_tokens=800,
-                model_env="P2R_SCENE_MODEL",
+                model_env=layout_model_env,
                 default_model=model,
                 label="layout",
                 image_base64=image_b64,

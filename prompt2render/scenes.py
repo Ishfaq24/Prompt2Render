@@ -659,6 +659,102 @@ def _check_play_raw_mobject(tree: ast.AST) -> list[str]:
     return errors
 
 
+#: Actionable fix hints for the most common hallucinated MathTex methods.
+_MATHTEX_METHOD_FIX_HINTS = {
+    "get_parts_by_tex": (
+        "it is a Tex method, not available on MathTex; select subparts of a "
+        "MathTex with get_part_by_tex(...), or build the pieces as separate "
+        "MathTex mobjects combined in a VGroup"
+    ),
+}
+
+
+def _check_manim_math_tex_method_calls(tree: ast.AST) -> list[str]:
+    """Flag calls to methods that do not exist on MathTex objects.
+
+    Calling a missing attribute on a Mobject does not raise
+    ``AttributeError`` at runtime: ``Mobject.__getattr__`` converts it into
+    a property getter, so ``vec.get_parts_by_tex("0")`` crashes mid-render
+    with the cryptic ``getter() takes 1 positional argument but 2 were
+    given``. Checking the called name against the installed MathTex class
+    catches the hallucination statically.
+
+    Receiver inference is deliberately conservative: only direct
+    ``MathTex(...)`` chains and simple ``name = MathTex(...)`` assignments
+    are treated as MathTex receivers, which is the shape these
+    hallucinations take in generated scenes.
+    """
+
+    manim = _manim_module()
+    if manim is None:
+        return []
+
+    mathtex_cls = getattr(manim, "MathTex", None)
+    if mathtex_cls is None:
+        return []
+
+    mathtex_names: set[str] = set()
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            func = node.value.func
+            fname = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+
+            if fname == "MathTex":
+                mathtex_names.add(node.targets[0].id)
+
+    def receiver_is_mathtex(value: ast.AST) -> bool:
+        if isinstance(value, ast.Call):
+            func = value.func
+            fname = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            return fname == "MathTex"
+
+        if isinstance(value, ast.Name):
+            return value.id in mathtex_names
+
+        return False
+
+    errors: list[str] = []
+    seen: set[tuple[str, int]] = set()
+
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        ):
+            continue
+
+        method = node.func.attr
+
+        if not receiver_is_mathtex(node.func.value):
+            continue
+
+        if hasattr(mathtex_cls, method):
+            continue
+
+        key = (method, node.lineno)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        hint = _MATHTEX_METHOD_FIX_HINTS.get(
+            method,
+            "the method does not exist on MathTex in the installed manim; "
+            "use a real MathTex/VMobject API instead",
+        )
+        errors.append(
+            f"MathTex.{method}() does not exist in the installed manim — "
+            f"{hint} (line {node.lineno})"
+        )
+
+    return errors
+
+
 def validate_manim_source(code: str) -> list[str]:
     """Validate generated Manim code before rendering.
 
@@ -771,6 +867,22 @@ def validate_manim_source(code: str) -> list[str]:
                     if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment", "word_wrap_width", "multiline"}:
                         errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim {_target} (line {node.lineno})")
 
+            # Text-only kwargs hallucinated onto MathTex/Tex. MathTex/Tex
+            # render through LaTeX: weight/slant/font and the t2* maps are
+            # properties of the Pango-backed Text mobject only. Passing them
+            # crashes deep inside Mobject.__init__ with
+            # "unexpected keyword argument 'weight'" -- caught here for free.
+            if func_name in {"MathTex", "Tex"}:
+                for kw in node.keywords:
+                    if kw.arg in {"weight", "slant", "font", "line_spacing",
+                                  "disable_ligatures", "t2c", "t2w", "t2s", "t2g"}:
+                        errors.append(
+                            f"{func_name}() does not accept '{kw.arg}=' — that is a "
+                            "Text-only option; remove it (bold/italic emphasis is not "
+                            f"available on {func_name}; use color or size instead) "
+                            f"(line {node.lineno})"
+                        )
+
             # MathTex/Tex hand the string straight to LaTeX. A raw, unescaped
             # '&', '%', or '#' outside a tabular/align environment is a
             # column separator / comment / macro-parameter character to
@@ -850,6 +962,7 @@ def validate_manim_source(code: str) -> list[str]:
     errors.extend(_check_undefined_manim_names(tree))
     errors.extend(_check_manim_kwarg_signatures(tree))
     errors.extend(_check_play_raw_mobject(tree))
+    errors.extend(_check_manim_math_tex_method_calls(tree))
 
     return list(dict.fromkeys(errors))
 
@@ -1222,7 +1335,8 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
 
 def _generate_manim(proj: Path, script: Script, index: int,
                     retries: int = 0, extra_feedback: str = "",
-                    dst: Path | None = None) -> Path:
+                    dst: Path | None = None,
+                    model_env: str | None = None) -> Path:
     sec = next((s for s in script.sections if s.index == index), None)
     if sec is None:
         sys.exit(f"[prompt2render] no section {index} in script.md")
@@ -1289,6 +1403,7 @@ def _generate_manim(proj: Path, script: Script, index: int,
                     f"Manim section {sec.stem} "
                     f"(attempt {attempt}/{max_attempts or 'until pass'})"
                 ),
+                **({"model_env": model_env} if model_env else {}),
             )
         except Exception as exc:
             sys.exit(
@@ -1373,7 +1488,8 @@ def _generate_manim(proj: Path, script: Script, index: int,
 
 
 def generate(proj: Path, script: Script, index: int, retries: int = 0,
-             extra_feedback: str = "", dst: Path | None = None) -> Path:
+             extra_feedback: str = "", dst: Path | None = None,
+             model_env: str | None = None) -> Path:
     """Unified dual-renderer entry point.
 
     Selection:
@@ -1411,6 +1527,7 @@ def generate(proj: Path, script: Script, index: int, retries: int = 0,
             retries=retries,
             extra_feedback=extra_feedback,
             dst=dst,
+            model_env=model_env,
         )
 
     return _generate_matplotlib(
@@ -1418,11 +1535,13 @@ def generate(proj: Path, script: Script, index: int, retries: int = 0,
         retries=retries,
         extra_feedback=extra_feedback,
         dst=dst,
+        model_env=model_env,
     )
 
 
 def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 0,
-            extra_feedback: str = "", dst: Path | None = None) -> Path:
+            extra_feedback: str = "", dst: Path | None = None,
+            model_env: str | None = None) -> Path:
     sec = next((s for s in script.sections if s.index == index), None)
     if sec is None:
         sys.exit(f"[prompt2render] no section {index} in script.md")
@@ -1487,7 +1606,8 @@ def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 
             code = llm.complete(
                 prompt + feedback, 
                 max_tokens=16000, 
-                label=f"section {sec.stem} (attempt {attempt}/{max_attempts or 'until pass'})"
+                label=f"section {sec.stem} (attempt {attempt}/{max_attempts or 'until pass'})",
+                **({"model_env": model_env} if model_env else {}),
             )
         except Exception as e:
             sys.exit(f"[prompt2render] section {sec.stem}: LLM call failed — {e}")

@@ -865,6 +865,110 @@ def cmd_scene_history(a):
             )
 
 
+def _stem_arg(a) -> str:
+    return f"{a.section:02d}" if isinstance(a.section, int) else str(a.section)
+
+
+def cmd_verify(a):
+    """Deterministically verify one scene from its on-disk artifacts (no LLM)."""
+    import json as _json
+    from prompt2render.harness.scene_ops import verify_scene
+
+    d, _ = _load(a.slug)
+    stem = _stem_arg(a)
+    result = verify_scene(d, stem)
+    print(_json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    if result.get("status") == "missing":
+        sys.exit(f"[prompt2render] {result.get('detail')}")
+
+    if result.get("blocking_count"):
+        sys.exit(
+            f"[prompt2render] verify {a.slug} scene {stem}: "
+            f"{result['blocking_count']} blocking finding(s)"
+        )
+
+
+def cmd_repair(a):
+    """Run one regression-safe repair cycle for one scene."""
+    import json as _json
+    from prompt2render.harness.scene_ops import repair_scene
+
+    d, _ = _load(a.slug)
+    stem = _stem_arg(a)
+    result = repair_scene(
+        d,
+        stem,
+        manim=getattr(a, "manim", False),
+        config_path=Path(a.config) if getattr(a, "config", None) else None,
+        dry_run=getattr(a, "dry_run", False),
+    )
+    print(_json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    decision = str(result.get("decision", ""))
+
+    if decision == "accepted":
+        cfg.say(
+            f"repair {a.slug} scene {stem}: accepted revision "
+            f"{result.get('candidate_revision')}"
+        )
+        return
+
+    if decision == "no_findings":
+        cfg.say(f"repair {a.slug} scene {stem}: nothing to repair")
+        return
+
+    sys.exit(
+        f"[prompt2render] repair {a.slug} scene {stem}: {decision} — "
+        f"{result.get('rejection_reason') or result.get('detail') or ''}"
+    )
+
+
+def cmd_revisions(a):
+    """Alias of scene-history (Phase 22 naming)."""
+    cmd_scene_history(a)
+
+
+def cmd_rollback(a):
+    """Restore an archived revision as the accepted scene."""
+    import json as _json
+    from prompt2render.harness.scene_ops import rollback_scene
+
+    d, _ = _load(a.slug)
+    stem = _stem_arg(a)
+
+    try:
+        result = rollback_scene(d, stem, a.revision)
+    except FileNotFoundError as exc:
+        sys.exit(f"[prompt2render] {exc}")
+
+    print(_json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    cfg.say(
+        f"rollback {a.slug} scene {stem}: accepted revision is now "
+        f"{result.get('rolled_back_to')}"
+    )
+
+
+def cmd_replay(a):
+    """Deterministically re-render and re-verify one scene (no LLM)."""
+    import json as _json
+    from prompt2render.harness.scene_ops import replay_scene
+
+    d, _ = _load(a.slug)
+    stem = _stem_arg(a)
+    result = replay_scene(d, stem)
+    print(_json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    if result.get("status") == "missing":
+        sys.exit(f"[prompt2render] {result.get('detail')}")
+
+    if not result.get("replayed"):
+        sys.exit(
+            f"[prompt2render] replay {a.slug} scene {stem}: render failed — "
+            f"{result.get('render_error')}"
+        )
+
+
 def _load_context_for_selfcheck(project_dir):
     """Best-effort SceneContext reconstruction from on-disk artifacts alone.
 
@@ -1204,6 +1308,41 @@ def main() -> None:
              "(build/harness/revisions.json)")
     sh.add_argument("slug")
     sh.add_argument("--section", type=int, required=True, help="section number, e.g. 7")
+
+    vf = add("verify", cmd_verify,
+             "deterministically verify one scene's current artifacts "
+             "(preflight + report + evidence; no LLM)")
+    vf.add_argument("slug")
+    vf.add_argument("--section", type=int, required=True, help="section number, e.g. 7")
+
+    rv = add("repair", cmd_repair,
+             "run one regression-safe repair cycle for one scene "
+             "(generate candidate -> render -> re-verify -> accept or rollback)")
+    rv.add_argument("slug")
+    rv.add_argument("--section", type=int, required=True, help="section number, e.g. 7")
+    rv.add_argument("--manim", action="store_true",
+                    help="repair through the Manim backend instead of SceneKit")
+    rv.add_argument("--config", help="path to harness config.yaml")
+    rv.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="evaluate the candidate but never commit it")
+
+    vs = add("revisions", cmd_revisions,
+             "print one scene's persisted revision history (alias of "
+             "scene-history)")
+    vs.add_argument("slug")
+    vs.add_argument("--section", type=int, required=True, help="section number, e.g. 7")
+
+    rb = add("rollback", cmd_rollback,
+             "restore an archived revision as the accepted scene")
+    rb.add_argument("slug")
+    rb.add_argument("--section", type=int, required=True, help="section number, e.g. 7")
+    rb.add_argument("--revision", type=int, required=True,
+                    help="archived revision number to restore")
+
+    py = add("replay", cmd_replay,
+             "deterministically re-render and re-verify one scene (no LLM)")
+    py.add_argument("slug")
+    py.add_argument("--section", type=int, required=True, help="section number, e.g. 7")
 
     hc = add("harness-check", cmd_harness_check,
              "run the harness self-check against a project's current "

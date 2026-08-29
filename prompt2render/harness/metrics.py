@@ -190,10 +190,23 @@ def write_metrics_report(
         path = Path(project_dir) / "build" / "harness" / "metrics.json"
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Model fallback telemetry (Phase 17): a model switch is never
+        # silent. Best-effort read of the shared llm rotation records.
+        try:
+            from .. import llm as _llm
+
+            fallbacks = list(_llm.fallback_records())
+        except Exception:
+            fallbacks = []
+
         payload = {
             "schema_version": METRICS_SCHEMA_VERSION,
             "repair": build_repair_metrics(decisions).to_dict(),
             "stage_latency_seconds": build_stage_latency(log_path),
+            "model_fallbacks": {
+                "count": len(fallbacks),
+                "records": fallbacks,
+            },
         }
 
         path.write_text(

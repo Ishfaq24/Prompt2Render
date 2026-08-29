@@ -96,6 +96,50 @@ MAX_REPAIR_FEEDBACK = 6000
 MAX_HARNESS_CHECK_RETRIES = 3
 
 
+def _layout_contract() -> str:
+    """The deterministic zone contract the layout verifier measures against.
+
+    Sourced from ``harness.layout_zones`` so the generator's instructions
+    and the verifier's geometry can never drift apart (Phase 19). The
+    generator must know the exact safe area, band heights, and caption
+    limits -- not a prose approximation.
+    """
+
+    try:
+        from ...layout_zones import (
+            MANIM_BAND_GUTTER,
+            MANIM_CAPTION_MAX_HEIGHT,
+            MANIM_SAFE_MARGIN_X,
+            MANIM_SAFE_MARGIN_Y,
+            MANIM_TITLE_MAX_HEIGHT,
+            manim_zones,
+        )
+
+        zones = manim_zones()
+        title = zones["title"]
+        content = zones["content"]
+        caption = zones["caption"]
+        safe = zones["safe"]
+        safe_x = 14.222 / 2 - MANIM_SAFE_MARGIN_X
+
+        return (
+            "   LAYOUT CONTRACT (the verifier measures against exactly these zones):\n"
+            f"   - Safe area: x in [{-safe_x:.2f}, {safe_x:.2f}], "
+            f"y in [{safe[0]:.2f}, {safe[1]:.2f}]; minimum margin from the "
+            f"frame edge: x {MANIM_SAFE_MARGIN_X:.2f}, y {MANIM_SAFE_MARGIN_Y:.2f}.\n"
+            f"   - Title zone: y {title[0]:.2f}..{title[1]:.2f} "
+            f"(max title height {MANIM_TITLE_MAX_HEIGHT:.2f}).\n"
+            f"   - Content zone: y {content[0]:.2f}..{content[1]:.2f}; "
+            f"band gutter {MANIM_BAND_GUTTER:.2f}.\n"
+            f"   - Caption zone: y {caption[0]:.2f}..{caption[1]:.2f} "
+            f"(max caption height {MANIM_CAPTION_MAX_HEIGHT:.2f}); keep "
+            "captions to at most 2 lines, font_size >= 20, and inside the "
+            "caption zone."
+        )
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Construction-DSL JSON extraction (Tier 2 Phase 6)
 # ---------------------------------------------------------------------------
@@ -1961,6 +2005,7 @@ REQUIREMENTS:
         {duration:.1f} seconds
 
 4. LAYOUT (avoid overlap):
+{_layout_contract()}
    - Title: `title.to_edge(UP, buff=0.35)`. Never place the title with an absolute
      `move_to(UP * <guess>)` — a guessed offset can collide with content below it
      depending on the actual rendered text height; `to_edge` cannot.
@@ -2437,6 +2482,9 @@ RULES:
         prompt: str,
         *,
         image_base64: str | None = None,
+        role: str = "generator",
+        context: Any = None,
+        stem: str | None = None,
     ) -> str:
         """Generate code through the project's LLM abstraction.
 
@@ -2444,27 +2492,66 @@ RULES:
         the text prompt (multimodal). The underlying ``llm.complete`` already
         supports this for verification; reuse it for generation so the model
         sees what the failure actually looks like, not just its description.
+
+        ``role`` selects the model through ``model_routing`` (the repair role
+        may use a different model than first-pass generation); when
+        ``context``/``stem`` are given, provenance is recorded on
+        ``context.generation_meta`` for the revision's ``generation.json``.
         """
 
         from .... import llm
 
         _ensure_llm_keys()
 
+        try:
+            from ...model_routing import effective_model_env
+
+            model_env = effective_model_env(role)
+        except Exception:
+            model_env = "P2R_SCENE_MODEL"
+
         if hasattr(
             llm,
             "complete",
         ):
+            fallback_offset = len(
+                getattr(llm, "fallback_records", lambda: [])()
+            )
+
             code = llm.complete(
                 prompt,
                 max_tokens=20000,
-                model_env="P2R_SCENE_MODEL",
+                model_env=model_env,
                 default_model=os.environ.get(
+                    model_env,
+                    "",
+                ).strip() or os.environ.get(
                     "P2R_SCENE_MODEL",
                     DEFAULT_MODEL,
                 ),
                 label="manim",
                 image_base64=image_base64,
             )
+
+            try:
+                if context is not None and stem:
+                    primary = os.environ.get(model_env, "").strip() or os.environ.get(
+                        "P2R_SCENE_MODEL", DEFAULT_MODEL
+                    )
+                    records = llm.fallback_records()[fallback_offset:]
+                    meta = getattr(context, "generation_meta", None)
+
+                    if not isinstance(meta, dict):
+                        meta = {}
+                        context.generation_meta = meta
+
+                    meta[str(stem)] = {
+                        "model_env": str(model_env),
+                        "model_primary": str(primary),
+                        "fallbacks": [dict(record) for record in records],
+                    }
+            except Exception:
+                pass
 
             return str(code or "")
 
@@ -2678,7 +2765,17 @@ RULES:
             if dsl_code is not None:
                 code = dsl_code
             elif prompt is not None:
-                code = self._generate_code(prompt, image_base64=preview_b64)
+                code = self._generate_code(
+                    prompt,
+                    image_base64=preview_b64,
+                    role=(
+                        "repair"
+                        if stem in (getattr(context, "repair_context", {}) or {})
+                        else "generator"
+                    ),
+                    context=context,
+                    stem=stem,
+                )
             else:
                 code = ""
 

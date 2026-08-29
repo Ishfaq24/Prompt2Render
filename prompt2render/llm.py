@@ -32,12 +32,10 @@ ENDPOINT = (
 # be exhausted before a "-lite" model is tried at all — lite models trade
 # quality for cost/quota and are a last resort, not an early fallback.
 CANONICAL_MODELS = [
-    "gemini-2.5-flash"
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
-   
 ]
 
 # Keep explicit legacy aliases that should map to canonical without being
@@ -438,6 +436,42 @@ def _completion(
 _EXHAUSTED_QUOTA: set[tuple[str, str]] = set()
 _UNSUPPORTED_MODELS: set[str] = set()
 
+#: Every model fallback this process performed (Phase 17 telemetry). A
+#: fallback is never silent: each NOT_FOUND skip and each rate-limit-driven
+#: model switch appends one record here, and the harness's metrics/journal
+#: layers read them. Records are small, JSON-native, and append-only.
+_FALLBACK_RECORDS: list[dict[str, str]] = []
+
+
+def _record_fallback(
+    *,
+    label: str,
+    model: str,
+    reason: str,
+    next_model: str | None = None,
+) -> None:
+    import time as _time
+
+    _FALLBACK_RECORDS.append(
+        {
+            "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            "label": str(label),
+            "model": str(model),
+            "reason": str(reason),
+            "next_model": str(next_model or ""),
+        }
+    )
+
+
+def fallback_records() -> list[dict[str, str]]:
+    """A copy of every fallback recorded since process start / reset."""
+
+    return list(_FALLBACK_RECORDS)
+
+
+def clear_fallback_records() -> None:
+    _FALLBACK_RECORDS.clear()
+
 
 def reset_rotation_state() -> None:
     """Reset model/key exhaustion.
@@ -446,6 +480,7 @@ def reset_rotation_state() -> None:
     """
     _EXHAUSTED_QUOTA.clear()
     _UNSUPPORTED_MODELS.clear()
+    _FALLBACK_RECORDS.clear()
 
 
 def complete(
@@ -539,6 +574,20 @@ def complete(
                 if is_not_found(error):
                     _UNSUPPORTED_MODELS.add(model)
 
+                    _record_fallback(
+                        label=label,
+                        model=model,
+                        reason="not_found",
+                        next_model=next(
+                            (
+                                candidate
+                                for candidate in models[model_index + 1:]
+                                if candidate not in _UNSUPPORTED_MODELS
+                            ),
+                            None,
+                        ),
+                    )
+
                     cfg.warn(
                         f"{label}: model {model} is "
                         "NOT_FOUND or unsupported; "
@@ -584,6 +633,13 @@ def complete(
                         )
 
                         if next_model:
+                            _record_fallback(
+                                label=label,
+                                model=model,
+                                reason="rate_limited",
+                                next_model=next_model,
+                            )
+
                             cfg.warn(
                                 f"{label}: all "
                                 f"{len(configured_keys)} "
