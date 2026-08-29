@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import keyword
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -240,7 +242,25 @@ def _normalise_motion(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
 
-    return [item if isinstance(item, dict) else {} for item in raw]
+    normalized: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            normalized.append({})
+            continue
+
+        current = dict(item)
+        for key in ("target", "into", "anchor"):
+            value = current.get(key)
+            if isinstance(value, str):
+                value = re.sub(r"\W", "_", value.strip())
+                if value and value[0].isdigit():
+                    value = f"obj_{value}"
+                if value and keyword.iskeyword(value):
+                    value = f"obj_{value}"
+                current[key] = value
+        normalized.append(current)
+
+    return normalized
 
 
 def _normalise_state(
@@ -601,18 +621,31 @@ For EVERY section:
 1. Preserve the section's teaching claim.
 2. Create {MIN_STATES}-{MAX_STATES} progressive visual states.
 3. Each state must correspond to a meaningful pedagogical step.
-4. `cue` is the zero-based narration sentence index where the state
+4. Keep one concept at a time: each beat should teach exactly one idea,
+   not a packed cluster of concepts or labels.
+5. One sentence per beat: a state's visual should be aligned to one
+   sentence of narration, not multiple overlapping explanations.
+6. `cue` is the zero-based narration sentence index where the state
    should appear or change.
-5. `visual` must describe exactly what should be visible.
-6. `values` must contain only values explicitly present or directly
+7. `visual` must describe exactly what should be visible.
+8. `values` must contain only values explicitly present or directly
    derivable from the source.
-7. `transition` describes how the previous state becomes the current state.
-8. Maintain continuity of persistent objects.
-9. Do not reset state between sections unless the narration requires it.
-10. Follow the existing animation brief as a hard constraint.
-11. Avoid visual decoration that does not teach something.
-12. Prefer progressive construction over simultaneous presentation.
-13. `motion` lists which fixed motion operations apply to which named
+9. `transition` describes how the previous state becomes the current state.
+10. Maintain continuity of persistent objects.
+11. Do not reset state between sections unless the narration requires it.
+12. Follow the existing animation brief as a hard constraint.
+13. Avoid visual decoration that does not teach something.
+14. Prefer progressive construction over simultaneous presentation.
+15. Keep one core visual stable while adding one concept at a time.
+16. Use a single caption mobject for each beat; do not stack multiple
+    independent caption texts or dense paragraphs.
+17. At most one auxiliary text label/equation may be live at a time unless
+    it is part of an explicitly arranged VGroup; avoid floating labels and
+    independent absolute overlays.
+18. If the lesson contrasts irreversible vs reversible behavior, make the
+    visual contrast physically obvious: broken/lost path versus stable
+    identity/cancellation loop. Do not hide the distinction in words alone.
+19. `motion` lists which fixed motion operations apply to which named
     objects for this state. Every operation's `op` MUST be one of:
     {", ".join(sorted(MOTION_OPS))}. Every operation MUST include all of its
     required keys: {"; ".join(f"{op} needs {sorted(keys)}" for op, keys in sorted(MOTION_OPS.items()))}.
@@ -624,7 +657,7 @@ For EVERY section:
     computed separately from the narration timing, not decided here. A
     state that introduces or changes nothing on screen may have an empty
     `motion` list.
-14. If this state's `transition` replaces or removes something the
+20. If this state's `transition` replaces or removes something the
     previous state put on screen, include the matching `FadeOut`/
     `Transform` operation in `motion` for that object — do not just
     describe the removal in prose and leave it out of `motion`.

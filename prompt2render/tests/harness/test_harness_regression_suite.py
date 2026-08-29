@@ -18,7 +18,64 @@ from prompt2render.harness.logging_ import compute_final_pass, write_self_correc
 from prompt2render.harness.finding import verification_unavailable, Category
 from prompt2render.harness.repair_controller import RepairController, Decision
 from prompt2render.harness.scene_quality import SceneQuality
+from prompt2render.harness import preview as preview_module
 from prompt2render import scenekit as k
+
+
+def test_preview_helper_resolution_uses_canonical_harness_module(tmp_path):
+    from prompt2render.harness.plugins.verifier_layout import _preview_path
+
+    ctx = SceneContext(project_dir=tmp_path)
+    expected = tmp_path / "build" / "manim" / "previews" / "Scene04.png"
+
+    with patch.object(preview_module, "preview_path_for", return_value=expected) as mocked:
+        result = _preview_path(ctx, "04")
+
+    assert result == expected
+    mocked.assert_called_once_with(ctx, "04")
+
+
+def test_layout_json_salvage_handles_truncated_but_valid_failure_payload():
+    from prompt2render.harness.plugins.verifier_layout import _extract_json, _normalize_result
+
+    raw = '''{
+  "status": "fail",
+  "reason": "The step counter (\"Step: 7 / 7\") severely overlaps with the title text at the top of the frame.",
+  "violations": [
+    "Text overlap between step counter and title"
+  ],
+  "evidence": [
+    "Image shows 'Step: 7 / 7' directly superimposed over the bottom part of 'Tracing the 7 Moves for 3 Disks'"
+  ],
+  "fix": "Move the step counter lower, e.g., to y = 1.0 or in'''
+
+    recovered = _extract_json(raw)
+    assert recovered is not None
+    normalized = _normalize_result(recovered)
+    assert normalized is not None
+    assert normalized["status"] == "fail"
+    assert "step counter" in normalized["reason"].lower()
+
+
+def test_semantic_json_salvage_handles_truncated_layout_failure_payload():
+        from prompt2render.harness.plugins.verifier_semantic import _extract_json, _normalize_result
+
+        raw = '''{
+    "status": "fail",
+    "reason": "The Bell State label overlaps the equation box in the primary visual zone.",
+    "violations": [
+        "Overlapping Bell State label and equation box"
+    ],
+    "evidence": [
+        "The label touches the top edge of the equation box"
+    ]'''
+
+        recovered = _extract_json(raw)
+        assert recovered is not None
+        normalized = _normalize_result(recovered)
+        assert normalized is not None
+        assert normalized["status"] == "fail"
+        assert "overlaps" in normalized["reason"].lower()
 
 
 # ---------------------------------------------------------------------------

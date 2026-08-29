@@ -18,7 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from prompt2render.harness.context import CodeArtifact, RenderArtifact, SceneContext
 from prompt2render.harness.journal import EventJournal
 from prompt2render.harness.lifecycle import SceneState, current_state
-from prompt2render.harness.repair_controller import Decision, RepairController
+from prompt2render.harness.repair_controller import (
+    Decision,
+    RepairController,
+    RepairDecisionRecord,
+)
 
 STEM = "07"
 
@@ -108,6 +112,43 @@ class _VerifierClean:
              "category": "TEMPORAL", "difference": 0.1}
         ]
         return ctx
+
+
+class _VerifierFailOnly:
+    def __init__(self, name):
+        self.name = name
+
+    def enabled(self):
+        return True
+
+    def run(self, ctx):
+        ctx.check_results[self.name] = []
+        return ctx
+
+
+def test_candidate_reverification_turns_clean_fail_only_results_into_passes():
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx, _ = _seed_context(Path(tmp))
+        controller = RepairController(
+            router=_Router(lambda context: None),
+            plugins_by_name={
+                "verifier_execution": _VerifierFailOnly("verifier_execution"),
+                "verifier_semantic": _VerifierFailOnly("verifier_semantic"),
+            },
+            log_path=None,
+        )
+        record = RepairDecisionRecord(
+            cycle_id=1,
+            stem=STEM,
+            trigger_finding_type="layout_violation",
+            source_plugin="verifier_layout",
+        )
+
+        controller._verify_candidate(ctx, STEM, record)
+
+        for name in ("verifier_execution", "verifier_semantic"):
+            assert ctx.check_results[name][0]["status"] == "pass"
+            assert record.verifier_results[name][0]["status"] == "pass"
 
 
 def test_accepted_cycle_emits_journal_sequence_and_reaches_accepted_state():

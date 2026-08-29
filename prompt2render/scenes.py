@@ -375,6 +375,21 @@ def _check_latex_string(text: str, func_name: str, lineno: int) -> list[str]:
     """
     errors: list[str] = []
 
+    raw_math_glyphs = "".join(char for char in text if ord(char) > 127)
+    if raw_math_glyphs:
+        errors.append(
+            f"{func_name}() contains raw Unicode math glyph(s) "
+            f"{raw_math_glyphs!r} (line {lineno}); use ASCII LaTeX commands "
+            "such as \\rangle and \\langle instead"
+        )
+
+    if re.search(r"\\text\{[^{}\n]*\^\\[A-Za-z]+", text):
+        errors.append(
+            f"{func_name}() uses math superscript syntax inside \\text{{}} "
+            f"(line {lineno}); move it outside \\text{{}} or write the "
+            "word in text mode"
+        )
+
     has_tabular_env = any(
         f"begin{{{env}}}" in text for env in _LATEX_AMPERSAND_ENVIRONMENTS
     )
@@ -864,8 +879,21 @@ def validate_manim_source(code: str) -> list[str]:
             # generic "unexpected keyword argument" crashes at runtime.
             if func_name in {"Text", "MathTex", "Tex", "VGroup", "Line", "Arrow", "Circle", "Square", "Rectangle", "Dot"}:
                 for kw in node.keywords:
-                    if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment", "word_wrap_width", "multiline"}:
+                    if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment", "word_wrap_width", "multiline", "stroke_dash_array"}:
                         errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim {_target} (line {node.lineno})")
+
+            if (
+                func_name == "set_stroke"
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "animate"
+                and isinstance(node.func.value.value, ast.Name)
+                and node.func.value.value.id in {"Circle", "Line", "Arrow", "Square", "Rectangle", "Dot"}
+            ):
+                errors.append(
+                    f"{node.func.value.value.id}.animate is a class property; "
+                    f"use an instance name before .animate.set_stroke() (line {node.lineno})"
+                )
 
             # Text-only kwargs hallucinated onto MathTex/Tex. MathTex/Tex
             # render through LaTeX: weight/slant/font and the t2* maps are

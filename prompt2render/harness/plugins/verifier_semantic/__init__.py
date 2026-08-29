@@ -162,6 +162,47 @@ def _client(
 # JSON parsing
 # ---------------------------------------------------------------------------
 
+def _salvage_partial_json_object(text: str) -> dict[str, Any] | None:
+    if not isinstance(text, str) or '"status"' not in text.lower():
+        return None
+
+    def decode(value: str) -> str:
+        try:
+            return bytes(value, "utf-8").decode("unicode_escape")
+        except Exception:
+            return value
+
+    recovered: dict[str, Any] = {}
+    for key in ("status", "reason", "summary", "fix"):
+        match = re.search(
+            rf'"{key}"\s*:\s*"((?:\\.|[^"\\])*)',
+            text,
+            flags=re.DOTALL,
+        )
+        if match:
+            recovered[key] = decode(match.group(1)).rstrip("\n")
+
+    status = str(recovered.get("status", "")).strip().lower()
+    reason = str(recovered.get("reason") or recovered.get("summary") or "").strip()
+    if status not in {"pass", "fail", "unavailable"} or not reason:
+        return None
+
+    for key in ("violations", "evidence", "findings"):
+        match = re.search(
+            rf'"{key}"\s*:\s*\[(.*?)(?:\]\s*(?:,|\}})|\]\s*$)',
+            text,
+            flags=re.DOTALL,
+        )
+        if match:
+            items = [
+                decode(item)
+                for item in re.findall(r'"((?:\\.|[^"\\])*)"', match.group(1), flags=re.DOTALL)
+            ]
+            if items:
+                recovered[key] = items
+
+    return recovered
+
 def _extract_json(
     content: str,
 ) -> dict[str, Any] | None:
@@ -221,31 +262,15 @@ def _extract_json(
         "}"
     )
 
-    if (
-        start < 0
-        or end <= start
-    ):
-        return None
+    if start >= 0 and end > start:
+        try:
+            value = json.loads(text[start:end + 1], strict=False)
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            pass
 
-    try:
-        value = json.loads(
-            text[
-                start:end + 1
-            ],
-            strict=False,
-        )
-
-        return (
-            value
-            if isinstance(
-                value,
-                dict,
-            )
-            else None
-        )
-
-    except json.JSONDecodeError:
-        return None
+    return _salvage_partial_json_object(text)
 
 
 def _normalize_result(
@@ -354,6 +379,14 @@ def _is_layout_defect(result: dict[str, Any]) -> bool:
         "text overflow",
         "label",
         "stacked",
+        "glyph",
+        "missing character",
+        "missing glyph",
+        "corrupted character",
+        "hex box",
+        "hexadecimal",
+        "garbled",
+        "rendering error",
     ]
 
     # Strong layout signals: caption + geometric term together is a layout defect
@@ -503,7 +536,7 @@ def _preview_path(
     stem: str,
 ) -> Path:
     try:
-        from ..preview import preview_path_for
+        from ...preview import preview_path_for
 
         return preview_path_for(context, stem)
     except Exception:

@@ -211,3 +211,58 @@ def states():
 """
     errors = validate_manim_source(code)
     assert any("states() is forbidden in Manim mode" in e for e in errors)
+
+
+def test_manim_static_verifier_rejects_unsupported_stroke_dash_array():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        line = Line(LEFT, RIGHT, stroke_dash_array=[0.1, 0.1])
+        self.play(Create(line))
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("stroke_dash_array" in e for e in errors)
+
+
+def test_manim_static_verifier_rejects_class_level_animate_set_stroke():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        self.play(Circle.animate.set_stroke(color=WHITE, width=3))
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("class property" in e for e in errors)
+
+
+def test_manim_static_verifier_rejects_raw_unicode_math_glyphs():
+    from prompt2render.scenes import validate_manim_source
+    code = """
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        label = MathTex("|0⟩")
+        self.play(Write(label))
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert any("raw Unicode math glyph" in e for e in errors), errors
+
+
+def test_manim_static_verifier_rejects_superscript_inside_text_mode():
+    from prompt2render.scenes import validate_manim_source
+    code = r'''
+from manim import *
+class Scene01(Scene):
+    def construct(self):
+        label = MathTex(r"\text{(180^\circ)}")
+        self.play(Write(label))
+        self.wait(1)
+'''
+    errors = validate_manim_source(code)
+    assert any("inside \\text{}" in e for e in errors), errors

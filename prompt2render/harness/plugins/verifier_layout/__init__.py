@@ -180,7 +180,7 @@ def _model_name() -> str:
 
 def _preview_path(context: SceneContext, stem: str) -> Path:
     try:
-        from ..preview import preview_path_for
+        from ...preview import preview_path_for
 
         return preview_path_for(context, stem)
     except Exception:
@@ -200,13 +200,58 @@ def _check_preview_exists(preview: Path) -> tuple[bool, str]:
         return False, f"required preview artifact missing at {preview}"
     try:
         size = preview.stat().st_size
-        from ..preview import PREVIEW_MIN_BYTES
+        from ...preview import PREVIEW_MIN_BYTES
 
         if size < PREVIEW_MIN_BYTES:
             return False, f"preview file too small ({size} bytes) at {preview}"
     except OSError as exc:
         return False, f"preview not readable at {preview}: {exc}"
     return True, ""
+
+
+def _salvage_partial_json_object(text: str) -> dict[str, Any] | None:
+    """Recover structured fail/pass results from truncated LLM JSON.
+
+    Some model responses are almost-valid JSON but end mid-string, usually in the
+    final ``fix`` field. Those payloads still contain enough information to
+    classify the scene as a real layout fail rather than a spurious
+    ``VERIFICATION_UNAVAILABLE`` result.
+    """
+    if not isinstance(text, str):
+        return None
+    lowered = text.lower()
+    if '"status"' not in lowered:
+        return None
+
+    def _decode(value: str) -> str:
+        try:
+            return bytes(value, "utf-8").decode("unicode_escape")
+        except Exception:
+            return value
+
+    obj: dict[str, Any] = {}
+    for key in ("status", "reason", "fix"):
+        match = re.search(rf'"{key}"\s*:\s*"((?:\\.|[^"\\])*)', text, flags=re.DOTALL)
+        if match:
+            obj[key] = _decode(match.group(1)).rstrip("\n")
+    for key in ("violations", "evidence"):
+        match = re.search(rf'"{key}"\s*:\s*\[(.*?)(?:\]\s*(?:,|\}})|\]\s*$)', text, flags=re.DOTALL)
+        if match:
+            items: list[str] = []
+            for item in re.findall(r'"((?:\\.|[^"\\])*)"', match.group(1), flags=re.DOTALL):
+                items.append(_decode(item))
+            if items:
+                obj[key] = items
+
+    status = str(obj.get("status", "")).strip().lower()
+    reason = str(obj.get("reason", "")).strip()
+    if status not in {"pass", "fail"} or not reason:
+        return None
+    normalized = {"status": status, "reason": reason}
+    for key in ("violations", "evidence", "fix"):
+        if key in obj:
+            normalized[key] = obj[key]
+    return normalized
 
 
 def _extract_json(content: str) -> dict[str, Any] | None:
@@ -224,12 +269,14 @@ def _extract_json(content: str) -> dict[str, Any] | None:
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end <= start:
-        return None
-    try:
-        v = json.loads(text[start:end+1], strict=False)
-        return v if isinstance(v, dict) else None
-    except json.JSONDecodeError:
-        return None
+        pass
+    else:
+        try:
+            v = json.loads(text[start:end+1], strict=False)
+            return v if isinstance(v, dict) else None
+        except json.JSONDecodeError:
+            pass
+    return _salvage_partial_json_object(text)
 
 
 def _normalize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -536,7 +583,7 @@ class VerifierLayoutPlugin(Plugin):
         # central helper which extracts from the rendered clip if needed.
         if not has_preview:
             try:
-                from ..preview import ensure_preview
+                from ...preview import ensure_preview
 
                 ensured, diag = ensure_preview(context, stem)
                 if ensured is not None and ensured.exists():

@@ -134,7 +134,15 @@ def _layout_contract() -> str:
             f"   - Caption zone: y {caption[0]:.2f}..{caption[1]:.2f} "
             f"(max caption height {MANIM_CAPTION_MAX_HEIGHT:.2f}); keep "
             "captions to at most 2 lines, font_size >= 20, and inside the "
-            "caption zone."
+            "caption zone.\n"
+            "   - Use exactly one caption Mobject for the entire section, update the "
+            "same caption mobject with Transform(...), and never keep multiple caption-like "
+            "texts visible at once.\n"
+            "   - Keep the caption in the caption band and keep all auxiliary labels/equations "
+            "out of the caption band.\n"
+            "   - Anchor every auxiliary label/equation to an existing object using "
+            "next_to(existing_mobject, DIRECTION, buff=...) or a grouped VGroup; do not "
+            "scatter independent absolute UP/DOWN offsets over the frame."
         )
     except Exception:
         return ""
@@ -2018,6 +2026,9 @@ REQUIREMENTS:
      SAME mobject with `Transform(caption, new_caption)` (or `.become(...)`).
      Never create a second caption-like text that is visible at the same time as
      the first — that is a direct overlap risk with the caption band.
+   - Never keep multiple floating labels/equations alive at independent absolute
+     coordinates; if a new annotation is introduced, fade or transform the previous
+     one out before the next beat or anchor it to `next_to(existing_mobject, ...)`.
    - Primary visual: centered or slightly above center, clear of the title band
      and the caption band.
    - Every OTHER text/label/equation introduced for a single narration beat
@@ -2045,6 +2056,11 @@ REQUIREMENTS:
    - Scale text when necessary.
    - Never allow text to leave the 16:9 frame.
    - Prefer concise labels over paragraphs.
+   - One sentence per beat. If a sentence is longer than one line of caption text,
+     split it into a shorter narration beat or use a tighter label instead of a
+     dense paragraph.
+   - Limit visible text to the current idea only; keep the title, one caption,
+     and at most one auxiliary label/equation alive at the same time.
    - Organize construct() with one comment block per narration sentence
      (e.g. `# SENTENCE 2`) so the structure is easy to review and regenerate.
 
@@ -2077,7 +2093,9 @@ REFERENCE PATTERN (imitate this structure — not the specific text/content):
    - Do not pass font_size or direction to Axes.get_x_label/get_y_label. Create Text labels and position them with next_to.
    - Do not pass corner= to move_to. Use move_to(point) or align_to.
    - Code(code_string=..., language=..., formatter_style=..., add_line_numbers=True, paragraph_config={{"font_size": 24}}) is the correct call shape. Never pass code=, style=, theme=, insert_line_numbers=, or a bare font_size= — none of those exist on Code() anymore.
-   - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
+    - Do not pass row_height=, col_widths=, or include_background= to MobjectTable or Table. Scale the entire table using scale() or scale_to_fit_width() instead.
+    - Do not pass stroke_dash_array= to Line, Circle, Arrow, or other Mobject constructors; it is not supported by Manim {manimver.target_version()}. Use stroke_width/color or create a dashed line with DashedLine.
+    - Animate instances, never classes: use `circle.animate.set_stroke(...)` only when `circle` is a constructed mobject variable. Never write `Circle.animate.set_stroke(...)`.
    - Do not pass include_background= to Text, MathTex, or Tex.
    - MathTex/Tex LaTeX escaping: write the argument as a raw string, e.g.
      `MathTex(r"\\mathbb{{Z}}_{{23}} = \\{{0, 1, \\dots, 22\\}}")`. Inside that raw
@@ -2089,7 +2107,8 @@ REFERENCE PATTERN (imitate this structure — not the specific text/content):
      that breaks compilation outright (`latex error converting to dvi`).
      Never write `\\\\{{`, `\\\\}}`, `\\\\_`, `\\\\%`, `\\\\$`, `\\\\#`, `\\\\&`, `\\\\~`, or
      `\\\\^` inside a raw-string MathTex/Tex argument.
-   - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
+    - Never put raw Unicode math glyphs such as `⟨`, `⟩`, `α`, `β`, `√`, `×`, `≤`, or `≥` inside `MathTex`/`Tex` strings; use ASCII LaTeX commands such as `\\langle`, `\\rangle`, `\\alpha`, `\\beta`, `\\sqrt{{}}`, `\\times`, `\\le`, and `\\ge` instead. Keep math superscripts outside `\\text{{}}`: use `180^\\circ\\text{{ rotation}}`, or use plain words such as `180 degrees` inside `\\text{{}}`.
+    - Use UL/UR/DL/DR. Never use UP_LEFT/UP_RIGHT/DOWN_LEFT/DOWN_RIGHT.
    - Prefer Text(...).scale_to_fit_width(...) or a deterministic font_size reduction over a large fixed font_size — never assume a string fits just because a shorter one did.
 
 7. VECTOR SAFETY & SHAPES:
@@ -2303,8 +2322,13 @@ STATES:
      between them will visibly jump. Do NOT write any Transform/FadeIn calls
      for captions yourself; the compiler does that for you from the
      `caption_<name>` attributes alone.
+   - Keep a single core visual stable while adding one concept at a time.
    - Primary visual: centered or slightly above center, clear of the title
      band and the caption band.
+   - At most one auxiliary text/equation/callout may be live at a time unless
+     they are explicitly arranged as a VGroup. If the state contrasts
+     irreversible vs reversible behavior, show the geometry of the contrast:
+     broken/lost path versus identity/cancellation loop.
    - Every OTHER text/label/equation attribute a state defines must either
      be positioned with `next_to(existing_mobject, DIRECTION, buff=...)`
      relative to a persistent on-screen object, or reuse the fixed caption

@@ -184,7 +184,11 @@ def _contract_for(category: str, subtype: str | None) -> tuple[list[str], list[s
         instruction = (
             "This is a semantic repair. Correct the conceptual content, values, objects, or "
             "relationships to match the narration and domain invariants. Preserve overall layout "
-            f"where possible. Subtype: {sub}. Allowed: {', '.join(allowed)}."
+            "where possible. Check every diagram label against the geometry it depicts: "
+            "coordinate-plane axes, rotation axes, vector directions, units, and matrix dimensions "
+            "must be physically and mathematically consistent. If a 2D projection depicts a 3D "
+            "operation, explicitly label the perpendicular/out-of-plane axis rather than assigning "
+            "it to an in-plane line. Subtype: {sub}. Allowed: {', '.join(allowed)}."
         )
         return allowed, protected, instruction
 

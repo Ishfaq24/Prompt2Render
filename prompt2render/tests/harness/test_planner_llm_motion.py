@@ -33,6 +33,13 @@ def test_normalise_motion_keeps_well_formed_ops():
     assert _normalise_motion(raw) == [{"op": "Create", "target": "circle"}]
 
 
+def test_normalise_motion_prefixes_numeric_identifiers():
+    raw = [{"op": "Transform", "target": "4d_state_vector", "into": "state_vector"}]
+    assert _normalise_motion(raw) == [
+        {"op": "Transform", "target": "obj_4d_state_vector", "into": "state_vector"}
+    ]
+
+
 def test_normalise_motion_preserves_unknown_op_for_validation_to_catch():
     raw = [{"op": "Spin", "target": "circle"}]
     result = _normalise_motion(raw)
@@ -150,3 +157,13 @@ def test_motion_ops_vocabulary_is_the_expected_fixed_set():
     assert MOTION_OPS["Transform"] == frozenset({"target", "into"})
     assert MOTION_OPS["MoveTo"] == frozenset({"target", "anchor"})
     assert MOTION_OPS["NextTo"] == frozenset({"target", "anchor"})
+
+
+def test_planner_prompt_requires_single_concept_and_single_caption_per_beat():
+    from prompt2render.harness.plugins.planner_llm import _build_prompt
+
+    prompt = _build_prompt([{"index": 1, "stem": "01", "title": "T", "animation_brief": "x", "narration": "n"}])
+    assert "one concept at a time" in prompt.lower()
+    assert "one sentence per beat" in prompt.lower()
+    assert "At most one auxiliary" in prompt or "at most one auxiliary" in prompt.lower()
+    assert "irreversible" in prompt.lower() and "reversible" in prompt.lower()

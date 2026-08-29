@@ -98,6 +98,16 @@ def test_compile_construct_no_motion_folds_wait_into_run_time_budget():
     assert "self.wait(3.00)" in source
 
 
+def test_layout_contract_requires_safe_zones_and_relative_anchors():
+    from prompt2render.harness.plugins.renderer_manim import _layout_contract
+
+    contract = _layout_contract()
+    assert "Caption zone" in contract
+    assert "same caption mobject" in contract.lower()
+    assert "next_to(existing_mobject" in contract
+    assert "caption band" in contract.lower()
+
+
 def test_compile_construct_suppresses_tiny_wait():
     # run_time is already at Create's natural cap (1.4), so no capping
     # occurs and the leftover wait genuinely stays tiny.

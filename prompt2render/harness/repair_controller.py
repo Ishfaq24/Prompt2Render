@@ -1026,6 +1026,24 @@ class RepairController:
                     record.verifier_results[name] = [
                         copy.deepcopy(f) for f in scene_scoped
                     ]
+                elif name in SCENE_VERIFIERS:
+                    passed = {
+                        "status": "pass",
+                        "stem": str(stem),
+                        "scene_id": str(stem),
+                        "finding_type": "ok",
+                        "category": {
+                            "verifier_execution": "TECHNICAL",
+                            "verifier_semantic": "SEMANTIC",
+                            "verifier_spatial": "SPATIAL",
+                            "verifier_layout": "LAYOUT",
+                            "verifier_motion": "SPATIAL",
+                            "verifier_lifecycle": "TECHNICAL",
+                            "verifier_temporal": "TEMPORAL",
+                        }.get(name, "TECHNICAL"),
+                    }
+                    context.check_results.setdefault(name, []).append(passed)
+                    record.verifier_results[name] = [copy.deepcopy(passed)]
 
     # ------------------------------------------------------------------
     # Scene-scoped check-result bookkeeping
