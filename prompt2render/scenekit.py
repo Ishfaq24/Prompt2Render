@@ -733,6 +733,125 @@ def bus(ax, p1, p2, label=None, active=False, lw=2.5):
                 fontsize=17, fontfamily=MONO, zorder=4)
 
 
+def draw_asset(ax, asset, x, y, width=2.5, height=None, color=None, zorder=2, alpha=1.0):
+    """Draw a visual asset from the catalog or file at (x, y) on the 16x9 canvas.
+
+    Returns edge anchor points {"left", "right", "top", "bottom", "center"} so
+    k.bus() or k.arrow() can connect to it cleanly.
+    """
+    w = float(width)
+    h = float(height) if height is not None else w * 0.8
+    ec = color or ACCENT
+
+    # Drop shadow
+    ax.add_patch(FancyBboxPatch(
+        (x - w / 2 + 0.05, y - h / 2 - 0.05), w, h,
+        boxstyle="round,pad=0.03,rounding_size=0.10",
+        facecolor="#05080c", edgecolor="none", zorder=zorder - 1, alpha=alpha))
+
+    # Check if asset is a valid image file path
+    from pathlib import Path
+    img_path = None
+    candidate_paths = [Path(str(asset)), Path("build") / str(asset), Path(".") / str(asset)]
+    for p in candidate_paths:
+        if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+            img_path = p
+            break
+
+    if img_path is not None:
+        try:
+            from PIL import Image
+            with Image.open(img_path) as raw_img:
+                img_data = np.asarray(raw_img)
+            ax.imshow(
+                img_data,
+                extent=[x - w / 2, x + w / 2, y - h / 2, y + h / 2],
+                zorder=zorder,
+                aspect="auto",
+                alpha=alpha,
+            )
+            # Border frame
+            ax.add_patch(FancyBboxPatch(
+                (x - w / 2, y - h / 2), w, h,
+                boxstyle="round,pad=0.01,rounding_size=0.05",
+                facecolor="none", edgecolor=ec, linewidth=2.0, zorder=zorder + 1, alpha=alpha))
+        except Exception:
+            img_path = None
+
+    if img_path is None:
+        # Main container
+        ax.add_patch(FancyBboxPatch(
+            (x - w / 2, y - h / 2), w, h,
+            boxstyle="round,pad=0.03,rounding_size=0.10",
+            facecolor=BG, edgecolor=ec, linewidth=2.2, zorder=zorder, alpha=alpha))
+
+        # Readable text glyph
+        label = str(asset).replace("_", " ").upper()
+        ax.text(x, y, label, ha="center", va="center", zorder=zorder + 1,
+                color=FG, fontsize=16, fontfamily=MONO, fontweight="bold", alpha=alpha)
+
+    return {
+        "left": (x - w / 2, y),
+        "right": (x + w / 2, y),
+        "top": (x, y + h / 2),
+        "bottom": (x, y - h / 2),
+        "center": (x, y),
+    }
+
+
+def animate_asset(ax, asset, x, y, start_time=0.0, duration=2.0, scale=1.0, width=3.5, height=None, tint_color=None, zorder=2, alpha=1.0):
+    """Draw and register an animated visual asset (e.g. Lottie JSON, Rive .riv).
+
+    Renders a placeholder bounding container on the canvas for layout audit and
+    registers overlay metadata for alpha-channel video compositing.
+    """
+    w = float(width) * float(scale)
+    h = (float(height) if height is not None else w * 0.5) * float(scale)
+    ec = tint_color or ACCENT
+
+    # Drop shadow
+    ax.add_patch(FancyBboxPatch(
+        (x - w / 2 + 0.05, y - h / 2 - 0.05), w, h,
+        boxstyle="round,pad=0.03,rounding_size=0.10",
+        facecolor="#05080c", edgecolor="none", zorder=zorder - 1, alpha=alpha))
+
+    # Main container
+    ax.add_patch(FancyBboxPatch(
+        (x - w / 2, y - h / 2), w, h,
+        boxstyle="round,pad=0.03,rounding_size=0.10",
+        facecolor="#161b22", edgecolor=ec, linewidth=2.0, linestyle="--", zorder=zorder, alpha=alpha))
+
+    # Animated symbol label
+    label = f"ANIM: {str(asset).replace('_', ' ').upper()}"
+    ax.text(x, y, label, ha="center", va="center", zorder=zorder + 1,
+            color=ec, fontsize=14, fontfamily=MONO, fontweight="bold", alpha=alpha)
+
+    # Register overlay metadata on axes
+    overlays = getattr(ax, "_p2r_animation_overlays", None)
+    if overlays is None:
+        overlays = []
+        ax._p2r_animation_overlays = overlays
+
+    overlays.append({
+        "asset": str(asset),
+        "x": float(x),
+        "y": float(y),
+        "width": w,
+        "height": h,
+        "start_time": float(start_time),
+        "duration": float(duration),
+        "tint_color": tint_color,
+    })
+
+    return {
+        "left": (x - w / 2, y),
+        "right": (x + w / 2, y),
+        "top": (x, y + h / 2),
+        "bottom": (x, y - h / 2),
+        "center": (x, y),
+    }
+
+
 def code(ax, lines, x=8.0, y=5.0, highlight=None, hcolor=WARN, size=27,
          width=None, title_text=None):
     """A monospace code block, optionally with lines called out.
@@ -963,6 +1082,8 @@ bus = _element("bus")(bus)
 hanoi = _element("hanoi")(hanoi)
 tree = _element("tree")(tree)
 grid = _element("grid")(grid)
+draw_asset = _element("draw_asset")(draw_asset)
+animate_asset = _element("animate_asset")(animate_asset)
 
 
 # (The dynamic globals() loop was removed because we wrapped them explicitly above)

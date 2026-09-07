@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="100%" height="100%">
+  <defs>
+    <radialGradient id="thrombGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#7209B7" />
+      <stop offset="50%" stop-color="#3A0CA3" />
+      <stop offset="100%" stop-color="#03071E" />
+    </radialGradient>
+    <filter id="fissureGlow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="800" height="600" fill="#0B0F19" rx="16" />
+
+  <!-- Occluded Vessel Cross Section -->
+  <circle cx="400" cy="300" r="220" fill="#1B1D2E" stroke="#4A4E69" stroke-width="4" />
+  <circle cx="400" cy="300" r="170" fill="#2B0000" stroke="#8338EC" stroke-width="2" />
+
+  <!-- Large Pre-existing Plaque -->
+  <path d="M 250,300 C 250,190 350,140 450,150 C 530,160 560,220 560,280 C 510,320 420,330 350,325 C 290,320 260,310 250,300 Z" fill="#99582A" stroke="#DDA15E" stroke-width="2" />
+
+  <!-- Ruptured Cap with Fissure Jagged Tears -->
+  <path d="M 320,323 L 340,305 L 360,330 L 390,300 L 415,325 L 440,295 L 470,320" fill="none" stroke="#FF0054" stroke-width="4" stroke-linecap="round" filter="url(#fissureGlow)" />
+
+  <!-- Expanding Obstructive Thrombus (Platelet-Fibrin Mesh) -->
+  <path d="M 280,315 C 310,290 370,285 430,300 C 490,315 540,360 530,420 C 510,460 440,470 380,470 C 310,470 260,430 260,380 C 260,350 270,330 280,315 Z" fill="url(#thrombGrad)" stroke="#F72585" stroke-width="3" />
+
+  <!-- Fibrin Strands crisscrossing the thrombus -->
+  <g stroke="#4CC9F0" stroke-width="1.8" opacity="0.8">
+    <line x1="310" y1="340" x2="490" y2="430" />
+    <line x1="340" y1="440" x2="480" y2="330" />
+    <line x1="290" y1="390" x2="510" y2="380" />
+    <line x1="370" y1="320" x2="420" y2="460" />
+    <line x1="450" y1="350" x2="350" y2="430" />
+  </g>
+
+  <!-- Entrapped Clustered Platelets & RBCs -->
+  <g fill="#FF4D6D">
+    <circle cx="350" cy="370" r="8" />
+    <circle cx="390" cy="390" r="10" />
+    <circle cx="430" cy="360" r="9" />
+    <circle cx="460" cy="410" r="11" />
+    <circle cx="360" cy="420" r="8" />
+    <circle cx="420" cy="430" r="9" />
+  </g>
+
+  <!-- Critical Occlusion Badge -->
+  <g transform="translate(280, 500)">
+    <rect width="240" height="50" rx="10" fill="#590D22" stroke="#FF0054" stroke-width="2" />
+    <text x="120" y="31" fill="#FFF" font-family="system-ui, sans-serif" font-size="16" font-weight="800" text-anchor="middle">99% LUMINAL OCCLUSION</text>
+  </g>
+
+  <!-- Explanatory Callouts -->
+  <g transform="translate(60, 200)">
+    <rect width="170" height="42" rx="8" fill="#161F30" stroke="#FF0054" stroke-width="1.5" />
+    <text x="85" y="26" fill="#FF758F" font-family="system-ui, sans-serif" font-size="13" font-weight="700" text-anchor="middle">Cap Fissure / Tear</text>
+  </g>
+  <line x1="230" y1="220" x2="330" y2="310" stroke="#FF0054" stroke-width="1.5" stroke-dasharray="3,3" />
+
+  <g transform="translate(570, 200)">
+    <rect width="170" height="42" rx="8" fill="#161F30" stroke="#4CC9F0" stroke-width="1.5" />
+    <text x="85" y="26" fill="#4CC9F0" font-family="system-ui, sans-serif" font-size="13" font-weight="700" text-anchor="middle">Fibrin Clot Matrix</text>
+  </g>
+  <line x1="570" y1="220" x2="470" y2="360" stroke="#4CC9F0" stroke-width="1.5" stroke-dasharray="3,3" />
+</svg>

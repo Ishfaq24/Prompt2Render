@@ -127,22 +127,22 @@ def _layout_contract() -> str:
             f"   - Safe area: x in [{-safe_x:.2f}, {safe_x:.2f}], "
             f"y in [{safe[0]:.2f}, {safe[1]:.2f}]; minimum margin from the "
             f"frame edge: x {MANIM_SAFE_MARGIN_X:.2f}, y {MANIM_SAFE_MARGIN_Y:.2f}.\n"
-            f"   - Title zone: y {title[0]:.2f}..{title[1]:.2f} "
-            f"(max title height {MANIM_TITLE_MAX_HEIGHT:.2f}).\n"
-            f"   - Content zone: y {content[0]:.2f}..{content[1]:.2f}; "
+            f"   - Title slot: y in [{title[0]:.2f}, {title[1]:.2f}] "
+            f"(max title height {MANIM_TITLE_MAX_HEIGHT:.2f}) -> always use title.to_edge(UP, buff=0.35).\n"
+            f"   - Hero Visual Stage: y in [{content[0]:.2f}, {content[1]:.2f}], x in [{-safe_x*0.85:.2f}, {safe_x*0.85:.2f}]; "
             f"band gutter {MANIM_BAND_GUTTER:.2f}.\n"
-            f"   - Caption zone: y {caption[0]:.2f}..{caption[1]:.2f} "
+            f"   - Caption zone / caption band: y in [{caption[0]:.2f}, {caption[1]:.2f}] "
             f"(max caption height {MANIM_CAPTION_MAX_HEIGHT:.2f}); keep "
-            "captions to at most 2 lines, font_size >= 20, and inside the "
-            "caption zone.\n"
-            "   - Use exactly one caption Mobject for the entire section, update the "
-            "same caption mobject with Transform(...), and never keep multiple caption-like "
-            "texts visible at once.\n"
-            "   - Keep the caption in the caption band and keep all auxiliary labels/equations "
-            "out of the caption band.\n"
-            "   - Anchor every auxiliary label/equation to an existing object using "
-            "next_to(existing_mobject, DIRECTION, buff=...) or a grouped VGroup; do not "
-            "scatter independent absolute UP/DOWN offsets over the frame."
+            "captions to at most 2 lines, font_size 24-28, and inside the "
+            "caption zone (e.g. caption_y = DOWN * 3.15).\n"
+            "   - SINGLE CAPTION INVARIANT: Use exactly ONE caption Mobject for the entire section, update the "
+            "same caption mobject with Transform(caption, new_caption), and NEVER leave multiple caption-like "
+            "texts visible simultaneously.\n"
+            "   - CONTAINERIZATION & OVERLAP PREVENTION: Group multi-part elements with VGroup and align them with "
+            ".arrange(RIGHT, buff=...), .arrange_in_grid(...), or next_to(existing_mobject, ...). Never place independent floating labels at "
+            "arbitrary guessed coordinates.\n"
+            "   - LIFECYCLE CLEANUP: Every transient annotation, arrow, or label introduced for a sentence beat MUST "
+            "be faded out with self.play(FadeOut(...)) or Transformed before the next sentence's elements appear."
         )
     except Exception:
         return ""
@@ -717,16 +717,23 @@ def _pattern_hints(
     if not isinstance(matches, list) or not matches:
         return ""
 
-    lines = [
-        f"- {match.get('text')}"
-        for match in matches
-        if isinstance(match, dict) and match.get("text")
-    ]
+    pattern_lines = []
+    asset_lines = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        if match.get("text"):
+            pattern_lines.append(f"- {match.get('text')}")
+        elif match.get("hint"):
+            asset_lines.append(f"- {match.get('hint')}")
 
-    if not lines:
-        return ""
+    out = []
+    if pattern_lines:
+        out.append("RELEVANT PATTERNS:\n" + "\n".join(pattern_lines))
+    if asset_lines:
+        out.append("AVAILABLE EXTERNAL ANIMATION OBJECTS & ASSETS:\n" + "\n".join(asset_lines))
 
-    return "RELEVANT PATTERNS:\n" + "\n".join(lines)
+    return "\n\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -2150,6 +2157,7 @@ REFERENCE PATTERN (imitate this structure — not the specific text/content):
      budget is generous, spend it on 2-4 small sequential animations
      (build → emphasize a detail → hold briefly) instead of a single slow
      `Create` or a single static freeze.
+   - ANTI-FREEZE PACING: Never emit a silent `self.wait(...)` longer than 2.0s. If the sentence narration continues after the primary visual appears, chain subtle focal micro-animations (`Indicate(active_node, scale_factor=1.12)`, `Circumscribe(active_formula, buff=0.15)`, or gentle pointer moves) during the explanation before settling to the cue.
 
 9. Do not use:
    - undocumented keyword arguments

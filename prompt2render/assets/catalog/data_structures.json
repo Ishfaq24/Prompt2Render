@@ -1,0 +1,28 @@
+{
+  "category": "data_structures",
+  "version": "1.0.0",
+  "objects": [
+    {
+      "id": "binary_tree",
+      "name": "Binary Tree Layout",
+      "type": "manim_component",
+      "backends": ["manim"],
+      "license": "MIT",
+      "source_url": "https://prompt2render.internal/assets/data_structures.py",
+      "author": "Prompt2Render Team",
+      "keywords": ["tree", "binary tree", "bst", "node", "root", "leaf", "child node", "parent node"],
+      "description": "Hierarchical binary tree visualizer with node positioning and edge connections.",
+      "module": "prompt2render.assets.mobjects.data_structures",
+      "class_name": "BinaryTreeMobject",
+      "default_bounds": { "width": 6.0, "height": 4.0 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "levels": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "node_radius": { "type": "number", "minimum": 0.1, "maximum": 1.0 },
+          "highlight_color": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

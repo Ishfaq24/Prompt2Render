@@ -43,6 +43,7 @@ reimplementing an ffprobe wrapper, the same way ``visuals.py`` already does.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -161,6 +162,120 @@ def frame_delta(
         mask |= diff > tolerance
 
     return float(np.count_nonzero(mask)) / mask.size
+
+
+# Layout collision thresholds
+COLLISION_IOU_THRESHOLD = 0.15
+COLLISION_IOM_THRESHOLD = 0.30
+
+
+def detect_frame_spatial_collisions(
+    frame_path: Path,
+    *,
+    state_name: str = "",
+    timestamp: float = 0.0,
+    tolerance: int = _TOLERANCE,
+    iou_threshold: float = COLLISION_IOU_THRESHOLD,
+    iom_threshold: float = COLLISION_IOM_THRESHOLD,
+) -> list[str]:
+    """Inspect rendered frame for geometric overlaps, margin overflow, and caption collisions."""
+    try:
+        import cv2
+    except ImportError:
+        return []
+
+    img = cv2.imread(str(frame_path))
+    if img is None:
+        return []
+
+    h_img, w_img = img.shape[:2]
+    if h_img < 100 or w_img < 100:
+        return []
+
+    mask = np.zeros((h_img, w_img), dtype=np.uint8)
+    for channel, bg in enumerate(_BG_RGB):
+        plane = img[:, :, channel]
+        diff = np.maximum(plane, bg) - np.minimum(plane, bg)
+        mask[diff > tolerance] = 255
+
+    # Find external contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    bboxes: list[tuple[int, int, int, int]] = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 60:  # Ignore tiny noise artifacts
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        bboxes.append((x, y, w, h))
+
+    warnings: list[str] = []
+    tag = f"state '{state_name}' at {timestamp:.2f}s" if state_name else f"at {timestamp:.2f}s"
+
+    # 1. Offframe check (safe margin 12px)
+    margin = 12
+    for x, y, w, h in bboxes:
+        if (x < margin or y < margin or (x + w) > (w_img - margin) or (y + h) > (h_img - margin)) and (w > 20 and h > 20):
+            warnings.append(
+                f"WARN [offframe] {tag}: element at ({x},{y},{w},{h}) extends past safe frame margins"
+            )
+            break
+
+    # 2. Pairwise IoU and IoM spatial collision check (outside caption band)
+    caption_y_min = int(0.80 * h_img)
+    main_boxes = [b for b in bboxes if b[1] + b[3] <= caption_y_min]
+    for i in range(len(main_boxes)):
+        for j in range(i + 1, len(main_boxes)):
+            b1, b2 = main_boxes[i], main_boxes[j]
+            xi = max(b1[0], b2[0])
+            yi = max(b1[1], b2[1])
+            xf = min(b1[0] + b1[2], b2[0] + b2[2])
+            yf = min(b1[1] + b1[3], b2[1] + b2[3])
+            if xf > xi and yf > yi:
+                inter_area = (xf - xi) * (yf - yi)
+                area1 = b1[2] * b1[3]
+                area2 = b2[2] * b2[3]
+                min_area = min(area1, area2)
+                union_area = area1 + area2 - inter_area
+                iou = inter_area / union_area if union_area > 0 else 0.0
+                iom = inter_area / min_area if min_area > 0 else 0.0
+
+                # If one box is an intentional container around another (>90% containment and >2.5x size)
+                is_container = (iom > 0.90) and (max(area1, area2) / max(min_area, 1) > 2.5)
+                if not is_container:
+                    if iou >= iou_threshold or iom >= iom_threshold:
+                        warnings.append(
+                            f"WARN [overlap] {tag}: spatial overlap detected between elements at "
+                            f"({b1[0]},{b1[1]},{b1[2]},{b1[3]}) and ({b2[0]},{b2[1]},{b2[2]},{b2[3]}) "
+                            f"(IoU={iou:.2f}, IoM={iom:.2f})"
+                        )
+                        break
+        if warnings and "overlap" in warnings[-1]:
+            break
+
+    # 3. Caption collision check (caption band y in [0.80 * h_img, 0.98 * h_img])
+    caption_boxes = [b for b in bboxes if b[1] + b[3] > caption_y_min and b[1] < int(0.98 * h_img)]
+    if len(caption_boxes) > 1:
+        has_vertical_stack = False
+        for i in range(len(caption_boxes)):
+            for j in range(i + 1, len(caption_boxes)):
+                b1, b2 = caption_boxes[i], caption_boxes[j]
+                if abs(b1[1] - b2[1]) > 15 or (min(b1[0] + b1[2], b2[0] + b2[2]) - max(b1[0], b2[0]) > 10):
+                    has_vertical_stack = True
+                    break
+            if has_vertical_stack:
+                break
+        if has_vertical_stack:
+            warnings.append(
+                f"WARN [caption_collision] {tag}: multiple elements colliding in caption band"
+            )
+    elif len(caption_boxes) == 1:
+        b = caption_boxes[0]
+        if b[3] > int(0.08 * h_img):
+            warnings.append(
+                f"WARN [caption_collision] {tag}: caption height ({b[3]}px) exceeds safe single-line caption band height"
+            )
+
+    return warnings
 
 
 def extract_frame(
@@ -495,32 +610,39 @@ def observe_clip(
                 "(expected visible content)"
             )
 
+        # Detect spatial collisions, off-frame elements, and caption collisions
+        collision_warnings = detect_frame_spatial_collisions(
+            frame_path,
+            state_name=name,
+            timestamp=timestamp,
+            tolerance=tolerance if "tolerance" in locals() else _TOLERANCE,
+        )
+        warnings.extend(collision_warnings)
+
     if measured == 0:
         return _skip(
             "cv2/ffmpeg unavailable, or every sampled frame failed to "
             "extract/decode."
         )
 
-    # Suppress early-sample-only warnings when later samples show content:
-    # an intro animation at 0.09s with 0.08% ink is intentional, not a
-    # genuinely empty scene (which would have low ink at ALL samples).
+    # Suppress early-sample-only visual_absence warnings when later samples show content:
     has_high_later = any(
         frac is not None and frac >= min_ink_fraction
         for _, ts, frac in samples
         if ts >= 0.5
     )
     if has_high_later and warnings:
-        # Re-build warnings keeping only samples that are still low after
-        # the entrance period (>=0.5s). An early 0.09s low sample that is
-        # the only low one disappears, while a genuinely empty scene
-        # (low at later timestamps too) keeps its warnings.
-        warnings = [
-            f"WARN [visual_absence] state '{name}' at {ts:.2f}s: "
-            f"{frac:.4%} of the frame is non-background "
-            "(expected visible content)"
-            for name, ts, frac in samples
-            if frac is not None and frac < min_ink_fraction and ts >= 0.5
-        ]
+        # Keep non-absence warnings (e.g. overlap, caption_collision, offframe) and filter absence
+        retained_warnings: list[str] = []
+        for w in warnings:
+            if "WARN [visual_absence]" in w:
+                # Only keep if timestamp >= 0.5s
+                m_ts = re.search(r"at (\d+\.\d+)s", w)
+                if m_ts and float(m_ts.group(1)) >= 0.5:
+                    retained_warnings.append(w)
+            else:
+                retained_warnings.append(w)
+        warnings = retained_warnings
 
     return {
         "status": "warn" if warnings else "pass",
@@ -531,9 +653,12 @@ def observe_clip(
 
 
 __all__ = [
+    "COLLISION_IOU_THRESHOLD",
+    "COLLISION_IOM_THRESHOLD",
     "DEFAULT_FALLBACK_COUNT",
     "DEFAULT_MIN_INK_FRACTION",
     "DEFAULT_MIN_MOTION_DELTA",
+    "detect_frame_spatial_collisions",
     "extract_frame",
     "frame_delta",
     "ink_fraction",

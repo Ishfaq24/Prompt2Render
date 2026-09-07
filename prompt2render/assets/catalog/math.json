@@ -1,0 +1,27 @@
+{
+  "category": "math",
+  "version": "1.0.0",
+  "objects": [
+    {
+      "id": "coordinate_grid",
+      "name": "2D Coordinate Grid",
+      "type": "manim_component",
+      "backends": ["manim"],
+      "license": "MIT",
+      "source_url": "https://prompt2render.internal/assets/math_widgets.py",
+      "author": "Prompt2Render Team",
+      "keywords": ["grid", "coordinate", "axes", "plane", "cartesian", "graph", "plot"],
+      "description": "Clean 2D Cartesian coordinate grid with labeled axes and tick marks.",
+      "module": "prompt2render.assets.mobjects.math_widgets",
+      "class_name": "CoordinateGridMobject",
+      "default_bounds": { "width": 6.0, "height": 6.0 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x_range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
+          "y_range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 }
+        }
+      }
+    }
+  ]
+}

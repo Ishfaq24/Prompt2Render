@@ -368,21 +368,17 @@ def _maybe_normalize_one_based_cues(states: list[dict[str, Any]], entry: Any) ->
     if not cues:
         return states
 
-    # Conservative one-based detection: min >=1, max == N, no zero present.
+    # Conservative one-based detection: min >= 1, max == sentence_count, no zero present.
     if min(cues) >= 1 and max(cues) == sentence_count and all(c >= 1 for c in cues) and 0 not in cues:
-        # Explicit normalization: 1..N -> 0..N-1
         for s in states:
             if isinstance(s.get("cue"), int):
                 s["cue"] = s["cue"] - 1
-        # Also log that we performed the one-based normalization.
-        try:
-            from .... import cfg as _cfg
-            _cfg.warn(
-                f"Section {getattr(entry, 'stem', '?')}: detected one-based cues {cues} "
-                f"for {sentence_count} sentences; normalized to zero-based {[c-1 for c in cues]}"
-            )
-        except Exception:
-            pass
+
+    # Clamp any remaining out-of-range cues to the valid zero-based range 0..sentence_count-1
+    for s in states:
+        if isinstance(s.get("cue"), int):
+            s["cue"] = max(0, min(sentence_count - 1, s["cue"]))
+
     return states
 
 

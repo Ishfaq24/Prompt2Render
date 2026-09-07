@@ -380,3 +380,38 @@ def test_observe_motion_all_pairs_undecodable_skips(tmp_path, monkeypatch):
 
     assert record["status"] == "skip"
     assert record["traces"] == []
+
+
+def test_detect_frame_spatial_collisions_no_warning_clean_frame(tmp_path):
+    frame = tmp_path / "clean.png"
+    # 1920x1080 image with a centered clean box
+    img = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    img[400:600, 700:1200] = (255, 255, 255)
+    cv2.imwrite(str(frame), img)
+
+    warnings = vo.detect_frame_spatial_collisions(frame, state_name="s01", timestamp=2.5)
+    assert warnings == []
+
+
+def test_detect_frame_spatial_collisions_offframe_warning(tmp_path):
+    frame = tmp_path / "offframe.png"
+    # Image with a box placed at x=0, y=0 (off-margin)
+    img = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    img[0:100, 0:100] = (255, 255, 255)
+    cv2.imwrite(str(frame), img)
+
+    warnings = vo.detect_frame_spatial_collisions(frame, state_name="s01", timestamp=1.0)
+    assert len(warnings) == 1
+    assert "WARN [offframe]" in warnings[0]
+
+
+def test_detect_frame_spatial_collisions_caption_collision_warning(tmp_path):
+    frame = tmp_path / "caption_collision.png"
+    img = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    # Two colliding boxes in the caption band (y > 880)
+    img[900:980, 500:1000] = (255, 255, 255)
+    img[920:1000, 700:1200] = (255, 255, 255)
+    cv2.imwrite(str(frame), img)
+
+    warnings = vo.detect_frame_spatial_collisions(frame, state_name="s02", timestamp=4.0)
+    assert any("WARN [caption_collision]" in w for w in warnings)

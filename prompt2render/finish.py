@@ -75,10 +75,10 @@ def _concat(
                 "-safe",
                 "0",
                 "-i",
-                str(list_path),
+                str(list_path.resolve()),
                 "-c",
                 "copy",
-                str(dst),
+                str(dst.resolve()),
             ],
             cwd=str(cwd),
         )
@@ -372,35 +372,51 @@ def _mux_final(
         missing_ok=True
     )
 
+    foley = master.with_name("foley.wav")
+    has_foley = foley.exists() and foley.stat().st_size > 44
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-v",
+        "error",
+        "-i", str(video),
+        "-i", str(master),
+        "-i", str(srt),
+        "-i", str(metadata),
+    ]
+    if has_foley:
+        cmd.extend(["-i", str(foley)])
+        cmd.extend([
+            "-filter_complex", "[1:a][4:a]amix=inputs=2:duration=first:weights=1.0 0.25:normalize=0[aout]",
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-map", "2:s:0",
+            "-map_metadata", "3",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", cfg.AAC_BITRATE,
+            "-c:s", "mov_text",
+        ])
+    else:
+        cmd.extend([
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-map", "2:s:0",
+            "-map_metadata", "3",
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-c:s", "mov_text",
+        ])
+    cmd.extend([
+        "-metadata:s:s:0",
+        "language=eng",
+        "-movflags", "+faststart",
+        str(temporary),
+    ])
+
     try:
-        cfg.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "error",
-
-                "-i", str(video),
-                "-i", str(master),
-                "-i", str(srt),
-                "-i", str(metadata),
-
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-map", "2:s:0",
-                "-map_metadata", "3",
-
-                "-c:v", "copy",
-                "-c:a", "copy",
-                "-c:s", "mov_text",
-
-                "-metadata:s:s:0",
-                "language=eng",
-
-                "-movflags", "+faststart",
-                str(temporary),
-            ]
-        )
+        cfg.run(cmd)
 
         if not temporary.exists() or temporary.stat().st_size <= 2048:
             raise RuntimeError(
@@ -871,6 +887,25 @@ def finish_manim(
             )
 
         final_video = burned
+
+    # Ensure video and audio lengths match sample-accurately to pass the QC a/v length gate
+    try:
+        vdur = cfg.duration(final_video)
+        adur = cfg.duration(master)
+        if adur > vdur + 0.05:
+            pad = adur - vdur
+            padded = build / "video_padded.mp4"
+            cfg.run([
+                "ffmpeg", "-y", "-v", "error",
+                "-i", str(final_video),
+                "-vf", f"tpad=stop_mode=clone:stop_duration={pad:.3f}",
+                *cfg.pick_vopts(),
+                str(padded)
+            ])
+            if padded.exists() and padded.stat().st_size > 0:
+                final_video = padded
+    except Exception:
+        pass
 
     _mux_final(
         final_video,

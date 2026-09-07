@@ -93,13 +93,10 @@ def model_chain(
     # Env override takes precedence (user explicitly configured ordered list)
     env_chain = _parse_gemini_models_env()
     if env_chain is not None:
-        primary = os.environ.get(model_env, "").strip() or default_model
-        # Ensure primary is first if not already in env list
-        if primary and primary not in env_chain:
-            # Check alias
-            if primary in _MODEL_ALIASES:
-                primary = _MODEL_ALIASES[primary]
-            return [primary] + [m for m in env_chain if m != primary]
+        explicit_primary = os.environ.get(model_env, "").strip()
+        if explicit_primary and explicit_primary not in env_chain:
+            explicit_primary = _MODEL_ALIASES.get(explicit_primary, explicit_primary)
+            return [explicit_primary] + [m for m in env_chain if m != explicit_primary]
         return env_chain
 
     primary_raw = os.environ.get(model_env, "").strip() or default_model

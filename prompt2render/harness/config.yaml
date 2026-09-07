@@ -102,6 +102,10 @@ verifier_execution:
   enabled: true              # real: deterministic AST-based execution verifier
   gate_override: true
 
+verifier_cognitive:
+  enabled: true              # Mayer-Sweller cognitive load & attention signaling verifier
+  gate_override: null        # advisory by default
+
 # Tier 3 Phase 11 (F3/F4): deterministic-CV-only visual grounding, no VLM.
 # Samples the rendered Manim clip at each state's settled timestamp (from
 # temporal_ir when available, evenly-spaced fallback otherwise) and measures

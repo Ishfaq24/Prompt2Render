@@ -137,3 +137,15 @@ def find_storyboard_states(
                 return section.get("states")
 
     return None
+
+
+def suggest_ambient_motion_ops(target_identifier: str, remaining_hold_seconds: float) -> list[dict[str, Any]]:
+    """Suggests non-destructive ambient micro-animations when a narration hold exceeds 2.0s."""
+    if remaining_hold_seconds < 2.0 or not target_identifier or not target_identifier.isidentifier():
+        return []
+    if remaining_hold_seconds < 4.0:
+        return [{"op": "Indicate", "target": target_identifier, "run_time": 0.8}]
+    return [
+        {"op": "Indicate", "target": target_identifier, "run_time": 0.8},
+        {"op": "Circumscribe", "target": target_identifier, "run_time": 1.0},
+    ]
