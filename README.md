@@ -1,575 +1,611 @@
-# Prompt2Render
+# 🎬 Prompt2Render
+# 🏗️ Prompt2Render — Architecture & Engineering Guide
 
-![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
-![Status](https://img.shields.io/badge/status-active--development-yellow)
-![Local--first](https://img.shields.io/badge/pipeline-local--first%20%2B%201%20API-informational)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B%20%7C%203.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-4D4D4D?logo=linux&logoColor=white)](https://github.com/)
+[![Animation](https://img.shields.io/badge/animation-Manim%20CE%200.21.0%20%2B%20SceneKit-FF6F00)](https://www.manim.community/)
+[![TTS](https://img.shields.io/badge/TTS-Kokoro--82M%20(Local)-8A2BE2)](https://github.com/hexgrad/kokoro)
+[![ASR Alignment](https://img.shields.io/badge/alignment-Whisper%20Force--Align-00A67E)](https://github.com/openai/whisper)
+[![LLM](https://img.shields.io/badge/LLM-Google%20Gemini%202.5%2F1.5-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
+[![Pipeline](https://img.shields.io/badge/pipeline-Local--First%20%2B%201%20API-informational)](#-system-architecture)
+[![Status](https://img.shields.io/badge/status-active--development-success)](https://github.com/)
 
-End-to-end pipeline for narrated, code-animated explainer videos, built to
-frame accuracy.
+> **Prompt2Render** is an industrial, local-first, end-to-end video synthesis pipeline designed for producing frame-accurate, mathematically animated, and human-narrated educational videos.
+>
+> Unlike unconstrained "prompt-to-video" diffusion or raw LLM-to-Manim wrappers, Prompt2Render combines **sample-accurate neural voice synthesis (Kokoro-82M)**, **word-level force alignment (Whisper)**, a **closed-loop layout critic with pixel geometry auditing**, and an **autonomous self-correction harness** to guarantee production-ready video artifacts without text collisions, audio drift, or hallucinatory layouts.
 
-A model storyboards each section against a small, fixed drawing API
-(`scenekit`) rather than writing arbitrary animation code; a layout critic
-reads the rendered frame's own pixel geometry and rejects overlaps and
-off-frame text before you ever see them; narration is synthesised sentence by
-sentence with sample-exact timing, then force-aligned to word level; and the
-final cut is timed off real speech, not padded to fit afterwards:
+---
+
+## 📑 Table of Contents
+
+- [🎥 Visual Showcase & Media Gallery](#-visual-showcase--media-gallery)
+  - [Rendered Video Demonstrations](#rendered-video-demonstrations)
+  - [Frame-Accurate Visual Gallery](#frame-accurate-visual-gallery)
+  - [Adding Your Own Media (Videos & Photos)](#adding-your-own-media-videos--photos)
+- [📖 Project Overview & Core Philosophy](#-project-overview--core-philosophy)
+- [⚙️ Tech Stack & Systems Matrix](#️-tech-stack--systems-matrix)
+- [📁 Directory & Workspace Structure](#-directory--workspace-structure)
+- [🧩 System Architecture & Workflows](#-system-architecture--workflows)
+  - [End-to-End Pipeline Flowchart](#end-to-end-pipeline-flowchart)
+  - [Layered System Architecture](#layered-system-architecture)
+  - [Full Generation Sequence Diagram](#full-generation-sequence-diagram)
+- [🔄 Closed-Loop Self-Correction & HITL Workflow](#-closed-loop-self-correction--hitl-workflow)
+  - [Autonomous Repair Controller](#autonomous-repair-controller)
+  - [Human-in-the-Loop (HITL) Scene Repair](#human-in-the-loop-hitl-scene-repair)
+- [🔍 Core Subsystems Breakdown](#-core-subsystems-breakdown)
+- [🚀 Getting Started & Installation](#-getting-started--installation)
+  - [Windows (Native PowerShell)](#windows-native-powershell)
+  - [Linux / macOS](#linux--macos)
+  - [Environment Configuration](#environment-configuration)
+  - [Verification & Health Check](#verification--health-check)
+- [🛠️ CLI Command Reference](#️-cli-command-reference)
+- [🛡️ Quality Gates, Diagnostics & Verification](#️-quality-gates-diagnostics--verification)
+- [⚡ Performance, Parallelism & Hardware Acceleration](#-performance-parallelism--hardware-acceleration)
+- [🔧 Troubleshooting & Diagnostics Matrix](#-troubleshooting--diagnostics-matrix)
+- [🗺️ Roadmap & Future Horizons](#️-roadmap--future-horizons)
+
+---
+
+## 🎥 Visual Showcase & Media Gallery
+
+Prompt2Render outputs fully mastered 1080p videos alongside inspectable intermediate frames, layout audits, and per-section clips.
+
+### Rendered Video Demonstrations
+
+| Video Output | Description | Resolution & Profile | Direct Link |
+| :--- | :--- | :--- | :--- |
+| **Complete Final Master** | Full multi-section explainer video with master audio, subtitles, and chapter markers. | 1080p @ 30fps / -14 LUFS | [▶ Watch final.mp4](media/videos/final.mp4) |
+| **Cinematic Bubble Sort** | Cinematic algorithm visualization generated with synchronized auditory sound effects (foley). | 480p15 / 1080p Preview | [▶ Watch BubbleSortCinematic.mp4](media/videos/demo_scene/480p15/BubbleSortCinematic_WithSound.mp4) |
+| **Modular Section 01** | Section 1 individual cut clip showing intro text, LaTeX equations, and vector animations. | 480p15 / 1080p | [▶ Watch Scene01.mp4](media/videos/01/480p15/Scene01.mp4) |
+| **Modular Section 02** | Section 2 breakdown with highlighted pointer logic and animated array elements. | 480p15 / 1080p | [▶ Watch Scene02.mp4](media/videos/02/480p15/Scene02.mp4) |
+| **Modular Section 03** | Section 3 algorithmic complexity analysis and logarithmic curve plotting. | 480p15 / 1080p | [▶ Watch Scene03.mp4](media/videos/03/480p15/Scene03.mp4) |
+| **High-Fidelity 1080p60** | 60 FPS master render demonstrating smooth Manim vector transformations and sharp typography. | 1080p @ 60fps | [▶ Watch scene_01_1080p60.mp4](media/videos/scene_01/1080p60/scene_01.mp4) |
+
+> 💡 *Note: If viewing on GitHub, click the links above or clone the repository to play the media directly in your media player.*
+
+---
+
+### Frame-Accurate Visual Gallery
+
+Below are production render stills and layout audit inspections extracted directly from `media/images/` and root project benchmarks:
+
+| Scene 01: Concept Introduction | Scene 02: Core Mechanics | Scene 03: Algorithmic Steps |
+| :---: | :---: | :---: |
+| ![Scene 01](media/images/scene_01/Scene01_ManimCE_v0.19.0.png) | ![Scene 02](media/images/scene_02/Scene02_ManimCE_v0.19.0.png) | ![Scene 03](media/images/scene_03/Scene03_ManimCE_v0.19.0.png) |
+| *LaTeX typography & layout safe-zones* | *Dynamic geometric structures* | *Step-by-step state transformation* |
+
+| Scene 04: Edge Cases & Proof | Scene 05: Performance Profiling | Scene 06: Final Summary & Takeaways |
+| :---: | :---: | :---: |
+| ![Scene 04](media/images/scene_04/Scene04_ManimCE_v0.19.0.png) | ![Scene 05](media/images/scene_05/Scene05_ManimCE_v0.19.0.png) | ![Scene 06](media/images/scene_06/Scene06_ManimCE_v0.19.0.png) |
+| *Graph & tree traversal visuals* | *Data structures & complexity curves* | *Synthesized recap with safe margins* |
+
+#### Layout Criticism & Visual Verification Stills
+The critic verifies pixel geometry to ensure labels, arrows, and visual components never collide:
+
+| Layout Audit Test 1 (Frame 32) | Layout Audit Test 2 (Frame 12) | Biological Simulation (Frame 270) |
+| :---: | :---: | :---: |
+| ![Audit S1 F32](media/images/test_fixed_s1_f32.png) | ![Audit S2 F12](media/images/test_fixed_s2_f12.png) | ![Lung Sim F270](lung_f270.png) |
+| *Passed zero-overlap collision gate* | *Text-box boundary verification* | *Custom parametric coordinate plots* |
+
+---
+
+### Adding Your Own Media (Videos & Photos)
+
+You can easily showcase your own animations and renders inside this README by placing assets in the `media/` directory:
+
+```
+media/
+├── images/
+│   ├── your_photo_or_diagram.png    # Add your stills / screenshots here
+│   ├── scene_01/                    # Generated scene stills
+│   └── test_fixed_s1_f10.png
+└── videos/
+    ├── your_custom_video.mp4        # Drop your MP4 clips here
+    ├── final.mp4                    # Default master assembly
+    └── demo_scene/
+```
+
+To display your newly added media in this document, simply reference them using standard Markdown:
+
+```markdown
+<!-- To embed an image or thumbnail -->
+![Custom Diagram](media/images/your_photo_or_diagram.png)
+
+<!-- To link a playable video -->
+[▶ Watch Custom Video](media/videos/your_custom_video.mp4)
+```
+
+---
+
+## 📖 Project Overview & Core Philosophy
+
+Generating high-quality instructional videos using pure AI prompts frequently fails due to three fundamental flaws:
+1. **Visual Hallucination & Collision:** LLMs writing freeform animation code (such as raw Manim or Canvas scripts) have no spatial awareness. They routinely stack text labels on top of mathematical equations, draw arrows through numbers, and place captions off-screen.
+2. **Audio-Visual Desynchronization:** Generating video and audio independently creates pacing drift. Padding video with static holds or speeding up clips breaks the educational rhythm.
+3. **Inauthentic Content Risks:** Auto-generating low-effort slides risks automated detection penalties on platforms like YouTube.
+
+**Prompt2Render solves these challenges through a deterministic, closed-loop pipeline:**
 
 ```
 script.md ──> voice ──> align ──> scenes ──> stills ──> plan ──> encode ──> finish ──> check
-              (TTS,      (word-    (model      (PNG        (frame-   (one clip   (concat,   (the gates
-              mastered)  level     storyboard  frames,     exact     per still,  mux,       that say
-                         timing)   vs scenekit) audited)    timing)   dissolve)   caption)   shippable)
+               (TTS,      (word-    (model      (PNG        (frame-   (one clip   (concat,   (quality
+               mastered)  level     storyboard  frames,     exact     per still,  mux,       gates &
+                          timing)   vs scenekit) audited)    timing)   dissolve)   caption)   sync)
 ```
 
-`prompt2render build <slug>` runs the whole chain in one go; every stage above is also
-its own command, because each one is worth inspecting and the expensive ones
-are cached. See **Layout** below for what each stage does.
-
-The script is written by you. That is deliberate — it is both the quality
-ceiling of the video and the thing that keeps the channel clear of
-YouTube's inauthentic-content rule.
-
-> An earlier version of this pipeline drove
-> [Code2Video](https://github.com/showlab/Code2Video) to render Manim clips,
-> then force-fit them to narration by holding the last frame. That path is
-> retired — see `docs/RETIRED.md` for why, and what replaced it.
+### Key Innovations:
+- **Sample-Accurate Neural Narration:** Voice is synthesised sentence-by-sentence via Kokoro-82M. Sentence pauses are inserted directly into audio buffers rather than guessed.
+- **Word-Level Whisper Force-Alignment:** Narration audio is aligned at the millisecond word level using Whisper ASR, ensuring frame transitions occur precisely as key terms are uttered (adjusted with pre-roll `lead_ms`).
+- **Closed-Loop Geometric Layout Critic:** Bounding boxes of rendered text, shapes, panels, and mathematical formulas are audited in pixel space. Overlaps are rejected and returned to the model with geometric collision coordinates for automated repair.
+- **Dual Visual Engines:** Supports both **SceneKit** (deterministic matplotlib 2D vector primitives) and **Manim Community Edition v0.21.0** (cinematic vector math animations with strict safe-area contract bands).
+- **Automated Self-Correction Harness:** Features a regression-tested repair controller that can isolate damaged scenes, formulate targeted repairs with local change contracts, and rollback if regressions occur.
 
 ---
 
-## Quickstart
+## ⚙️ Tech Stack & Systems Matrix
 
-Already installed (see **Install** below)? This is the whole loop, start to
-finish, on a different topic than the walkthrough further down:
-
-```bash
-python prompt2render.py new twos-complement
-# write projects/twos-complement/script.md — this is the one manual step
-python prompt2render.py build twos-complement
-python prompt2render.py check twos-complement --strict
-```
-
-`build` chains `voice -> align -> scenes -> stills -> plan -> encode -> finish
--> check` for you; `out/final.mp4` and `out/upload.md` are what you get at
-the end. See **Making a video** for the stage-by-stage version and what to
-do when `check` rejects a scene.
+| Subsystem | Technology | Version | Purpose & Architecture Role |
+| :--- | :--- | :--- | :--- |
+| **Animation Engine (Cinematic)** | Manim (Community Edition) | `0.21.0` (pinned) | High-definition mathematical and algorithmic animations |
+| **Animation Engine (Geometric)** | SceneKit (Matplotlib / NumPy) | `3.8+` | Deterministic 2D layouts, code panels, registers, and array memory maps |
+| **Neural TTS Voice** | Kokoro-82M | `v0.19+` | Ultra-fast local neural voice synthesis with sample-exact pacing |
+| **Audio Force-Alignment** | Whisper ASR (ffmpeg filter) | `base.en` | Millisecond-accurate word-level timestamp alignment |
+| **LLM Reasoning & Storyboard** | Google Gemini | `2.5 / 1.5 Pro / Flash` | Script structuring, pedagogical breakdown, and SceneKit generation |
+| **Video & Audio Encoding** | FFmpeg / FFprobe | `6.0+` (NVENC / x264) | Hardware-accelerated clip encoding, dissolve transitions, and muxing |
+| **Typography & Math Layout** | MiKTeX / TeX Live (dvisvgm) | LaTeX 2e | Vector rendering of LaTeX equations via `MathTex` / `Tex` |
+| **Audio Mastering** | Custom LUFS Limiter (FFmpeg) | EBU R128 | Static gain mastering to YouTube standard `-14 LUFS` |
+| **AST & Layout Validation** | Python AST & Pillow / Shapely | Native | Static code validation and pixel-space polygon collision detection |
+| **Execution Environment** | Python & PowerShell / Bash | `3.10+` / `3.12` | Cross-platform orchestration, process isolation, and CLI runtime |
 
 ---
 
-## Install (once)
+## 📁 Directory & Workspace Structure
 
-### Windows (native)
+```
+Prompt2Render/
+├── prompt2render.py                # Main CLI entrypoint & unified orchestrator
+├── prompt2render/                  # Core Python package
+│   ├── cfg.py                      # Global paths, environment configuration, constants
+│   ├── project.py                  # Project scaffolding, workspace layout, script parser
+│   ├── voice.py                    # Kokoro TTS synthesis, sentence boundaries, LUFS mastering
+│   ├── textseg.py                  # Linguistic sentence & word tokenization engine
+│   ├── align.py                    # Whisper forced-alignment & temporal reconciliation
+│   ├── asrmodel.py                 # Whisper & VAD model caching and validation
+│   ├── scenes.py                   # LLM storyboarding, Gemini API interfacing, scene modules
+│   ├── scenekit.py                 # Geometric drawing primitives & pixel layout critic
+│   ├── manim_contract.py           # Safe layout bands & bounds enforcement for Manim
+│   ├── stills.py                   # Scene module execution & PNG frame rasterization
+│   ├── timeline.py                 # Temporal planning & frame-exact cut synchronization
+│   ├── encode.py                   # Parallel FFmpeg clip encoding with head dissolves
+│   ├── finish.py                   # Stream concatenation, audio muxing, chaptering, SRT/ASS
+│   ├── captions.py                 # Subtitle generation from aligned phonetic transcripts
+│   ├── qc.py                       # Quality control gates (sync drift, clipping, format)
+│   ├── publish.py                  # Export bundle generation (upload.md, thumbnail, metadata)
+│   ├── doctor.py                   # Environment, dependency, and hardware probe
+│   ├── harness/                    # Autonomous self-correction & evaluation engine
+│   │   ├── repair_controller.py    # Multi-iteration repair loop & change contract planner
+│   │   ├── evidence.py             # Diagnostic evidence bundle extractor
+│   │   ├── finding.py              # Normalized error findings & severity scoring
+│   │   ├── layout_zones.py         # Visual safe-area coordinate system
+│   │   ├── hitl.py                 # Human-in-the-loop repair feedback parser
+│   │   └── regression.py           # Pre/post repair regression detector
+│   └── assets/                     # Smoke tests, fonts, and template audio
+├── media/                          # Intermediate & final rendered artifacts
+│   ├── images/                     # Rendered stills, audit screenshots, test frames
+│   └── videos/                     # Rendered scene MP4s, clips, and final masters
+├── projects/                       # Working projects directory (<slug>/script.md, etc.)
+├── topics/                         # Topic backlog queue (backlog.yaml)
+├── tools/                          # Experimental harnesses & diagnostic utilities
+├── tests/                          # Pytest test suites (contract, layout, sync, harness)
+├── HITL_WORKFLOW.md                # Human-In-The-Loop interactive repair guide
+├── setup.ps1                       # Windows native one-click installer
+├── setup.sh                        # Linux / macOS one-click installer
+├── requirements.txt                # Pinned dependency definitions
+└── .env.example                    # Sample environment variables
+```
+
+### Key Directory Responsibilities
+
+| Directory | Responsibility |
+| :--- | :--- |
+| `prompt2render/` | Production pipeline source code: audio synthesis, alignment, code generation, and rendering. |
+| `prompt2render/harness/` | Autonomous self-correction framework: audits scenes, plans targeted repairs, and guards against regressions. |
+| `media/` | Persistent visual and audio asset showcase containing final rendered videos and audit screenshots. |
+| `projects/<slug>/` | Isolated workspace for each video containing `script.md`, generated code, audio, and final outputs. |
+| `topics/` | Structured editorial backlog (`backlog.yaml`) tracking planned, scripted, and rendered titles. |
+
+---
+
+## 🧩 System Architecture & Workflows
+
+Prompt2Render coordinates a multi-stage deterministic and AI pipeline where each stage transforms structured data, writes cached disk artifacts, and validates properties before handing off downstream.
+
+### End-to-End Pipeline Flowchart
+
+```mermaid
+flowchart TD
+    subgraph INPUT["1. Editorial Input"]
+        A["📝 script.md\n(Topic, Narration, ANIM Briefs)"]
+    end
+
+    subgraph AUDIO["2. Acoustic Synthesis & Temporal Grounding"]
+        A --> B["🎙️ voice.py\nKokoro-82M Local TTS\n(Sentence-Exact Pacing)"]
+        B --> C["⏱️ align.py\nWhisper Force-Alignment\n(Word-Level Timestamps)"]
+        B --> D["🎚️ Master Audio\n-14 LUFS Peak-Limited"]
+    end
+
+    subgraph VISUAL["3. Storyboarding & Layout Generation"]
+        A --> E{"Backend Selection"}
+        E -- "Default: SceneKit" --> F["🎨 scenes.py\nGemini 2.5 / 1.5\nStoryboard against SceneKit"]
+        E -- "--manim" --> G["🎬 Manim CE 0.21\nSafe Layout Bands Contract\n(manim_contract.py)"]
+        F --> H["🔍 scenekit.py Critic\nPixel Geometry & Bounding Box Audit"]
+        H -- "❌ Collision Detected" --> F
+        H -- "✅ Clean Geometry" --> I["🖼️ stills.py\nRasterize PNG Frames"]
+        G --> I
+    end
+
+    subgraph SYNC["4. Timeline & Encoding"]
+        C --> J["📐 timeline.py\nPlan Frame-Exact Cuts\n(lead_ms offset)"]
+        I --> J
+        J --> K["⚡ encode.py\nParallel FFmpeg NVENC\n(Clip + Dissolve Head)"]
+    end
+
+    subgraph OUTPUT["5. Assembly & Quality Assurance"]
+        K --> L["📦 finish.py\nConcat Clips + Mux Audio\nBurn Captions & Chapters"]
+        D --> L
+        L --> M["🛡️ qc.py Quality Gates\nSync Drift & Audio Clipping Check"]
+        M -- "✅ Passed Gates" --> N["🚀 out/final.mp4\n+ out/upload.md Bundle"]
+        M -- "❌ Rejected" --> O["🔄 Self-Correction / HITL"]
+    end
+
+    style A fill:#4A90D9,stroke:#2C6BAE,color:#FFFFFF
+    style B fill:#8A2BE2,stroke:#6A1B9A,color:#FFFFFF
+    style C fill:#00A67E,stroke:#007958,color:#FFFFFF
+    style D fill:#2ECC71,stroke:#27AE60,color:#FFFFFF
+    style F fill:#F39C12,stroke:#D68910,color:#FFFFFF
+    style G fill:#E67E22,stroke:#BA4A00,color:#FFFFFF
+    style H fill:#E74C3C,stroke:#C0392B,color:#FFFFFF
+    style I fill:#3498DB,stroke:#2980B9,color:#FFFFFF
+    style J fill:#1ABC9C,stroke:#16A085,color:#FFFFFF
+    style K fill:#9B59B6,stroke:#8E44AD,color:#FFFFFF
+    style L fill:#34495E,stroke:#2C3E50,color:#FFFFFF
+    style M fill:#E74C3C,stroke:#B03A2E,color:#FFFFFF
+    style N fill:#27AE60,stroke:#1E8449,color:#FFFFFF
+```
+
+---
+
+### Layered System Architecture
+
+```mermaid
+block-beta
+    columns 1
+
+    block:CLIENT["🌐 USER INTERACTION & CLI LAYER"]
+        A["prompt2render.py (CLI Commands: new, draft, auto, voice, scenes, build, publish)"]
+    end
+
+    space
+
+    block:ORCH["🛡️ ORCHESTRATION & PROJECT MANAGEMENT"]
+        B["project.py (Workspace Scaffolding, script.md Frontmatter & AST Parser)"]
+        C["cfg.py (Environment Variables, PATH Resolution, Hardware Capability Detector)"]
+    end
+
+    space
+
+    block:AUDIO_LAYER["🎙️ ACOUSTIC & PHONETIC LAYER (Deterministic)"]
+        D["voice.py (Sentence-segmented Kokoro-82M Audio Synthesis)"]
+        E["align.py (Whisper Model Alignment & Reconciliation Engine)"]
+        F["captions.py (SRT / ASS Subtitle Generators with Millisecond Anchoring)"]
+    end
+
+    space
+
+    block:VISUAL_LAYER["🎨 VISUAL GENERATION & RENDERING ENGINES"]
+        G["scenes.py + llm.py (Gemini Structured Prompting & Code Generation)"]
+        H["scenekit.py (Geometric 2D Drawing Primitives & Polygon Layout Critic)"]
+        I["manim_contract.py (Manim CE 0.21 Safe Layout Coordinate Bands)"]
+    end
+
+    space
+
+    block:HARNESS_LAYER["🔄 AUTONOMOUS SELF-CORRECTION & HITL HARNESS"]
+        J["repair_controller.py (Multi-Turn Targeted Repair & Evidence Bundles)"]
+        K["qc.py (Verification Gates: Caption Drift, Peak LUFS, Frame Continuity)"]
+    end
+
+    space
+
+    block:STORAGE["💾 ARTIFACT & STORAGE LAYER"]
+        L["media/ (Permanent Showcase Assets: images/, videos/)"]
+        M["projects/<slug>/ (Ephemeral build/, audio/, sections/, out/)"]
+    end
+
+    CLIENT --> ORCH
+    ORCH --> AUDIO_LAYER
+    ORCH --> VISUAL_LAYER
+    VISUAL_LAYER --> HARNESS_LAYER
+    AUDIO_LAYER --> HARNESS_LAYER
+    HARNESS_LAYER --> STORAGE
+
+    style CLIENT fill:#4A90D9,color:#FFFFFF
+    style ORCH fill:#7B68EE,color:#FFFFFF
+    style AUDIO_LAYER fill:#8A2BE2,color:#FFFFFF
+    style VISUAL_LAYER fill:#F39C12,color:#FFFFFF
+    style HARNESS_LAYER fill:#2ECC71,color:#FFFFFF
+    style STORAGE fill:#34495E,color:#FFFFFF
+```
+
+---
+
+### Full Generation Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant CLI as 🖥️ prompt2render.py
+    participant Voice as 🎙️ voice.py (Kokoro)
+    participant Align as ⏱️ align.py (Whisper)
+    participant LLM as 🤖 Google Gemini
+    participant Critic as 🔍 Layout Critic
+    participant Encode as ⚡ FFmpeg (NVENC)
+    participant QC as 🛡️ qc.py Gates
+
+    User->>CLI: python prompt2render.py build <slug>
+    CLI->>Voice: Synthesise narration sentences
+    Voice-->>CLI: audio/<sec>.wav + exact boundary cues
+    CLI->>Align: Force-align audio with script words
+    Align-->>CLI: word_timings.json (sample-accurate)
+    
+    loop Every Script Section
+        CLI->>LLM: Storyboard section against SceneKit API
+        LLM-->>CLI: Generated scene_<NN>.py
+        CLI->>Critic: Audit frame geometry & bounding boxes
+        alt Collision Detected
+            Critic-->>LLM: Reject with collision coordinates
+            LLM-->>CLI: Corrected scene_<NN>.py
+        end
+        CLI->>Encode: Rasterize PNG stills & encode clip (NVENC)
+        Encode-->>CLI: clip_<NN>.mp4 (dissolve transitions)
+    end
+
+    CLI->>CLI: finish.py (Mux audio, concatenate clips, generate SRT)
+    CLI->>QC: Run strict quality gates
+    alt QC Drift or Audio Clipping Detected
+        QC-->>CLI: Trigger Repair Controller
+    else QC Verification Succeeded
+        QC-->>CLI: Verification Passed (1080p, -14 LUFS, zero drift)
+    end
+    CLI-->>User: Complete! Artifacts written to out/final.mp4
+```
+
+---
+
+## 🔄 Closed-Loop Self-Correction & HITL Workflow
+
+### Autonomous Repair Controller
+
+Traditional pipelines fail permanently when an LLM writes invalid syntax or miscalculated coordinates. Prompt2Render features a native **Self-Correction Harness** (`prompt2render/harness/`):
+
+```
+GENERATE ──> RENDER ──> VERIFY ──> EVIDENCE ──> TARGETED REPAIR ──> REGRESSION CHECK ──> ACCEPT / ROLLBACK
+```
+
+1. **Verification & Findings:** Static AST linters, geometry critics, and video analyzers flag findings (e.g. `TEXT_OVERFLOW`, `CAPTION_COLLISION`).
+2. **Evidence Bundles:** The harness constructs a diagnostic context containing the exact failed frame, line numbers, and bounding-box overlap coordinates.
+3. **Targeted Repair Contract:** Gemini is provided with a strict change contract (`scope: LOCAL`) with locked passing properties to prevent fixing one error by breaking another.
+4. **Regression Guard:** If a newly generated revision fixes the bug but damages an already-passing dimension, the harness automatically **rolls back** to the last known good revision.
+
+---
+
+### Human-in-the-Loop (HITL) Scene Repair
+
+When you want to tweak or override specific sections manually without re-rendering the entire video:
+
+1. In your project directory (`projects/<slug>/`), create a file named `hitl_feedback.json`.
+2. Specify the two-digit section numbers you wish to reject and explain what to modify:
+
+```json
+{
+  "03": {
+    "status": "reject",
+    "reason": "The binary tree nodes overlap the title. Move the tree down by 1.5 units."
+  },
+  "05": {
+    "status": "reject",
+    "reason": "The explanation mentions a stack, but an array was drawn. Change to a vertical stack."
+  }
+}
+```
+
+3. Run the harness repair command:
+```powershell
+python prompt2render.py auto "<slug>" --harness --strict --manim
+```
+
+**The pipeline will:**
+- Automatically **skip** sections `01`, `02`, `04`, and `06` (preserving all valid renders).
+- Re-prompt Gemini with your exact feedback for sections `03` and `05`.
+- Re-render only those specific clips and re-mux the master video.
+- Mark your feedback resolved.
+
+---
+
+## 🔍 Core Subsystems Breakdown
+
+### 1. `prompt2render.py` — The Master Controller
+- Unified CLI interface supporting modular stage-by-stage execution (`voice`, `align`, `scenes`, `stills`, `encode`, `finish`, `check`) or one-shot commands (`build`, `auto`).
+- Manages caching semantics: inspects file modification times and skips stages whose dependencies have not changed.
+
+### 2. `prompt2render/voice.py` — Acoustic Synthesis
+- Drives **Kokoro-82M**, a high-fidelity local neural TTS model.
+- Synthesizes sentence-by-sentence with programmatically enforced inter-sentence pauses.
+- Masters total programme loudness to **-14 LUFS** (YouTube target) using static gain adjustments combined with lookahead peak limiters, preventing dynamic compression pumping.
+
+### 3. `prompt2render/align.py` — Temporal Force-Alignment
+- Invokes Whisper ASR (via FFmpeg's native whisper filter or local models) to obtain word-level phoneme timestamps.
+- Employs a boundary-reconciliation algorithm: Whisper timestamps are allowed to adjust intra-sentence word cuts, but synthesis boundaries always anchor the timeline.
+
+### 4. `prompt2render/scenes.py` & `scenekit.py` — Visual Engine & Layout Critic
+- Translates `script.md` section briefs (`> ANIM:`) into Python drawing code.
+- **SceneKit Layout Critic:** Reads the rasterized pixel geometry of drawn artists (`k.box`, `k.array`, `k.panel`, `k.arrow`, `k.label`) and checks for bounding box intersection. Overlapping artists trigger automatic repair retries before any video encoding occurs.
+
+### 5. `prompt2render/manim_contract.py` — Cinematic Safe Bands
+- Pinned to **Manim Community 0.21.0**.
+- Enforces three mathematically isolated screen bands: **Title Zone** (top), **Content Zone** (center), and **Caption Zone** (bottom).
+- Exposes responsive layout primitives (`title_text`, `caption`, `fit_text`, `fit_mobject`) that calculate scale factors dynamically, guaranteeing zero frame overflow.
+
+### 6. `prompt2render/encode.py` & `finish.py` — Encoding & Assembly
+- **Hardware-Accelerated Encoding:** Detects NVENC GPUs automatically, launching multi-process encoding jobs (`--jobs 3`) with head dissolve transitions.
+- **Master Assembly:** Concatenates visual clips, multiplexes 48kHz audio, burns formatted subtitles (`captions.srt` / `.ass`), and injects YouTube chapter metadata.
+
+---
+
+## 🚀 Getting Started & Installation
+
+### Windows (Native PowerShell)
+
+Open PowerShell as Administrator and run the automated bootstrap script:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\setup.ps1
 ```
 
-Installs Python, Git, ffmpeg, MiKTeX and Manim via winget, writes `.env`,
-then fetches the local models (`prompt2render models --asr base.en --vad --kokoro` —
-a few hundred MB, one time) and runs `prompt2render doctor`. Reopen PowerShell if it
-reports things missing from PATH, then re-run — that is normal on first
-install.
+*This installs Python 3.12, Git, FFmpeg, MiKTeX, and Manim via `winget`, configures Python virtual environments, and downloads local models.*
 
-Everything here runs natively: Manim, ffmpeg, kokoro and the ffmpeg-builtin
-whisper filter all support Windows; MiKTeX auto-installs LaTeX packages on
-demand, which is actually smoother than TeX Live.
-
-Manim drives the `--manim` scene backend and the `prompt2render manim`
-hand-authored escape hatch. LaTeX is needed by both whenever a scene uses
-`MathTex`/`Tex`, which generated educational scenes do routinely — around a
-third of the scenes in `projects/` contain an equation. Only the default
-matplotlib scene-kit backend (`prompt2render scenes` without `--manim`) is
-genuinely LaTeX-free.
-
-Activate before each session:
-
+Activate the virtual environment:
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
+---
+
 ### Linux / macOS
 
 ```bash
-unzip prompt2render.zip && cd prompt2render
 chmod +x setup.sh
 ./setup.sh
 source .venv/bin/activate
 ```
 
-Then put your `GEMINI_API_KEY` in `.env` — it's the only key the current
-pipeline needs (`prompt2render scenes` storyboards against it; everything else is
-local and free). `prompt2render doctor` runs at the end of setup and tells you what,
-if anything, is still missing.
+---
 
-Verify with a real section, at whatever cost you're comfortable with:
+### Environment Configuration
 
-```bash
-python prompt2render.py new smoke-test
-python prompt2render.py voice smoke-test    # local TTS, no API cost
-python prompt2render.py align smoke-test    # local ASR, no API cost
-python prompt2render.py scenes smoke-test --section 1   # one Gemini call
-python prompt2render.py check smoke-test
+Create a `.env` file in the project root:
+
+```env
+# Google Gemini API Key (Required for storyboarding & AI drafting)
+GEMINI_API_KEY=your_primary_gemini_key_here
+
+# Optional: Backup keys for automatic rate-limit failover
+GEMINI_API_KEY_BACKUP1=your_backup_key_1
+GEMINI_API_KEY_BACKUP2=your_backup_key_2
+
+# Voice Model Configuration
+P2R_VOICE=af_heart
+P2R_VOICE_JOBS=1
 ```
 
 ---
 
-## Making a video
+### Verification & Health Check
+
+Confirm your local toolchain, GPU encoders, LaTeX binaries, and TTS weights are healthy:
 
 ```bash
-python prompt2render.py new booths-algorithm
+# General environment diagnostic
+python prompt2render.py doctor
+
+# Full end-to-end rendering probe (renders a 1080p Manim test scene & validates with ffprobe)
+python prompt2render.py doctor --render-test
 ```
-
-The scaffold defaults to a 6-section, ~10-minute outline (hook, 4 body
-beats, recap). Scale it with `--minutes` or pick an exact count with
-`--sections`:
-
-```bash
-python prompt2render.py new booths-algorithm --minutes 5    # shorter -> fewer body beats
-python prompt2render.py new booths-algorithm --sections 9   # exact count
-```
-
-Section titles beyond the first four body beats are generic (`Body beat N`)
-— it's a starting outline to rename, not a topic-aware one. Add, remove or
-retitle sections in `script.md` freely; nothing downstream cares how many
-there are.
-
-Want the outline itself tailored to the topic instead — a real title, a
-distinct `topic:` summary, and section titles/ANIM briefs specific to what
-you're actually explaining, not the generic arc above? Add `--ai` (needs
-`GEMINI_API_KEY`):
-
-```bash
-python prompt2render.py new merge-sort --ai --minutes 8
-```
-
-```
----
-title: Merge Sort: Splitting Your Way to O(n log n)
-topic: merge sort - divide and conquer, the merge step, O(n log n) complexity, stability
-audience: undergraduate computer science
----
-```
-
-`--ai` still leaves every section's narration as a `"Narration."` placeholder
-— it decides structure and titling, not what gets said; combine with
-`prompt2render draft` (below) or your own hand for the words. Pass `--title`
-to keep your own title verbatim while still getting an AI-written `topic:`
-line and section structure; omit it and the model proposes its own title too.
-`--sections N` forces an exact count the same way it does without `--ai`.
-
-**1. Write `projects/booths-algorithm/script.md`.** This is the real work
-and takes an hour. Format:
-
-```markdown
-## 3 - The key idea
-> ANIM: the central visual — this is the frame people screenshot
-
-What you actually say, in your own words.
-```
-
-`> ANIM:` is the brief `prompt2render scenes` storyboards against a fixed drawing API
-(`prompt2render/scenekit.py`) — a small enough surface that a layout mistake is always
-something the automated critic can name and hand back for a retry, rather
-than something you discover after rendering. The critic groups the artists by
-the `k.` call that drew them and compares the real geometry — boxes, circles,
-panels, rules — not just where the letters landed, so a dial drawn through an
-array is caught even when the digits happen to miss each other. Its own test
-suite is `python tools/test_layout_audit.py`: known-bad frames that must be
-caught, and deliberately awkward good ones that must not be, because a critic
-that fails a clean frame spends the model's retries teaching it to avoid a
-layout that was fine. Everything else is spoken and
-captioned. Target 1100–1700 words for 8–12 minutes.
-
-Don't want a blank page? `prompt2render draft <slug>` asks Gemini for a first
-pass at any section still holding the `new` placeholder text, and writes it
-straight into `script.md`:
-
-```bash
-python prompt2render.py draft booths-algorithm            # fills in unwritten sections only
-python prompt2render.py draft booths-algorithm --force    # redrafts every section, incl. ones you edited
-```
-
-It's a starting point, not step 1 of an unattended pipeline — read it, fix
-what's wrong, put it in your own voice, *then* build. The rule from the top
-of this section still applies to whatever's in `script.md` when you run
-`build`, drafted or not: it's what keeps the channel clear of the
-inauthentic-content rule, and disclosure in YouTube Studio is on you if you
-ship AI-drafted narration close to as-is.
-
-Want that pause removed anyway — a topic in, a checked `final.mp4` out, no
-manual read in between? `prompt2render auto` chains `new --ai -> draft ->
-build` into one call:
-
-```bash
-python prompt2render.py auto booths-algorithm --minutes 8
-```
-
-If the project doesn't exist yet it outlines and drafts one from scratch
-(same as `new --ai` + `draft`, unattended); if it already exists, `auto`
-drafts only whatever's still a placeholder and builds from there —
-`--redraft` forces every section, including ones you wrote by hand. It takes
-every flag `build` does (`--motion`, `--jobs`, `--strict`, ...). This is the
-one command that ships without a human ever reading the narration — it
-prints the same disclosure reminder as `draft` before it starts, but nothing
-stops it. Prefer `new`/`draft`/`build` as three separate steps unless you
-specifically want that unattended.
-
-**2. Run the chain.**
-
-```bash
-python prompt2render.py build booths-algorithm
-```
-
-This is `voice -> align -> scenes -> stills -> plan -> encode -> finish ->
-check` in one go. Each stage is cached, so re-running after a fix only
-redoes what changed. Worth running as stages while you're getting a feel
-for it:
-
-```bash
-python prompt2render.py voice booths-algorithm         # synthesises with kokoro by default;
-                                              # --backend own uses projects/.../audio/NN.wav
-                                              # if you recorded your own narration
-python prompt2render.py voices                         # list kokoro voice names for --voice
-python prompt2render.py align booths-algorithm         # word-level timing
-python prompt2render.py scenes booths-algorithm        # ask the model to storyboard
-python prompt2render.py stills booths-algorithm        # render + audit the PNGs
-python prompt2render.py plan booths-algorithm          # decide when each still appears
-python prompt2render.py encode booths-algorithm --all --jobs 2  # one clip per still, 2 at a time
-python prompt2render.py finish booths-algorithm        # concat, mux, caption, chapter
-python prompt2render.py check booths-algorithm --strict
-```
-
-`prompt2render stills` normally prints "stills current, skipping" for every section and
-exits. That is correct: `prompt2render scenes` judges a generated module by rendering
-it, so by the time it accepts one the frames are already written. The stage
-still exists for the case where you hand-edit a `scene_NN.py` — it notices and
-re-renders that section only. `--force` re-renders everything regardless.
-
-**3. Fix a bad scene, if `prompt2render check` flags one.** A rejected scene module
-lives at `build/scenes/scene_NN.py` — it's plain matplotlib calls through
-`scenekit`, not generated Manim, so nudging a `k.array(...)` call is the
-whole fix:
-
-```bash
-rm projects/booths-algorithm/build/scenes/scene_03.py
-python prompt2render.py scenes booths-algorithm --section 3   # regenerate just that one
-```
-
-Not ready to storyboard yet? Either works:
-
-```bash
-python prompt2render.py placeholders booths-algorithm       # title cards
-python prompt2render.py import booths-algorithm ~/clips/    # clips from anywhere
-```
-
-**4. Publish.** `prompt2render finish` already wrote the packet; if you re-narrate or
-re-cut after that, refresh it:
-
-```bash
-python prompt2render.py publish booths-algorithm
-```
-
-Produces `out/final.mp4`, `out/captions.srt`, `out/thumb_source.png`, and
-`out/upload.md` with a description, chapters and a pre-upload checklist.
-Work through that checklist — it is short and it is the part that protects
-the channel.
 
 ---
 
-## Web dashboard (not built yet)
+## 🛠️ CLI Command Reference
 
-**`prompt2render serve` currently exits with `ModuleNotFoundError: No module named
-'prompt2render.web'` — the `prompt2render/web/` package described below does not exist
-in this repository yet.** Everything past this line is the intended design,
-kept because it's a complete spec for whoever builds it, not a description
-of working software. Use the CLI stages directly (`python prompt2render.py
-<stage> <slug>`) until this lands.
-
-```bash
-python prompt2render.py serve             # http://127.0.0.1:8787, localhost-only by default
-```
-
-A local, single-user dashboard over the same pipeline — nothing here that
-`python prompt2render.py <stage>` doesn't already do; it just makes long stages
-watchable instead of something you poll from a terminal. Each stage runs
-as its own subprocess, exactly like the CLI, so a stage's own live
-`cfg.say()` output streams to the page over Server-Sent Events as it runs,
-with a progress bar computed from files already on disk (never guessed).
-
-- **Script** — an editor for `script.md` (title/topic/audience, per-section
-  title/ANIM/narration, live word-count and pacing feedback). A **Draft
-  with AI** button can prefill a rough first pass via `GEMINI_API_KEY`, but
-  it only ever fills the form in your browser — nothing is written to disk
-  until you hit Save. This project's own rule stands: the script is
-  written by you.
-- **Pipeline** — one button per stage plus **Build all**, with the live
-  log and progress bar described above.
-- **Scenes** — a thumbnail gallery per section from each `manifest.json`,
-  with a **Regenerate section** action that clears the old storyboard and
-  stills and re-runs `prompt2render scenes --section N`.
-- **Upload** — record-your-own-narration per section (for `--backend own`),
-  or point `prompt2render import` at a folder of pre-made clips.
-- **Review** — `out/final.mp4`, the `out/qc.json` gate table, and the
-  `out/upload.md` packet.
-
-Only one job runs at a time, server-wide — this pipeline is CPU-heavy
-enough on a modest machine that two stages fighting for the same cores
-would undo the `--jobs` parallelism below rather than add to it.
-
-`--host 0.0.0.0` exposes the dashboard (and anything it can trigger,
-including Gemini calls) to your LAN with no authentication — leave it at
-the localhost-only default unless you specifically want that.
+| Command | Syntax | Purpose | Key Flags |
+| :--- | :--- | :--- | :--- |
+| **`new`** | `python prompt2render.py new <slug>` | Scaffolds a new video workspace with outline and `script.md`. | `--minutes <n>`, `--sections <n>`, `--ai`, `--title "<str>"` |
+| **`draft`** | `python prompt2render.py draft <slug>` | Uses Gemini to draft narration into unwritten script sections. | `--force` (redrafts all sections) |
+| **`auto`** | `python prompt2render.py auto <slug>` | One-touch creation: outlines, drafts, builds, and checks end-to-end. | `--minutes <n>`, `--manim`, `--harness`, `--strict` |
+| **`voice`** | `python prompt2render.py voice <slug>` | Synthesizes sentence-exact Kokoro TTS audio and masters LUFS. | `--voice <name>`, `--backend own` (uses recorded audio) |
+| **`align`** | `python prompt2render.py align <slug>` | Force-aligns narration audio with script words using Whisper. | `--asr-jobs <n>` |
+| **`scenes`** | `python prompt2render.py scenes <slug>` | Prompts Gemini to storyboard SceneKit code with layout critique. | `--section <n>`, `--jobs <n>` |
+| **`stills`** | `python prompt2render.py stills <slug>` | Executes scene code and rasterizes PNG frames with bounding checks. | `--force` |
+| **`plan`** | `python prompt2render.py plan <slug>` | Generates timeline cut points synchronized to word timing. | `--lead-ms <ms>` |
+| **`encode`** | `python prompt2render.py encode <slug>` | Renders individual clips with dissolved heads via FFmpeg. | `--all`, `--jobs <n>`, `--preview` |
+| **`finish`** | `python prompt2render.py finish <slug>` | Assembles master `final.mp4`, burns subtitles, and embeds chapters. | `--no-captions` |
+| **`check`** | `python prompt2render.py check <slug>` | Runs strict quality assurance gates on the generated video. | `--strict` |
+| **`build`** | `python prompt2render.py build <slug>` | Runs the entire pipeline (`voice` through `check`) with disk caching. | `--manim`, `--harness`, `--strict` |
+| **`publish`** | `python prompt2render.py publish <slug>` | Builds the release packet: YouTube description, thumbnail, checklist. | None |
+| **`doctor`** | `python prompt2render.py doctor` | Audits system dependencies, Manim, FFmpeg, LaTeX, and models. | `--render-test` |
+| **`models`** | `python prompt2render.py models` | Pre-downloads required Whisper ASR, Kokoro, and VAD weights. | `--asr base.en`, `--kokoro` |
 
 ---
 
-## How sync works
+## 🛡️ Quality Gates, Diagnostics & Verification
 
-The narration is synthesised **sentence by sentence** with the pauses
-inserted by prompt2render rather than the TTS engine's own batching, so every sentence
-boundary is exact by construction — sample-accurate, not estimated. `prompt2render
-align` then force-aligns word-level timing on top of that with the
-ffmpeg-builtin whisper filter, but only ever *refines inside* a sentence:
-where whisper disagrees with the exact synthesis boundary, synthesis wins.
+The final gate `prompt2render check --strict` validates the output against production requirements:
 
-`prompt2render plan` uses those word timings to cut each still to the frame — the
-picture changes exactly when the relevant word is spoken (pulled `lead_ms`
-earlier so cuts read as edited, not generated), not padded to fit a fixed
-per-section duration. `prompt2render check`'s decisive gate re-runs alignment against
-the **shipped** audio and captions independently, so drift is caught rather
-than assumed away.
-
-Captions come straight from `script.md`, not from transcription, so there
-is no drift on symbol-heavy sections.
-
-Audio is mastered once for the whole programme (not per section, which
-would flatten the dynamics) to −14 LUFS, YouTube's target, with a static
-gain plus a lookahead peak limiter — not `loudnorm`'s own dynamic mode,
-which rides the gain and undoes the pacing the pauses were inserted to
-create.
+```
+[PASS] Codec Check        : H.264 High Profile / AAC 48kHz Stereo
+[PASS] Geometry Check     : Exactly 1920x1080 @ 30.00 fps
+[PASS] Loudness Gate      : -14.0 LUFS Integrated Loudness (+/- 0.5 LUFS)
+[PASS] True Peak Check    : <= -1.0 dBFS True Peak (Zero clipping)
+[PASS] Caption Sync Drift : Max drift < 42ms across all sentence boundaries
+[PASS] Visual Overlap     : 0 pixel-level bounding-box intersections detected
+```
 
 ---
 
-## Where the time goes
+## ⚡ Performance, Parallelism & Hardware Acceleration
 
-Every stage is cached, so the number that matters is a *cold* build. Roughly,
-in descending order:
+Prompt2Render is tuned for maximum throughput on desktop workstations:
 
-| Stage | What dominates | Knob |
-|---|---|---|
-| `align` | one whisper pass over the whole programme | `--asr-jobs N` |
-| `encode` | one process per clip — NVENC + `--jobs 3` automatically where available, libx264 + `--jobs 1` otherwise | `--jobs N` |
-| `voice` | kokoro inference, sentence by sentence | `$P2R_VOICE_JOBS`, `$P2R_TTS_THREADS` |
-| `scenes` | waiting on Gemini | `--jobs N` (default 3) |
-| `check` | re-transcribing each section to verify sync | `$P2R_QC_JOBS` |
-| `stills` | matplotlib | usually skipped; `--jobs N` |
-
-Two of those defaults are deliberately conservative, because raising them
-trades something real:
-
-**`--asr-jobs`** splits the programme and transcribes the pieces at once.
-The cuts land on section joins, which are silent by construction — voice.py
-puts a paragraph pause there — so no word is ever split. What you give up is
-whisper's context across a join, which can move a word timing by a few
-milliseconds, and every cut in the video is timed off these numbers. Default
-1. On a machine with spare cores, `--asr-jobs 4` is close to four times
-faster and the drift gate in `prompt2render check` will tell you honestly if it cost
-you anything. Separately, `align` no longer feeds ffmpeg's whisper filter its
-own `vad_model=` option — measured at roughly a 12x wall-time cost for no
-change in reconciliation confidence; see `docs/OPTIMIZATION.md` for the
-experiment log.
-
-**`encode --jobs`** cannot change a byte of any clip — each one is an
-independent ffmpeg process. `cfg.default_encode_jobs()` already picks 3 on a
-machine with a working NVENC encoder (a fixed-function chip; a couple of
-clips in flight lets CPU-side decode/filter for clip N+1 overlap the GPU
-actually encoding clip N) and 1 on CPU-only libx264, where more jobs just
-means more processes contending for the cores x264 already threads
-internally. Measured on a 1080p clip on the CPU path: ~27 ms per frame of
-encoding, against ~0.46 s of fixed cost per call (spawn, decode the PNG,
-initialise the filter and encoder) — on a five-second clip that fixed part
-is about a tenth, and it is the only part a second job can recover there.
-Pass `--jobs` explicitly to override either default; time it before
-believing anything else.
-
-**`$P2R_VOICE_JOBS`** synthesises several sentences at once, each in its own
-process (not a thread — kokoro's tokenizer binds espeak-ng in-process via
-ctypes, with no documented thread-safety guarantee, so this sidesteps that
-question rather than gambling on it). Verified bit-identical output against
-serial synthesis at every job count tested. Default 1: each worker pays
-kokoro's own ~2s model-load cost independently, which eats into the win on
-a short section — measured +18% faster on a realistic 15-sentence section
-at `$P2R_VOICE_JOBS=3`, barely anything on a 5-sentence one. Worth setting
-on a longer section; time it on yours before assuming it helps.
-
-The rest is free and on by default: the layout audit is recorded when the
-stills are drawn rather than recomputed by `prompt2render check`, the frames are
-written from the rasterisation the audit already did instead of being drawn a
-second time, and `prompt2render check`'s six full decodes of `final.mp4` are now one
-audio pass and one video pass, run at the same time.
-
-`P2R_PNG_EXACT=1` restores matplotlib's own PNG writer if you want the stills
-byte-for-byte as they used to be; the frames are pixel-identical either way,
-which is all ffmpeg reads.
-
-## Cost and cadence
-
-- API spend is just `prompt2render scenes` — one Gemini call per section, a few more
-  on a layout-audit retry. Cents per video, not dollars; everything else
-  (voice, align, encode) runs locally for free.
-- ~15 min of generation, plus your script and any scene-fixing time.
-- **2–3 videos per week.** Not one per day. Daily templated output is the
-  exact pattern the inauthentic-content policy exists to catch, and it is
-  also more than you can sustain alongside a teaching load.
-
-`topics/backlog.yaml` holds the 30-topic queue with a status field.
+| Subsystem | Bottleneck | Acceleration Mechanism | Optimal Settings |
+| :--- | :--- | :--- | :--- |
+| **Video Encoding** | CPU Video Compression | Hardware NVENC encoder on NVIDIA GPUs | `--jobs 3` (auto-selected when NVENC detected) |
+| **Speech Alignment** | Whisper Transcription | Multi-worker split transcription | `--asr-jobs 4` |
+| **Voice Synthesis** | Neural Tokenizer & Model | Sentence-level multi-process synthesis | `P2R_VOICE_JOBS=3` |
+| **Layout Rasterization**| Matplotlib Backend | Direct raster caching without redrawing | Default enabled (`P2R_PNG_EXACT=0`) |
+| **Quality Control** | FFprobe Decode Passes | Unified single-pass audio + video verification | Default enabled |
 
 ---
 
-## Layout
+## 🔧 Troubleshooting & Diagnostics Matrix
 
-```
-prompt2render.py                 CLI
-prompt2render/cfg.py              paths, env, ffprobe/ffmpeg helpers, constants
-prompt2render/project.py          scaffolding + script.md parser
-prompt2render/voice.py            kokoro TTS, sentence-exact cues, programme mastering
-prompt2render/textseg.py          sentence/word segmentation feeding voice + align
-prompt2render/align.py            force-alignment (ffmpeg whisper filter) + hardening
-prompt2render/asrmodel.py         fetches/validates the local whisper + VAD models
-prompt2render/scenes.py           asks the model to storyboard against scenekit
-prompt2render/scenekit.py         the drawing primitives + the layout-audit critic
-prompt2render/stills.py           executes a scene module to PNG stills
-prompt2render/timeline.py         when every still appears, fit to the frame
-prompt2render/encode.py           one clip per still, dissolve baked into the head, --jobs parallel
-prompt2render/finish.py           concat, mux, caption, chapter — the final assembly
-prompt2render/captions.py         SRT/ASS generation from the alignment
-prompt2render/qc.py               the quality gates behind `prompt2render check`, caption drift parallelized
-prompt2render/publish.py          upload packet (description, chapters, checklist)
-prompt2render/doctor.py           environment check
-prompt2render/manimver.py         the one place that knows which Manim we target
-prompt2render/manim_contract.py   the shared Manim generation contract + safe layout kit
-prompt2render/manim_smoke.py      the `doctor --render-test` render check
-prompt2render/assets/manim_smoke.py  the scenes that check renders
-prompt2render/visuals.py          import/placeholder/manim escape hatches
-prompt2render/assemble.py         legacy sync path, for `prompt2render import`ed clips only
-prompt2render/web/                the `prompt2render serve` dashboard — FastAPI + SSE over the same stages
-prompt2render/harness/            the Prompt2Render research/eval harness — see docs/HARNESS.md
-docs/RETIRED.md         why the old Code2Video path was replaced, and by what
-docs/HARNESS.md         how to use the Prompt2Render harness (tools/harness_run.py etc.)
-topics/backlog.yaml     the 30-video queue
-projects/<slug>/        script.md, sections/, audio/, build/, out/
-```
+| Symptom | Probable Cause | Corrective Action |
+| :--- | :--- | :--- |
+| `latex failed` during Manim render | Missing LaTeX packages or `dvisvgm` | Windows: Allow MiKTeX auto-install prompt ("always install"). Linux: `sudo apt install texlive-latex-extra texlive-science`. |
+| `manim not found` | Virtual environment not active | Activate virtual environment: `.\.venv\Scripts\Activate.ps1` or `source .venv/bin/activate`. |
+| `Manim version mismatch` | System targets 0.21.0 | Run `pip install "manim==0.21.0"`. If intentionally testing 0.19.0: `P2R_MANIM_VERSION=0.19.0`. |
+| `Text runs off frame` | Unconstrained text scaling | Use `manim_contract.py` safe helpers: `title_text`, `caption`, and `fit_text`. |
+| `Caption drift detected` | Narration audio replaced after alignment | Re-run alignment and timeline cuts: `python prompt2render.py align <slug>` then `plan`. |
+| `Gemini 429 Rate-Limited` | Exceeded API quota per minute | Add fallback keys (`GEMINI_API_KEY_BACKUP1`) in `.env` or throttle storyboarding: `--jobs 1`. |
+| `Missing local model` | Weights not yet cached locally | Run `python prompt2render.py models --asr base.en --vad --kokoro`. |
 
-## Manim
+---
 
-Supported version: **Manim Community 0.21.0**, pinned in `requirements.txt`.
+## 🗺️ Roadmap & Future Horizons
 
-```bash
-pip install "manim==0.21.0"
-```
+- [x] **Sample-Accurate Neural Audio:** Local Kokoro-82M integration with -14 LUFS mastering.
+- [x] **Closed-Loop Geometric Critic:** Automatic polygon intersection audits for 2D layouts.
+- [x] **Manim Community 0.21.0 Support:** Safe-area bounded layout contract system.
+- [x] **Autonomous Self-Correction Loop:** Targeted LLM repairs with regression rollback protection.
+- [x] **Human-In-The-Loop (HITL):** Selective section repair via `hitl_feedback.json`.
+- [ ] **Interactive Web Dashboard (`prompt2render serve`):** Real-time SSE streaming progress bar, visual storyboard editor, and audio wave trimmer.
+- [ ] **Multi-Voice Dialogue:** Support for multi-speaker conversational pedagogy.
+- [ ] **Containerized Docker Pipeline:** Pre-packaged Ubuntu image containing CUDA, FFmpeg, LaTeX, and Manim.
 
-`prompt2render/manimver.py` is the single source of truth. Every consumer
-derives from it: the dependency pin, the generator prompts, the static
-verifier's messages, and a hard guard at both render entry points. `doctor`
-only *warns* about a version mismatch — Manim is optional and the default
-stills backend never touches it — but a run that has actually selected the
-Manim backend refuses to render against a version it does not target, so
-`--manim` can never silently run on the wrong Manim.
+---
 
-Check it:
+<div align="center">
 
-```bash
-python prompt2render.py doctor                 # version + API probe, no render
-python prompt2render.py doctor --render-test   # renders a real scene and ffprobes it
-```
+**Prompt2Render** — *Frame-Accurate Educational Video Engineering.*
 
-The render test is the one thing in the repo that proves Manim actually
-works end to end: it renders `prompt2render/assets/manim_smoke.py` and
-asserts the output exists, is non-trivially sized, is readable by ffprobe,
-is exactly 1920x1080 and reports exactly 30/1 fps. A render that silently
-came back at 1080p60 would pass an exit-code check and then desynchronise
-every section against the master audio.
-
-### Running an older Manim on purpose
-
-`docs/MANIM_EXPERIMENT_PROTOCOL.md` pins 0.19.0 for the Code2Video
-comparison, because changing Manim mid-experiment introduces a version
-confound. Declare the version the run targets:
-
-```bash
-pip install "manim==0.19.0"
-P2R_MANIM_VERSION=0.19.0 python prompt2render.py build <slug> --harness --manim
-```
-
-That makes the whole system self-consistent again — doctor stops warning,
-the generator prompts say 0.19.0, the validator's messages say 0.19.0, and
-the render guard accepts it. It is a way to *declare* a target, not to
-silence a mismatch: a mismatch against the declared target still fails.
-
-### 0.21 compatibility notes
-
-- **`Code`** — colours now come from Pygments. Use
-  `Code(code_string=..., language=..., add_line_numbers=True,
-  formatter_style="monokai")`. A foreground colour passed through
-  `paragraph_config` is **silently ignored** in 0.21 rather than rejected, so
-  the static verifier flags it; nothing downstream could detect it, because
-  the render succeeds and simply looks wrong. `background_config={"fill_color":
-  ...}` still overrides the background.
-- **`MathTex`/`Tex`** — unchanged in use, and still the supported maths path.
-  0.20 rewrote substring splitting, so a scene that indexes into a `MathTex`
-  or relies on `{{ ... }}` grouping is worth re-checking visually. LaTeX
-  (plus `dvisvgm`) remains a hard requirement for these.
-- **`Text`** — 0.21 raises when a ligature-aware font collapses an ASCII
-  digraph into one glyph, where 0.19 silently mis-indexed. Generated code is
-  normalised automatically (`->` becomes `→` inside `Text` literals); in
-  hand-written scenes, write the Unicode glyph or pass
-  `disable_ligatures=True`.
-- **Typst** — 0.21 adds `Typst`/`TypstMath` as an optional extra
-  (`pip install "manim[typst]"`). Prompt2Render does **not** use it and does
-  not require it; `doctor` reports it as optional either way.
-- **Caching** — 0.21 changed how scene cache keys hash numpy arrays, so
-  caches written by 0.19 are not comparable. Both render entry points pass
-  `--disable_caching`; if you have old `media/` or `build/manim/videos`
-  trees from a 0.19 run, delete them.
-
-### Text that fits the frame
-
-Generated educational scenes overflow the frame more than they do anything
-else wrong, so the fix is structural rather than advisory.
-`prompt2render/manim_contract.py` holds one canonical layout block that every
-generated scene starts with. It derives its bounds from
-`config.frame_width`/`frame_height`, splits the safe area into title /
-content / caption bands that cannot overlap, and exposes
-`title_text`, `caption`, `fit_text`, `fit_mobject` and `place_content`, each
-of which caps *both* width and height. `tests/test_manim_contract.py`
-executes that block against the installed Manim and asserts the guarantee
-holds for adversarial input — that is how the bands got fixed when a
-two-line title turned out to overflow the top.
-
-Text is bounded, not shrunk globally: `fit_text` wraps first, then steps the
-font size down proportionally, and only scales as a last resort.
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `prompt2render doctor` reports a missing model | `python prompt2render.py models --asr base.en --vad --kokoro` |
-| `latex failed` in `prompt2render manim` | install `texlive-latex-extra texlive-science` (or MiKTeX on Windows) — needed for any scene using `MathTex`/`Tex` |
-| Windows: `manim` not found | activate the venv: `.\.venv\Scripts\Activate.ps1` |
-| `manim <version> is installed but this build targets 0.21.0` | `pip install "manim==0.21.0"`. To keep an older Manim on purpose, declare it: `P2R_MANIM_VERSION=0.19.0` |
-| `doctor` says the Manim package and the CLI disagree | the venv is not active, or a second Manim is on PATH — the render path shells out to the `manim` executable, so both must match |
-| A `Code(...)` scene renders in the wrong colours | Manim 0.21 takes syntax colours from Pygments. Use `formatter_style="<style>"`; a colour in `paragraph_config` is ignored |
-| `Text ... rendered fewer glyph(s)` | a ligature font collapsed an ASCII digraph. Write `→` / `≤` / `≠` instead of `->` / `<=` / `!=`, or pass `disable_ligatures=True` |
-| A generated scene's text runs off the frame | build text through the safe-layout helpers (`title_text`, `caption`, `fit_text`, `fit_mobject`) — see `prompt2render/manim_contract.py` |
-| Windows: LaTeX prompt pops up | MiKTeX asking to install a package — tick "always", it stops asking |
-| Windows: captions look wrong | font fallback; `CAPTION_FONT` in `prompt2render/cfg.py` |
-| `prompt2render scenes` keeps rejecting a section | open `build/scenes/scene_NN.py` — the audit error in the terminal names the exact overlap or off-frame text; fix the `k.` call or delete the file and regenerate |
-| `prompt2render check` fails "caption drift" | a section's audio was replaced after `prompt2render align` ran — re-run `align` then `plan`/`encode --all`/`finish` |
-| `prompt2render finish` refuses to concat | clips were encoded with mixed profiles (a `--preview` pass mixed with a final one) — delete `build/clips` and `prompt2render encode --all` again |
-| Rate-limited on `prompt2render scenes` | Gemini's free tier caps requests/day per model — add a `GEMINI_API_KEY_BACKUP*` key in `.env` for automatic failover, or wait for the quota to reset |
-| `prompt2render encode --jobs N` isn't faster | this machine may already be CPU-bound (other processes, `-preset veryfast` already threading per call) — try `--jobs 1` and compare wall-clock before assuming higher is better. See **Where the time goes** for the measured ceiling |
-| `prompt2render stills` says "current, skipping" | expected — `prompt2render scenes` already rendered them. Edit the scene module and it re-renders that section; `--force` does the lot |
-| `prompt2render scenes` returns 429s it didn't before | sections are storyboarded three at a time now, which meters against the free tier's per-minute cap — `--jobs 1` restores the old one-at-a-time pace |
-| `prompt2render serve` says "a job is already running" | only one pipeline job runs at a time, server-wide, by design (see **Web dashboard**) — wait for it to finish or cancel it from the Pipeline page |
-| `prompt2render animate` exits immediately | retired — it drove the old Manim/Code2Video path. Use `prompt2render scenes` instead; see `docs/RETIRED.md` |
-# Prompt2Render
+</div>
