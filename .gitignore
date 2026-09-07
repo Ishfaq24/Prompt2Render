@@ -9,7 +9,7 @@ projects/*/build/
 projects/*/out/
 !.gitkeep
 .manim019-cache-quarantine/
-media/
+/media
 
 # Python & test artifacts
 __pycache__/

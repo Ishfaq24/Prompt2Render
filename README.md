@@ -1,4 +1,3 @@
-# 🎬 Prompt2Render
 # 🏗️ Prompt2Render — Architecture & Engineering Guide
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B%20%7C%203.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -13,6 +12,8 @@
 > **Prompt2Render** is an industrial, local-first, end-to-end video synthesis pipeline designed for producing frame-accurate, mathematically animated, and human-narrated educational videos.
 >
 > Unlike unconstrained "prompt-to-video" diffusion or raw LLM-to-Manim wrappers, Prompt2Render combines **sample-accurate neural voice synthesis (Kokoro-82M)**, **word-level force alignment (Whisper)**, a **closed-loop layout critic with pixel geometry auditing**, and an **autonomous self-correction harness** to guarantee production-ready video artifacts without text collisions, audio drift, or hallucinatory layouts.
+
+> **Repository note:** rendered media, downloaded models, and per-project build outputs are generated locally and are intentionally excluded from Git. Showcase paths below therefore apply after generating the corresponding artifacts in a working checkout.
 
 ---
 
@@ -54,12 +55,12 @@ Prompt2Render outputs fully mastered 1080p videos alongside inspectable intermed
 
 | Video Output | Description | Resolution & Profile | Direct Link |
 | :--- | :--- | :--- | :--- |
-| **Complete Final Master** | Full multi-section explainer video with master audio, subtitles, and chapter markers. | 1080p @ 30fps / -14 LUFS | [▶ Watch final.mp4](media/videos/final.mp4) |
-| **Cinematic Bubble Sort** | Cinematic algorithm visualization generated with synchronized auditory sound effects (foley). | 480p15 / 1080p Preview | [▶ Watch BubbleSortCinematic.mp4](media/videos/demo_scene/480p15/BubbleSortCinematic_WithSound.mp4) |
-| **Modular Section 01** | Section 1 individual cut clip showing intro text, LaTeX equations, and vector animations. | 480p15 / 1080p | [▶ Watch Scene01.mp4](media/videos/01/480p15/Scene01.mp4) |
+| **Complete Final Master** | Full multi-section explainer video with master audio, subtitles, and chapter markers. | 1080p @ 30fps / -14 LUFS | [▶ Watch final.mp4](final.mp4) |
+| **Cinematic Bubble Sort** | Cinematic algorithm visualization generated with synchronized auditory sound effects (foley). | 480p15 / 1080p Preview | [▶ Watch BubbleSortCinematic.mp4](BubbleSortCinematic_WithSound.mp4) |
+| **Modular Section 01** | Section 1 individual cut clip showing intro text, LaTeX equations, and vector animations. | 480p15 / 1080p | [▶ Watch Scene01.mp4](Scene01.mp4) |
 | **Modular Section 02** | Section 2 breakdown with highlighted pointer logic and animated array elements. | 480p15 / 1080p | [▶ Watch Scene02.mp4](media/videos/02/480p15/Scene02.mp4) |
-| **Modular Section 03** | Section 3 algorithmic complexity analysis and logarithmic curve plotting. | 480p15 / 1080p | [▶ Watch Scene03.mp4](media/videos/03/480p15/Scene03.mp4) |
-| **High-Fidelity 1080p60** | 60 FPS master render demonstrating smooth Manim vector transformations and sharp typography. | 1080p @ 60fps | [▶ Watch scene_01_1080p60.mp4](media/videos/scene_01/1080p60/scene_01.mp4) |
+| **Modular Section 03** | Section 3 algorithmic complexity analysis and logarithmic curve plotting. | 480p15 / 1080p | [▶ Watch Scene03.mp4](Scene03.mp4) |
+| **High-Fidelity 1080p60** | 60 FPS master render demonstrating smooth Manim vector transformations and sharp typography. | 1080p @ 60fps | [▶ Watch scene_01_1080p60.mp4](scene_01.mp4) |
 
 > 💡 *Note: If viewing on GitHub, click the links above or clone the repository to play the media directly in your media player.*
 
@@ -67,25 +68,30 @@ Prompt2Render outputs fully mastered 1080p videos alongside inspectable intermed
 
 ### Frame-Accurate Visual Gallery
 
-Below are production render stills and layout audit inspections extracted directly from `media/images/` and root project benchmarks:
+Below are production render stills and layout audit inspections generated in the repository root:
 
 | Scene 01: Concept Introduction | Scene 02: Core Mechanics | Scene 03: Algorithmic Steps |
 | :---: | :---: | :---: |
-| ![Scene 01](media/images/scene_01/Scene01_ManimCE_v0.19.0.png) | ![Scene 02](media/images/scene_02/Scene02_ManimCE_v0.19.0.png) | ![Scene 03](media/images/scene_03/Scene03_ManimCE_v0.19.0.png) |
+| ![Scene 01](Scene01_ManimCE_v0.19.0.png) | ![Scene 02](Scene02_ManimCE_v0.19.0.png) | ![Scene 03](Scene03_ManimCE_v0.19.0.png) |
 | *LaTeX typography & layout safe-zones* | *Dynamic geometric structures* | *Step-by-step state transformation* |
 
 | Scene 04: Edge Cases & Proof | Scene 05: Performance Profiling | Scene 06: Final Summary & Takeaways |
 | :---: | :---: | :---: |
-| ![Scene 04](media/images/scene_04/Scene04_ManimCE_v0.19.0.png) | ![Scene 05](media/images/scene_05/Scene05_ManimCE_v0.19.0.png) | ![Scene 06](media/images/scene_06/Scene06_ManimCE_v0.19.0.png) |
+| ![Scene 04](Scene04_ManimCE_v0.19.0.png) | ![Scene 05](Scene05_ManimCE_v0.19.0.png) | ![Scene 06](Scene06_ManimCE_v0.19.0.png) |
 | *Graph & tree traversal visuals* | *Data structures & complexity curves* | *Synthesized recap with safe margins* |
 
 #### Layout Criticism & Visual Verification Stills
-The critic verifies pixel geometry to ensure labels, arrows, and visual components never collide:
+The critic verifies pixel geometry to ensure labels, arrows, and visual components never collide. These audit frames are stored in the repository root:
 
-| Layout Audit Test 1 (Frame 32) | Layout Audit Test 2 (Frame 12) | Biological Simulation (Frame 270) |
+| Scene 1 Audit (Frame 10) | Scene 1 Audit (Frame 32) | Scene 1 Audit (Frame 48) |
 | :---: | :---: | :---: |
-| ![Audit S1 F32](media/images/test_fixed_s1_f32.png) | ![Audit S2 F12](media/images/test_fixed_s2_f12.png) | ![Lung Sim F270](lung_f270.png) |
-| *Passed zero-overlap collision gate* | *Text-box boundary verification* | *Custom parametric coordinate plots* |
+| ![Audit S1 F10](test_fixed_s1_f10.png) | ![Audit S1 F32](test_fixed_s1_f32.png) | ![Audit S1 F48](test_fixed_s1_f48.png) |
+| *Initial geometry check* | *Passed zero-overlap collision gate* | *Final scene verification* |
+
+| Scene 2 Audit (Frame 12) | Scene 2 Audit (Frame 30) | Scene 2 Audit (Frame 40) |
+| :---: | :---: | :---: |
+| ![Audit S2 F12](test_fixed_s2_f12.png) | ![Audit S2 F30](test_fixed_s2_f30.png) | ![Audit S2 F40](test_fixed_s2_f40.png) |
+| *Text-box boundary verification* | *Intermediate layout verification* | *Final scene verification* |
 
 ---
 
@@ -173,7 +179,7 @@ Prompt2Render/
 │   ├── asrmodel.py                 # Whisper & VAD model caching and validation
 │   ├── scenes.py                   # LLM storyboarding, Gemini API interfacing, scene modules
 │   ├── scenekit.py                 # Geometric drawing primitives & pixel layout critic
-│   ├── manim_contract.py           # Safe layout bands & bounds enforcement for Manim
+│   ├── manimver.py                 # Supported Manim version guard
 │   ├── stills.py                   # Scene module execution & PNG frame rasterization
 │   ├── timeline.py                 # Temporal planning & frame-exact cut synchronization
 │   ├── encode.py                   # Parallel FFmpeg clip encoding with head dissolves
@@ -237,7 +243,7 @@ flowchart TD
     subgraph VISUAL["3. Storyboarding & Layout Generation"]
         A --> E{"Backend Selection"}
         E -- "Default: SceneKit" --> F["🎨 scenes.py\nGemini 2.5 / 1.5\nStoryboard against SceneKit"]
-        E -- "--manim" --> G["🎬 Manim CE 0.21\nSafe Layout Bands Contract\n(manim_contract.py)"]
+        E -- "--manim" --> G["🎬 Manim CE 0.21\nHarness renderer and layout checks"]
         F --> H["🔍 scenekit.py Critic\nPixel Geometry & Bounding Box Audit"]
         H -- "❌ Collision Detected" --> F
         H -- "✅ Clean Geometry" --> I["🖼️ stills.py\nRasterize PNG Frames"]
@@ -305,7 +311,7 @@ block-beta
     block:VISUAL_LAYER["🎨 VISUAL GENERATION & RENDERING ENGINES"]
         G["scenes.py + llm.py (Gemini Structured Prompting & Code Generation)"]
         H["scenekit.py (Geometric 2D Drawing Primitives & Polygon Layout Critic)"]
-        I["manim_contract.py (Manim CE 0.21 Safe Layout Coordinate Bands)"]
+        I["manimver.py + renderer_manim (version and layout checks)"]
     end
 
     space
@@ -452,10 +458,10 @@ python prompt2render.py auto "<slug>" --harness --strict --manim
 - Translates `script.md` section briefs (`> ANIM:`) into Python drawing code.
 - **SceneKit Layout Critic:** Reads the rasterized pixel geometry of drawn artists (`k.box`, `k.array`, `k.panel`, `k.arrow`, `k.label`) and checks for bounding box intersection. Overlapping artists trigger automatic repair retries before any video encoding occurs.
 
-### 5. `prompt2render/manim_contract.py` — Cinematic Safe Bands
-- Pinned to **Manim Community 0.21.0**.
-- Enforces three mathematically isolated screen bands: **Title Zone** (top), **Content Zone** (center), and **Caption Zone** (bottom).
-- Exposes responsive layout primitives (`title_text`, `caption`, `fit_text`, `fit_mobject`) that calculate scale factors dynamically, guaranteeing zero frame overflow.
+### 5. `prompt2render/manimver.py` and the Manim harness renderer — Cinematic Checks
+- Targets **Manim Community 0.21.0**, with `P2R_MANIM_VERSION` available for reproducible comparison runs.
+- The Manim harness renderer performs source validation, render checks, and layout verification before accepting generated scenes.
+- Keep the pinned dependency in `requirements.txt` aligned with `prompt2render/manimver.py`.
 
 ### 6. `prompt2render/encode.py` & `finish.py` — Encoding & Assembly
 - **Hardware-Accelerated Encoding:** Detects NVENC GPUs automatically, launching multi-process encoding jobs (`--jobs 3`) with head dissolve transitions.
@@ -539,7 +545,7 @@ python prompt2render.py doctor --render-test
 | **`stills`** | `python prompt2render.py stills <slug>` | Executes scene code and rasterizes PNG frames with bounding checks. | `--force` |
 | **`plan`** | `python prompt2render.py plan <slug>` | Generates timeline cut points synchronized to word timing. | `--lead-ms <ms>` |
 | **`encode`** | `python prompt2render.py encode <slug>` | Renders individual clips with dissolved heads via FFmpeg. | `--all`, `--jobs <n>`, `--preview` |
-| **`finish`** | `python prompt2render.py finish <slug>` | Assembles master `final.mp4`, burns subtitles, and embeds chapters. | `--no-captions` |
+| **`finish`** | `python prompt2render.py finish <slug>` | Assembles master `final.mp4`, optionally burns subtitles, and embeds chapters. | `--burn`, `--style srt|ass` |
 | **`check`** | `python prompt2render.py check <slug>` | Runs strict quality assurance gates on the generated video. | `--strict` |
 | **`build`** | `python prompt2render.py build <slug>` | Runs the entire pipeline (`voice` through `check`) with disk caching. | `--manim`, `--harness`, `--strict` |
 | **`publish`** | `python prompt2render.py publish <slug>` | Builds the release packet: YouTube description, thumbnail, checklist. | None |
@@ -584,7 +590,7 @@ Prompt2Render is tuned for maximum throughput on desktop workstations:
 | `latex failed` during Manim render | Missing LaTeX packages or `dvisvgm` | Windows: Allow MiKTeX auto-install prompt ("always install"). Linux: `sudo apt install texlive-latex-extra texlive-science`. |
 | `manim not found` | Virtual environment not active | Activate virtual environment: `.\.venv\Scripts\Activate.ps1` or `source .venv/bin/activate`. |
 | `Manim version mismatch` | System targets 0.21.0 | Run `pip install "manim==0.21.0"`. If intentionally testing 0.19.0: `P2R_MANIM_VERSION=0.19.0`. |
-| `Text runs off frame` | Unconstrained text scaling | Use `manim_contract.py` safe helpers: `title_text`, `caption`, and `fit_text`. |
+| `Text runs off frame` | Unconstrained generated layout | Run the Manim harness verification and inspect its scene findings before retrying. |
 | `Caption drift detected` | Narration audio replaced after alignment | Re-run alignment and timeline cuts: `python prompt2render.py align <slug>` then `plan`. |
 | `Gemini 429 Rate-Limited` | Exceeded API quota per minute | Add fallback keys (`GEMINI_API_KEY_BACKUP1`) in `.env` or throttle storyboarding: `--jobs 1`. |
 | `Missing local model` | Weights not yet cached locally | Run `python prompt2render.py models --asr base.en --vad --kokoro`. |
