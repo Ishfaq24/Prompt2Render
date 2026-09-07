@@ -370,6 +370,7 @@ class Section:
 
     start: float = 0.0
     dur: float = 0.0
+    renderer: str | None = None
 
     @property
     def stem(self) -> str:
@@ -591,6 +592,7 @@ def parse_script(path: Path) -> Script:
             or f"Section {head.group(1)}",
             anim=" ".join(anim_lines).strip(),
             narration=_clean_narration(narration_lines),
+            renderer=meta.get("renderer"),
         )
 
         sections.append(section)

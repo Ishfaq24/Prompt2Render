@@ -11,11 +11,16 @@ projects/*/out/
 .manim019-cache-quarantine/
 media/
 
-# Python
+# Python & test artifacts
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
+.pytest_cache_tmp/
+.pytest_tmp/
+*.log
+build/
 
 # Downloadable model weights (fetched by setup scripts, not source)
 models/
@@ -26,3 +31,4 @@ tools/kokoro/*.bin
 .DS_Store
 Thumbs.db
 self_correction_report.json
+

@@ -25,6 +25,7 @@ def states():
     replies = iter([bad, good])
     calls = []
 
+    monkeypatch.setenv("P2R_RENDERER", "matplotlib")
     monkeypatch.setenv("P2R_MAX_SCENE_ATTEMPTS", "2")
     monkeypatch.setattr(scenes.align, "load", lambda *_args, **_kwargs: {
         "sentences": [{"start": 0.0, "end": 1.0, "text": "One sentence."}]
@@ -48,6 +49,7 @@ def states():
         k.hanoi(ax, [[3, 2, 1], [], [], []])
     return [("s01", 0, s01)]
 '''
+    monkeypatch.setenv("P2R_RENDERER", "matplotlib")
     monkeypatch.setenv("P2R_MAX_SCENE_ATTEMPTS", "10")
     monkeypatch.setattr(scenes.align, "load", lambda *_args, **_kwargs: {
         "sentences": [{"start": 0.0, "end": 1.0, "text": "One sentence."}]

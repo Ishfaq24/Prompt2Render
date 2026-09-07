@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="100%" height="100%">
+  <defs>
+    <linearGradient id="myoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E63946" />
+      <stop offset="100%" stop-color="#9B2226" />
+    </linearGradient>
+    <linearGradient id="aortaGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#C1121F" />
+      <stop offset="100%" stop-color="#780000" />
+    </linearGradient>
+    <linearGradient id="venaGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#457B9D" />
+      <stop offset="100%" stop-color="#1D3557" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="800" height="600" fill="#0B0F19" rx="16" />
+
+  <!-- Superior Vena Cava & Pulmonary Trunk -->
+  <path d="M 280,100 L 280,240 Q 280,270 310,280 L 330,280 L 330,100 Z" fill="url(#venaGrad)" stroke="#64DFDF" stroke-width="2" />
+  <path d="M 440,110 Q 420,180 390,230 Q 380,260 410,270 L 440,240 Q 460,180 470,110 Z" fill="#2A6F97" stroke="#48CAE4" stroke-width="2" />
+
+  <!-- Aortic Arch -->
+  <path d="M 360,250 C 350,120 450,80 500,140 C 530,180 520,240 510,280 L 470,280 C 475,230 480,180 460,160 C 430,130 380,160 380,250 Z" fill="url(#aortaGrad)" stroke="#FF4D6D" stroke-width="2.5" />
+  <!-- Brachiocephalic branches -->
+  <rect x="390" y="70" width="22" height="60" rx="6" fill="#C1121F" stroke="#FF4D6D" stroke-width="1.5" />
+  <rect x="425" y="60" width="20" height="70" rx="6" fill="#C1121F" stroke="#FF4D6D" stroke-width="1.5" />
+  <rect x="460" y="75" width="20" height="55" rx="6" fill="#C1121F" stroke="#FF4D6D" stroke-width="1.5" />
+
+  <!-- Main Myocardium / Cardiac Silhouette -->
+  <path d="M 320,260 C 230,280 200,380 250,470 C 290,540 370,570 410,570 C 450,570 540,510 570,430 C 600,350 560,260 480,260 C 430,260 400,280 400,280 C 400,280 370,260 320,260 Z" fill="url(#myoGrad)" stroke="#FF758F" stroke-width="3" filter="url(#glow)" opacity="0.95" />
+
+  <!-- Left Anterior Descending (LAD) Artery -->
+  <path d="M 400,280 Q 380,340 405,410 T 410,560" fill="none" stroke="#FFD166" stroke-width="7" stroke-linecap="round" />
+  <path d="M 390,325 Q 350,340 330,370" fill="none" stroke="#FFD166" stroke-width="4.5" stroke-linecap="round" />
+  <path d="M 402,360 Q 440,375 465,405" fill="none" stroke="#FFD166" stroke-width="4" stroke-linecap="round" />
+  <path d="M 408,440 Q 370,470 350,500" fill="none" stroke="#FFD166" stroke-width="3.5" stroke-linecap="round" />
+  <path d="M 410,480 Q 440,500 455,525" fill="none" stroke="#FFD166" stroke-width="3" stroke-linecap="round" />
+
+  <!-- Circumflex & Right Coronary Branches -->
+  <path d="M 320,300 Q 270,320 250,370" fill="none" stroke="#EF476F" stroke-width="5" stroke-linecap="round" />
+  <path d="M 470,290 Q 520,320 540,380" fill="none" stroke="#EF476F" stroke-width="5" stroke-linecap="round" />
+
+  <!-- Anatomical Callout Badges -->
+  <g transform="translate(60, 130)">
+    <rect width="180" height="42" rx="8" fill="#161F30" stroke="#48CAE4" stroke-width="1.5" />
+    <text x="90" y="26" fill="#F8F9FA" font-family="system-ui, sans-serif" font-size="14" font-weight="600" text-anchor="middle">Superior Vena Cava</text>
+  </g>
+  <line x1="240" y1="150" x2="290" y2="150" stroke="#48CAE4" stroke-width="1.5" stroke-dasharray="4,4" />
+
+  <g transform="translate(560, 110)">
+    <rect width="160" height="42" rx="8" fill="#161F30" stroke="#FF4D6D" stroke-width="1.5" />
+    <text x="80" y="26" fill="#F8F9FA" font-family="system-ui, sans-serif" font-size="14" font-weight="600" text-anchor="middle">Aortic Arch</text>
+  </g>
+  <line x1="560" y1="130" x2="510" y2="130" stroke="#FF4D6D" stroke-width="1.5" stroke-dasharray="4,4" />
+
+  <g transform="translate(520, 480)">
+    <rect width="220" height="46" rx="8" fill="#161F30" stroke="#FFD166" stroke-width="1.8" />
+    <text x="110" y="28" fill="#FFD166" font-family="system-ui, sans-serif" font-size="14" font-weight="700" text-anchor="middle">Left Anterior Descending</text>
+  </g>
+  <line x1="520" y1="500" x2="425" y2="470" stroke="#FFD166" stroke-width="1.8" stroke-dasharray="4,4" />
+</svg>

@@ -157,22 +157,40 @@ def _cards(
                 else 0.0
             )
 
+            candidate_dur = (
+                float(words[best - 1].get("e", 0.0))
+                - float(words[start].get("s", 0.0))
+            )
+
             if (
                 pause > 0.0
                 and pause > max(typical * 1.5, 0.12)
+                and candidate_dur >= float(cfg.CAPTION_MIN_S)
             ):
                 end = best
+
+            # If remaining tail words would be a tiny orphan group (<=3 words), balance the split
+            if (len(words) - end) <= 3:
+                mid = start + (len(words) - start) // 2
+                if mid > start and _fits(words[start:mid], max_line, max_lines) and _fits(words[mid:], max_line, max_lines):
+                    end = mid
 
         group = words[start:end]
 
         # Defensive fallback: if a single word itself exceeds the configured
         # line width, still emit it rather than getting stuck.
-        if not group:
-            end = start + 1
-            group = words[start:end]
-
         cards.append(group)
         start = end
+
+    # Merge trailing orphan micro-cards if they fit into the previous card
+    if len(cards) >= 2:
+        last_group = cards[-1]
+        prev_group = cards[-2]
+        merged = prev_group + last_group
+        dur = float(last_group[-1].get("e", 0.0)) - float(last_group[0].get("s", 0.0))
+        if dur < float(cfg.CAPTION_MIN_S) and _fits(merged, max_line, max_lines):
+            cards[-2] = merged
+            cards.pop()
 
     return cards
 

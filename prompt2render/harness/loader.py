@@ -39,7 +39,7 @@ DEFAULT_CONFIG_PATH = (
 # consume its initial value without another stage producing it first.
 # These fields are append/update sinks shared by multiple verifier stages.
 # They are intentionally not single-owner DAG artifacts.
-MERGEABLE_EFFECTS = frozenset({"check_results"})
+MERGEABLE_EFFECTS = frozenset({"check_results", "retrieval_context", "asset_provenance"})
 
 
 PRESEEDED_FIELDS = frozenset(
@@ -54,6 +54,7 @@ PRESEEDED_FIELDS = frozenset(
         "pedagogy_review",
         "storyboard_plan",
         "retrieval_context",
+        "asset_provenance",
         "retriever_manim_rag",
         "check_results",
     }

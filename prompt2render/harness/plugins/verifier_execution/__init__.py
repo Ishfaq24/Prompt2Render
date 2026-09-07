@@ -251,6 +251,124 @@ def _safe_narration_duration(
     return narration_span(sentences)
 
 
+def _validate_asset_invocations(
+    source: str,
+    project_dir: Path | None,
+) -> list[str]:
+    """Validate asset calls (k.draw_asset, SVGMobject, custom Mobjects) for existence and parameter schema."""
+    errors: list[str] = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    try:
+        from ....assets.loader import load_catalog
+        catalog = load_catalog()
+    except Exception:
+        catalog = {}
+
+    build_assets_dir = (project_dir / "build" / "assets") if project_dir else None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        # Case 1: k.draw_asset / k.animate_asset(ax, asset_id_or_path, ...)
+        is_k_asset_call = (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "k"
+            and node.func.attr in ("draw_asset", "animate_asset")
+        )
+        is_direct_asset_call = (
+            isinstance(node.func, ast.Name)
+            and node.func.id in ("draw_asset", "animate_asset")
+        )
+        if is_k_asset_call or is_direct_asset_call:
+            asset_arg = None
+            if len(node.args) >= 2:
+                asset_arg = node.args[1]
+            elif len(node.args) == 1:
+                asset_arg = node.args[0]
+            for kw in node.keywords:
+                if kw.arg in ("asset", "asset_id", "name"):
+                    asset_arg = kw.value
+
+            asset_val = None
+            if asset_arg is not None:
+                try:
+                    asset_val = ast.literal_eval(asset_arg)
+                except Exception:
+                    pass
+
+            if isinstance(asset_val, str):
+                asset_def = catalog.get(asset_val)
+                if asset_def is not None:
+                    schema = asset_def.parameter_schema
+                    if schema and "properties" in schema:
+                        allowed_props = set(schema["properties"].keys())
+                        required_props = set(schema.get("required", []))
+
+                        provided_kwargs = {kw.arg for kw in node.keywords if kw.arg is not None}
+                        pos_names = ["ax", "asset", "x", "y", "start_time", "duration", "scale", "width", "height", "color", "tint_color"]
+                        for i, arg in enumerate(node.args):
+                            if i < len(pos_names) and pos_names[i] not in ("ax", "asset"):
+                                provided_kwargs.add(pos_names[i])
+
+                        for req in required_props:
+                            if req not in provided_kwargs:
+                                errors.append(f"Missing required parameter '{req}' for asset '{asset_val}' (line {node.lineno})")
+
+                        for kw in node.keywords:
+                            if kw.arg and kw.arg not in allowed_props and kw.arg not in ("ax", "asset", "zorder", "alpha", "loop", "width", "height"):
+                                errors.append(f"Unknown parameter '{kw.arg}' for asset '{asset_val}' (line {node.lineno})")
+                else:
+                    if build_assets_dir:
+                        candidate = build_assets_dir / Path(asset_val).name
+                        if not candidate.is_file() and not (project_dir and (project_dir / asset_val).is_file()):
+                            errors.append(f"Asset file '{asset_val}' does not exist on disk (line {node.lineno})")
+
+        # Case 2: SVGMobject("assets/...") or P2RSVGMobject("assets/...")
+        is_svg_mobject = (
+            isinstance(node.func, ast.Name) and node.func.id in ("SVGMobject", "P2RSVGMobject")
+        ) or (
+            isinstance(node.func, ast.Attribute) and node.func.attr in ("SVGMobject", "P2RSVGMobject")
+        )
+        if is_svg_mobject and node.args:
+            path_arg = node.args[0]
+            try:
+                path_val = ast.literal_eval(path_arg)
+                if isinstance(path_val, str) and (path_val.endswith(".svg") or "assets" in path_val):
+                    if build_assets_dir:
+                        cand1 = build_assets_dir / Path(path_val).name
+                        cand2 = (project_dir / path_val) if project_dir else None
+                        if not cand1.is_file() and not (cand2 and cand2.is_file()):
+                            errors.append(f"SVGMobject asset file '{path_val}' not found in build/assets (line {node.lineno})")
+            except Exception:
+                pass
+
+        # Case 3: Instantiation of Parametric Mobject from catalog
+        mobject_class_name = None
+        if isinstance(node.func, ast.Name):
+            mobject_class_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            mobject_class_name = node.func.attr
+
+        if mobject_class_name:
+            for asset_def in catalog.values():
+                if asset_def.class_name == mobject_class_name:
+                    schema = asset_def.parameter_schema
+                    if schema and "properties" in schema:
+                        allowed_props = set(schema["properties"].keys())
+                        for kw in node.keywords:
+                            if kw.arg and kw.arg not in allowed_props and kw.arg not in ("color", "z_index", "stroke_color", "fill_color"):
+                                errors.append(f"Unknown parameter '{kw.arg}' for Mobject '{mobject_class_name}' (line {node.lineno})")
+                    break
+
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Plugin
 # ---------------------------------------------------------------------------
@@ -380,6 +498,9 @@ def check_scene_artifact(
                 )
             ]
 
+        asset_errors = _validate_asset_invocations(source, context.project_dir)
+        errors.extend(asset_errors)
+
         for message in errors:
             findings.append(
                 _finding(
@@ -414,6 +535,8 @@ def check_scene_artifact(
             )
             or []
         )
+        asset_errors = _validate_asset_invocations(source, context.project_dir)
+        errors.extend(asset_errors)
     except Exception as exc:
         errors = [
             (

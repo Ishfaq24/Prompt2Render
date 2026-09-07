@@ -303,6 +303,13 @@ def build_packet(proj: Path, script: Script) -> Path:
         for path in missing:
             content += f"- [ ] `{path}`\n"
 
+    # Surface external media asset attributions
+    attributions_file = generate_attributions(proj)
+    if attributions_file and attributions_file.exists():
+        attrib_text = attributions_file.read_text(encoding="utf-8").strip()
+        if attrib_text:
+            content += f"\n## Asset Credits & Attributions\n\n{attrib_text}\n"
+
     # Explicitly surface unresolved placeholders so they cannot be missed.
     placeholders = [
         token
@@ -325,3 +332,75 @@ def build_packet(proj: Path, script: Script) -> Path:
     )
 
     return dst
+
+
+def generate_attributions(proj: Path) -> Path | None:
+    """Generate out/attributions.md from staged build/assets metadata."""
+    import json
+    out_dir = proj / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    attrib_dst = out_dir / "attributions.md"
+
+    # Check for cache metadata matching staged assets
+    assets_dir = proj / "build" / "assets"
+    if not assets_dir.exists():
+        return None
+
+    entries: list[dict[str, str]] = []
+    # Search for any .meta.json or provenance logs
+    for meta_file in assets_dir.glob("*.meta.json"):
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                entries.append(data)
+        except Exception:
+            continue
+
+    if not entries:
+        # Check global cache for staged asset references
+        from .assets.cache import DEFAULT_CACHE_DIR
+        if DEFAULT_CACHE_DIR.exists():
+            for meta_file in DEFAULT_CACHE_DIR.glob("*.meta.json"):
+                try:
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        entries.append(data)
+                except Exception:
+                    continue
+
+    if not entries:
+        return None
+
+    # Deduplicate entries by ID
+    seen_ids = set()
+    unique_entries = []
+    for e in entries:
+        eid = e.get("id")
+        if eid and eid not in seen_ids:
+            seen_ids.add(eid)
+            unique_entries.append(e)
+
+    if not unique_entries:
+        return None
+
+    lines = [
+        "# Media Attributions",
+        "",
+        "This project uses visual assets from external libraries under their respective free licenses:",
+        "",
+        "| Asset | Source / Author | License | Link |",
+        "|---|---|---|---|",
+    ]
+
+    for e in unique_entries:
+        title = e.get("title", e.get("id", "Image"))
+        author = e.get("author", "Unknown")
+        provider = e.get("provider", "Media").title()
+        license_name = e.get("license", "Free Content License")
+        url = e.get("url", "#")
+        author_url = e.get("author_url", "#")
+        lines.append(f"| {title} | [{author}]({author_url}) via {provider} | {license_name} | [View]({url}) |")
+
+    lines.append("")
+    attrib_dst.write_text("\n".join(lines), encoding="utf-8")
+    return attrib_dst

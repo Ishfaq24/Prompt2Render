@@ -16,7 +16,6 @@ SUPPORTED_VERSION = "0.21.0"
 
 def target_version() -> str:
     """Return the Manim version this build declares itself to target."""
-
     return os.environ.get("P2R_MANIM_VERSION", "").strip() or SUPPORTED_VERSION
 
 

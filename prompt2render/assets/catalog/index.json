@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "name": "Prompt2Render Asset Catalog",
+  "categories": [
+    {
+      "id": "hardware",
+      "name": "Computer Architecture & Hardware",
+      "manifest": "hardware.json"
+    },
+    {
+      "id": "data_structures",
+      "name": "Data Structures & Algorithms",
+      "manifest": "data_structures.json"
+    },
+    {
+      "id": "math",
+      "name": "Mathematics & Signal Processing",
+      "manifest": "math.json"
+    },
+    {
+      "id": "networking",
+      "name": "Networking & Distributed Systems",
+      "manifest": "networking.json"
+    },
+    {
+      "id": "biology",
+      "name": "Biology, Medicine & Anatomy",
+      "manifest": "biology.json"
+    }
+  ]
+}

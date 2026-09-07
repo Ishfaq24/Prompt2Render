@@ -37,12 +37,21 @@ from .planner_audio import PlannerAudioPlugin
 from .retriever_manim_rag import (
     RetrieverManimRagPlugin,
 )
+from .retriever_asset_rag import (
+    RetrieverAssetRagPlugin,
+)
+from .retriever_external_asset import (
+    RetrieverExternalAssetPlugin,
+)
 from .generator_code import GeneratorCodePlugin
 from .verifier_semantic import (
     VerifierSemanticPlugin,
 )
 from .verifier_execution import (
     VerifierExecutionPlugin,
+)
+from .verifier_cognitive import (
+    VerifierCognitivePlugin,
 )
 from .observer_visual import (
     ObserverVisualPlugin,
@@ -114,6 +123,8 @@ REGISTRY: dict[str, type] = {
     "planner_audio": PlannerAudioPlugin,
 
     "retriever_manim_rag": RetrieverManimRagPlugin,
+    "retriever_asset_rag": RetrieverAssetRagPlugin,
+    "retriever_external_asset": RetrieverExternalAssetPlugin,
 
     # ---------------------------------------------------------------
     # Generation
@@ -125,6 +136,7 @@ REGISTRY: dict[str, type] = {
     # Pre-render verification
     # ---------------------------------------------------------------
     "verifier_execution": VerifierExecutionPlugin,
+    "verifier_cognitive": VerifierCognitivePlugin,
 
     # ---------------------------------------------------------------
     # Rendering

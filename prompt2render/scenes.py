@@ -107,6 +107,15 @@ bottom. Colours available: k.FG k.DIM k.ONE k.GOOD k.BAD k.WARN k.ACCENT.
         -> a right-angle wire between two k.block() anchors (e.g.
            rf["right"], alu["left"]). active=True makes it the signal path
            actually carrying data this step, thicker and ACCENT-colored.
+  k.draw_asset(ax, asset_id, x, y, width=2.5, height=None)
+        -> draw an external SVG/vector asset from the catalog (e.g. 'cpu_core',
+           'register_file', 'alu_unit', 'bus_line', 'storage_db') at canvas
+           coordinates (x, y) with specified width. Automatically registers
+           accurate bounding box for layout audit.
+  k.animate_asset(ax, asset_id, x, y, start_time=0.0, duration=2.0, scale=1.0)
+        -> register an animated vector asset (e.g. Lottie JSON 'packet_stream',
+           'server_rack_pulse') on canvas with start time and duration in seconds.
+           Composited over video frames during encode.
 
 DYNAMIC COMPOSITION FOR COMPLEX TOPICS:
   * For complex, novel topics (like Tower of Hanoi, Neural Networks, or Space-filling curves), DO NOT just look for a single built-in function. 
@@ -142,6 +151,7 @@ LAYOUT RULES (these matter more than cleverness):
           - y=1.5..3.5: Secondary Visualization Zone (Pointers, Variables, Comparisons)
           - y=0.85: Caption Zone (always safe)
       * Never place two elements in the same horizontal band unless they are small and widely separated on the x-axis. If a state feels crowded, split it into two states.
+      * DENSITY CEILING & COGNITIVE LOAD: Keep each frame clean and uncluttered. Never place more than 8 visual primitives in a single state/step. If a diagram has multiple sub-components or labels, distribute them across progressive reveal steps (e.g. `steps=2` or `steps=3`) or split them into sequential states.
       * When a frame contains more than one major visual, assign one explicit
         zone to each and leave a visible gap. Do not solve an overlap by merely
         changing colors, font sizes, or z-order; move, resize, or split the
@@ -193,8 +203,180 @@ only once the step has reached it:
 '''
 
 
+def stage_external_assets_for_section(proj: Path, sec) -> tuple[str, str]:
+    """Retrieve external realistic assets from configured providers (Pixabay, Unsplash, Pexels),
+    stage them to build/assets/, and return prompt hints for (matplotlib, manim)."""
+    try:
+        from .assets.providers import get_available_providers, search_all_providers
+        from .assets.cache import AssetCache
+        from .assets.preprocessor import prepare_scene_asset
+        from .harness.plugins.retriever_external_asset import _extract_asset_queries
+    except Exception:
+        return "", ""
+
+    providers = get_available_providers(allow_mock_fallback=False)
+
+    anim_text = getattr(sec, "anim", "") or ""
+    narr_text = getattr(sec, "narration", "") or ""
+    queries = _extract_asset_queries(anim_text, narr_text)
+
+    build_assets = proj / "build" / "assets"
+    build_assets.mkdir(parents=True, exist_ok=True)
+    cache = AssetCache()
+
+    hits = []
+    if providers and queries:
+        for q_info in queries:
+            q = q_info["query"]
+            t = q_info.get("type", "photo")
+            found = search_all_providers(query=q, providers=providers, limit_per_provider=2, asset_type=t)
+            for f in found:
+                if f.id not in {h[0].id for h in hits}:
+                    hits.append((f, q_info.get("role", "card")))
+            if len(hits) >= 2:
+                break
+
+    matplot_hints = []
+    manim_hints = []
+
+    for hit, role in hits:
+        try:
+            prov = next((p for p in providers if p.name == hit.provider), providers[0])
+            cached_raw = cache.fetch_or_download(hit, prov)
+            staged_name = f"{sec.stem}_{hit.provider}_{hit.id.split('_', 1)[-1]}.png"
+            staged_file = build_assets / staged_name
+
+            prepare_scene_asset(
+                cached_raw,
+                staged_file,
+                role=role,
+                target_width=1920 if role == "background" else 960,
+                target_height=1080 if role == "background" else 540,
+            )
+
+            rel_staged = f"assets/{staged_name}"
+            matplot_hints.append(
+                f"- Asset '{rel_staged}': Real-world photo of {hit.title} by {hit.author} ({hit.provider.title()}).\n"
+                f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
+            )
+            abs_staged = staged_file.resolve().as_posix()
+            manim_hints.append(
+                f"- Asset '{abs_staged}': Real-world photo of {hit.title} by {hit.author} ({hit.provider.title()}).\n"
+                f"  Display with:\n"
+                f"    img = ImageMobject('{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
+                f"    self.play(FadeIn(img))"
+            )
+        except Exception:
+            continue
+
+    # Fallback to local project assets and curated built-in catalog if no provider hits
+    if not matplot_hints and not manim_hints:
+        import shutil
+        combined_text = f"{anim_text} {narr_text}".lower()
+
+        # Check local project assets in proj / "assets"
+        local_assets_dir = proj / "assets"
+        if local_assets_dir.is_dir():
+            for p in sorted(local_assets_dir.glob("*.*")):
+                if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".webp"}:
+                    stem_words = p.stem.lower().replace("_", " ").replace("-", " ").split()
+                    if any(w in combined_text for w in stem_words if len(w) > 2):
+                        staged_name = f"{sec.stem}_{p.name}"
+                        staged_file = build_assets / staged_name
+                        try:
+                            shutil.copyfile(p, staged_file)
+                            abs_staged = staged_file.resolve().as_posix()
+                            rel_staged = f"assets/{staged_name}"
+                            if p.suffix.lower() == ".svg":
+                                manim_hints.append(
+                                    f"- Vector Diagram '{abs_staged}': Realistic diagram of {p.stem.replace('_', ' ').title()}.\n"
+                                    f"  Display with:\n"
+                                    f"    diag = SVGMobject(r'{abs_staged}').scale_to_fit_width(6.0).move_to(ORIGIN)\n"
+                                    f"    self.play(FadeIn(diag))"
+                                )
+                            else:
+                                manim_hints.append(
+                                    f"- Visual Asset '{abs_staged}': Reference graphic of {p.stem.replace('_', ' ').title()}.\n"
+                                    f"  Display with:\n"
+                                    f"    img = ImageMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
+                                    f"    self.play(FadeIn(img))"
+                                )
+                            matplot_hints.append(
+                                f"- Asset '{rel_staged}': Reference graphic.\n"
+                                f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
+                            )
+                            break
+                        except Exception:
+                            pass
+
+        # Check built-in catalog if still no hints
+        if not manim_hints:
+            try:
+                from .assets.loader import load_catalog
+                catalog = load_catalog()
+                for asset_id, asset_def in catalog.items():
+                    if any(kw in combined_text for kw in asset_def.keywords):
+                        f_path = asset_def.resolved_file_path()
+                        if f_path and f_path.is_file():
+                            staged_name = f"{sec.stem}_{f_path.name}"
+                            staged_file = build_assets / staged_name
+                            try:
+                                shutil.copyfile(f_path, staged_file)
+                                abs_staged = staged_file.resolve().as_posix()
+                                rel_staged = f"assets/{staged_name}"
+                                if f_path.suffix.lower() == ".svg":
+                                    manim_hints.append(
+                                        f"- Vector Asset '{abs_staged}': Realistic anatomical/scientific diagram of {asset_def.name}.\n"
+                                        f"  Display with:\n"
+                                        f"    diag = SVGMobject(r'{abs_staged}').scale_to_fit_width(6.0).move_to(ORIGIN)\n"
+                                        f"    self.play(FadeIn(diag))"
+                                    )
+                                else:
+                                    manim_hints.append(
+                                        f"- Visual Asset '{abs_staged}': Graphic of {asset_def.name}.\n"
+                                        f"  Display with:\n"
+                                        f"    img = ImageMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
+                                        f"    self.play(FadeIn(img))"
+                                    )
+                                matplot_hints.append(
+                                    f"- Asset '{rel_staged}': {asset_def.name}.\n"
+                                    f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
+                                )
+                                break
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+    mat_block = ""
+    if matplot_hints:
+        mat_block = (
+            "AVAILABLE REAL-WORLD ASSETS (Staged on disk — incorporate into scene visuals for realism):\n"
+            + "\n".join(matplot_hints)
+            + "\nUse k.draw_asset(ax, '<path>', ...) to ground the explanation in real-world photography!\n"
+        )
+
+    manim_block = ""
+    if manim_hints:
+        manim_block = (
+            "CRITICAL VISUAL REQUIREMENT — MANDATORY REAL-WORLD PHOTOGRAPHY INTEGRATION:\n"
+            "This video must combine authentic real-world photography with mathematical animation to explain the medical concepts clearly.\n"
+            "You MUST include and prominently feature the following staged photographic asset in your scene:\n"
+            + "\n".join(manim_hints)
+            + "\nRECOMMENDED LAYOUT PATTERN:\n"
+            "  * Frame the ImageMobject using a styled border: border = SurroundingRectangle(img, color='#388BFD', buff=0.05, stroke_width=2)\n"
+            "  * Add a label below the photo: label = Text('Clinical Reference / Micrograph', font_size=14, color=GRAY)\n"
+            "  * Group them: photo_group = Group(img, border, label)\n"
+            "  * Place the photo on one side (e.g. LEFT * 3.4 + UP * 0.2) and build the animated anatomical/cellular mechanics on the opposite side (RIGHT * 3.4 + UP * 0.2) or use SplitStage.\n"
+            "  * Keep the real photograph present on screen as a grounding anchor throughout the explanation!\n"
+        )
+
+    return mat_block, manim_block
+
+
 def build_prompt(script: Script, sec, sents: list[dict],
-                 include_reveal: bool = True, previous_context: str = "") -> str:
+                 include_reveal: bool = True, previous_context: str = "",
+                 asset_hint: str = "") -> str:
     # Give the model the clock, not just the words. Without timings it cannot
     # tell that two adjacent cues are 30 seconds apart, and it leaves frames
     # sitting on screen long past the point they stop being interesting.
@@ -212,6 +394,8 @@ def build_prompt(script: Script, sec, sents: list[dict],
     {sec.anim}
     
     {previous_context}
+
+    {asset_hint}
 
     The narration is already recorded and measured. It runs {total:.0f} seconds.
     These are its sentences, with the time each is spoken and the index you must
@@ -267,10 +451,29 @@ def build_prompt(script: Script, sec, sents: list[dict],
     """).strip()
 
 
+def sanitize_python_source(code: str) -> str:
+    """Normalize unicode typographical characters that break Python parsing."""
+    if not isinstance(code, str):
+        return ""
+    # Strip BOM
+    code = code.lstrip("\ufeff")
+    # Replace smart quotes and apostrophes
+    code = code.replace("\u201c", '"').replace("\u201d", '"')
+    code = code.replace("\u2018", "'").replace("\u2019", "'")
+    # Replace em-dash, en-dash, minus sign with ascii dash
+    code = code.replace("\u2014", "-").replace("\u2013", "-").replace("\u2212", "-")
+    # Replace non-breaking spaces
+    code = code.replace("\u00a0", " ").replace("\u202f", " ")
+    return code
+
+
 def strip_fences(code: str) -> str:
-    code = code.strip()
-    m = re.match(r"^```(?:python)?\s*\n(.*?)\n```\s*$", code, re.S)
-    return m.group(1) if m else code
+    code = sanitize_python_source(code).strip()
+    m = re.search(r"```(?:python)?\s*\n(.*?)\n```", code, re.S)
+    if m:
+        return sanitize_python_source(m.group(1)).strip()
+    m_loose = re.match(r"^```(?:python)?\s*\n(.*?)\n```\s*$", code, re.S)
+    return sanitize_python_source(m_loose.group(1)).strip() if m_loose else code
 
 
 _LITERAL_MISSING = object()
@@ -278,7 +481,8 @@ _ALLOWED_PRIMITIVES = {
     "title", "caption", "label", "bits", "bit_brace", "arrow", "strike",
     "badge", "compare", "addition", "number_line", "dial", "register",
     "array", "predicate_strip", "code", "table", "rectangle", "curves",
-    "hanoi", "tree", "grid", "block", "bus", "circle",
+    "hanoi", "tree", "grid", "block", "bus", "circle", "draw_asset",
+    "animate_asset",
 }
 
 
@@ -530,8 +734,13 @@ def _check_undefined_manim_names(tree: ast.AST) -> list[str]:
         return []
 
     import builtins as _builtins
+    try:
+        from .assets import mobjects as _mobjects
+        mobjects_names = set(dir(_mobjects))
+    except Exception:
+        mobjects_names = set()
 
-    known = set(dir(manim)) | set(dir(_builtins)) | {"__name__", "__file__"}
+    known = set(dir(manim)) | set(dir(_builtins)) | mobjects_names | {"__name__", "__file__", "CENTER", "CYAN", "MAGENTA", "AMBER", "LIME", "VIOLET", "INDIGO"}
     known |= _bound_names(tree)
 
     errors: list[str] = []
@@ -749,7 +958,7 @@ def _check_manim_math_tex_method_calls(tree: ast.AST) -> list[str]:
         if not receiver_is_mathtex(node.func.value):
             continue
 
-        if hasattr(mathtex_cls, method):
+        if method not in _MATHTEX_METHOD_FIX_HINTS and hasattr(mathtex_cls, method):
             continue
 
         key = (method, node.lineno)
@@ -790,8 +999,8 @@ def validate_manim_source(code: str) -> list[str]:
             has_scene_class = True
             
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            # Only allow from manim import * or import math/numpy
-            if isinstance(node, ast.ImportFrom) and node.module == "manim":
+            # Only allow from manim import * or import math/numpy or prompt2render.assets.mobjects
+            if isinstance(node, ast.ImportFrom) and (node.module == "manim" or (node.module and node.module.startswith("prompt2render.assets.mobjects"))):
                 continue
             if isinstance(node, ast.Import) and any(alias.name in {"math", "numpy"} for alias in node.names):
                 continue
@@ -882,6 +1091,16 @@ def validate_manim_source(code: str) -> list[str]:
                     if kw.arg in {"include_background", "row_height", "col_widths", "corner", "alignment", "word_wrap_width", "multiline", "stroke_dash_array"}:
                         errors.append(f"{func_name}() does not accept '{kw.arg}=' in Manim {_target} (line {node.lineno})")
 
+            _INVALID_VMOBJECT_METHODS = {
+                "lighten", "darken", "glow", "pulse", "resize", 
+                "set_color_by_gradient", "highlight", "set_shadow"
+            }
+            if func_name in _INVALID_VMOBJECT_METHODS:
+                errors.append(
+                    f"Mobject does not have a '.{func_name}()' method in Manim {_target}. "
+                    f"Use .set_opacity(), .set_color(), or color interpolation instead (line {node.lineno})"
+                )
+
             if (
                 func_name == "set_stroke"
                 and isinstance(node.func, ast.Attribute)
@@ -936,7 +1155,8 @@ def validate_manim_source(code: str) -> list[str]:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr == "wait":
                 has_wait = True
-                break
+                if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value in {0, 0.0}:
+                    errors.append(f"self.wait(0) is invalid in Manim; omit the wait call when gap is 0 (line {node.lineno})")
                 
     if has_scene_class and not has_wait:
         errors.append("module does not contain any self.wait() calls; you MUST use self.wait() to align animations with narration cues")
@@ -1117,110 +1337,349 @@ and does NOT generate def states().
 
 Required:
     from manim import *
+    from prompt2render.assets.mobjects import (
+        FlowStage, SplitStage, HeroFocusStage, BenchmarkStage,
+        ServerNode, ClientCluster, DatabaseNode, ConfigCodeCard, MetricBadge,
+        ArrayGrid, FormulaCard, KeyBadge, MemoryBankMobject, BinaryTreeMobject
+    )
     class SceneXX(Scene):
         def construct(self):
             ...
 
 Allowed imports:
     from manim import *
+    from prompt2render.assets.mobjects import *
     import math
     import numpy as np
 
-Do not import external packages.
+UNIVERSAL SPATIAL LAYOUT STAGES (USE THESE TO PREVENT ALL OVERLAPS):
+Choose the single best Stage for the section's educational purpose:
 
-CANVAS:
-  * 16:9 landscape, designed for 1920x1080.
-  * Keep important content inside x=-7..7 and y=-3.8..3.8.
-  * Reserve the top for titles and the bottom for captions.
-  * Never allow text or diagrams to clip.
+1. FlowStage(nodes=[...], direction=RIGHT, buff=0.6)
+   -> Connects sequential process nodes (e.g. Client -> DNS Resolver -> Root Server -> Auth Server, or Client -> SSH Handshake -> Server).
+   -> Automatically spaces nodes horizontally across canvas and draws connecting arrows.
+   -> Send packet: `dot, target = stage.pulse_signal(0, 1); self.play(dot.animate.move_to(target))`
 
-TEXT SIZING:
-  * Prefer Text(...).scale_to_fit_width(...) (or a deterministic font_size
-    reduction) over a large fixed font_size — never assume a string will fit
-    just because it looked fine for a shorter one.
-  * Titles and captions must stay inside their reserved band; if a line is
-    long, shrink it or wrap it rather than letting it cross the canvas edge.
+2. SplitStage(left=..., right=..., left_title="", right_title="", divider=True)
+   -> Side-by-side comparison: left half (x=-3.4) and right half (x=+3.4) mathematically isolated.
+   -> Perfect for Code vs Output, Public vs Private, Old vs New, or Theory vs Calculation.
 
-CODE OBJECT (only if the section is specifically about source code):
-  * Code(code_string=..., language="python", formatter_style="monokai",
-    add_line_numbers=True, paragraph_config={"font_size": 24}) is the
-    correct call shape.
-  * Do NOT use code=, style=, insert_line_numbers=, or a bare font_size=
-    kwarg — none of those exist on Code() anymore.
+3. HeroFocusStage(hero=..., badges=[...], title="")
+   -> Centers a complex main visualization (Array, Tree, Server, Formula) and auto-positions peripheral badges safely below it.
 
-ANIMATION:
-  * This is a genuine Manim animation timeline.
-  * Use self.play(), self.wait(), .animate, Transform, ReplacementTransform,
-    FadeIn, FadeOut, Create, Write, Indicate, Circumscribe, AnimationGroup,
-    Succession and LaggedStart when appropriate.
-  * Persistent objects keep identity; do not recreate them to fake continuity.
-  * Use VGroup when labels must move with objects.
-  * Every important animation has an explicit run_time.
-  * Use anticipation -> action -> consequence.
-  * Do not teleport an educationally important object.
+4. BenchmarkStage(cards=[...], title="Performance Metrics")
+   -> Neatly arranges 2-4 KPI/Metric cards in a horizontal comparison row.
 
-PHYSICAL MOTION:
-  * For movement prefer: highlight -> lift -> travel -> settle -> explain.
-  * Tower of Hanoi legal move:
-        lift vertically -> horizontal travel -> lower vertically.
-  * Labels remain attached to disks.
-  * Larger disks cannot be placed on smaller disks except during an explicitly
-    labelled illegal demonstration.
-  * Illegal demonstrations show the attempted state, INVALID/ILLEGAL marker,
-    then restore the valid state.
+CROSS-DOMAIN COMPONENT WIDGETS:
+  * ServerNode(name="DNS Resolver", subtext="Recursive Cache", status="active")
+    -> Glassmorphic server card with status dot ("active", "warning", "error", "idle").
+  * ClientCluster(count=3, label="Web Clients", color="#00F0FF")
+    -> Clean group of client user nodes.
+  * DatabaseNode(name="Zone File", width=2.0, height=1.8, color="#A855F7")
+    -> Multi-tier database storage cylinder with disk partitions.
+  * ConfigCodeCard(code_lines=["..."], title="config.conf", width=5.5)
+    -> Polished code terminal window with traffic-light header dots.
+  * MetricBadge(label="RTT", value="12ms", status="good")
+    -> Pill-shaped status badge.
+  * ArrayGrid(values=[12, 24, 48, 96], active_index=1)
+    -> Algorithm array with highlighted cell box.
+  * FormulaCard(steps=["252 = 105 * 2 + 42", "105 = 42 * 2 + 21", "42 = 21 * 2 + 0"], title="Euclidean GCD", highlight_step=1)
+    -> Step-by-step mathematical calculation box with term highlighting.
+  * KeyBadge(key_type="PUBLIC KEY", name="id_ed25519.pub", is_private=False)
+    -> Cryptographic public/private key badge.
 
-PEDAGOGY:
-  * One major visual idea per moment.
-  * Highlight the active object before changing it.
-  * Pause after important actions.
-  * Color is never the only semantic signal.
+CINEMATIC AESTHETICS & DESIGN TOKENS:
+  * Background canvas: Use deep obsidian dark theme (`config.background_color = "#0B0F19"`).
+  * Color harmony palette:
+    - Primary Accent (Cyan): "#00F0FF" or BLUE_C
+    - Highlight / Packets (Amber): "#FFB703" or YELLOW_C
+    - Math / Storage (Purple): "#A855F7" or PURPLE_B
+    - Success / Verified (Emerald): "#10B981" or GREEN_B
+    - Warning / Overload (Coral/Red): "#EF4444" or RED_B
 
-TIMING:
-  * Narration timestamps are authoritative.
-  * Synchronize self.play() and self.wait() with the narration.
-  * Do not leave an unexplained static scene for more than about 8 seconds.
+CANVAS & 4-SLOT LAYOUT CONTRACT:
+  * 16:9 landscape, designed for 1920x1080 (Manim units ≈14.22 x 8).
+  * 4 CANONICAL SLOTS:
+    1. Title Band: y in [3.1, 3.8] -> Use title.to_edge(UP, buff=0.35).
+    2. Hero Stage: y in [-1.6, 2.8] -> Place your FlowStage, SplitStage, or HeroFocusStage here.
+    3. Caption Buffer: y in [-3.8, -2.6] -> Dedicated subtitle area (e.g. DOWN * 3.15).
+  * SINGLE CAPTION INVARIANT: Exactly ONE caption Mobject per scene. Update with Transform(caption, new_caption).
+  * OBJECT PERSISTENCE: Do NOT wipe the screen (FadeOut all) between sentences. Keep persistent architecture or data elements alive and update their state with Transform / Indicate.
+
+STRICT ZERO-OVERLAP COLLISION RULES (MANDATORY):
+  1. NEVER PLACE TRAVELING PACKETS/TEXT INSIDE SERVER/LAPTOP BOXES:
+     - Packets (`Dot`, `Text`, `Badge`) must travel along wires or ABOVE boxes:
+       Use `dot, target = stage.pulse_signal(src, dst)` or `node.get_top() + UP * 0.4`.
+     - NEVER use `move_to(node.get_center())` for a moving packet — this collides with the node's title label!
+  2. DYNAMIC AUTO-LAYOUT CONTAINERS (PREVENT OVERLAPS):
+     - For vertical stacks of labels, code cards, or notes, prefer `AutoVStack(title, body, note, buff=0.3)`.
+     - For horizontal card rows or metric sequences, prefer `AutoHStack(card1, card2, card3, buff=0.4)`.
+     - For packaged items, use `AnnotatedCard(title="Node", body=..., badge_text="ACTIVE")`.
+     - Do NOT use multiple parallel `item.next_to(anchor, DOWN)` statements on the same anchor. Chain them:
+       `item2.next_to(item1, DOWN, buff=0.25)` or wrap in `VGroup(item1, item2).arrange(DOWN, buff=0.25)`.
+  3. SAFE CAPTION ZONE (BOTTOM MARGIN):
+     - Keep all general visual elements at y >= -2.4. Subtitles occupy y in [-3.8, -2.6].
+     - Never place visual components at DOWN * 3 or y < -2.5.
+
+TIMING & CHOREOGRAPHY:
+  * Synchronize self.play() and self.wait() with the sentence timestamps provided.
+  * Total scene duration must match the narration timeline.
   * Finish in the state described by the narration.
 
-CODE QUALITY:
-  * No pseudocode, markdown fences, print/open/exec/eval.
-  * No undefined names or hallucinated Manim APIs.
-  * Use constants and small geometry helpers.
-  * The result must execute directly with Manim.
+COGNITIVE ATTENTION SIGNALING (MAYER-SWELLER PRINCIPLES):
+  * When key technical terms or entities are vocalized in narration, guide learner visual attention by highlighting the corresponding on-screen Mobject.
+  * Use self.play(Indicate(mobject)) or self.play(Circumscribe(mobject, color=YELLOW)) synchronized with the spoken term (~150ms lead time).
+  * REDUNDANCY PRINCIPLE: Never duplicate verbatim narration sentences in on-screen Text cards. Keep on-screen text to concise labels, data values, code snippets, or formulas. Full text cards overload the learner's phonological loop.
+
+CINEMATIC CHOREOGRAPHY & NEURO-SYMBOLIC TOOLS:
+  * For MovingCameraScene or zooming into hero components:
+    - Use self.play(focus_on(self.camera.frame, target, scale=0.6)) to guide the learner's focus into details.
+    - Use self.play(reset_frame(self.camera.frame)) to restore the full overview.
+    - Use GlowAura(target, color=YELLOW) to give key active elements a soft glowing presence.
+    - Use HeroMetricBadge("COMPLEXITY", "O(log n)") for clean dashboard-style metric badges.
+  * For algorithms and math, use deterministic solvers:
+    - trace_sorting(arr, "bubble"), trace_binary_search(arr, target), trace_euclid_gcd(a, b)
+    - compute_tree_layout(nodes, edges, root) to guarantee 100% collision-free hierarchical coordinates!
 """
 
 
+def heal_manim_source(code: str) -> str:
+    """Auto-heal common LLM syntax/API quirks in generated Manim Python code.
+    
+    Transforms common hallucinations like .lighten(0.2), .darken(0.2), undefined
+    color names (CYAN, AMBER), deprecated Code() kwargs, and missing widget imports
+    to valid Manim constructs without wasting an LLM round-trip.
+    """
+    import re
+
+    # Auto-inject mobjects import if component widgets are referenced
+    mobject_names = [
+        "FlowStage",
+        "SplitStage",
+        "HeroFocusStage",
+        "BenchmarkStage",
+        "AutoVStack",
+        "AutoHStack",
+        "SafeCaptionZone",
+        "AnnotatedCard",
+        "ServerNode",
+        "ClientCluster",
+        "DatabaseNode",
+        "ConfigCodeCard",
+        "MetricBadge",
+        "ArrayGrid",
+        "FormulaCard",
+        "KeyBadge",
+        "MemoryBankMobject",
+        "BinaryTreeMobject",
+        "CoordinateGridMobject",
+    ]
+    used_mobjects = [name for name in mobject_names if re.search(r'\b' + name + r'\b', code)]
+    if used_mobjects and "prompt2render.assets.mobjects" not in code:
+        import_stmt = f"from prompt2render.assets.mobjects import {', '.join(used_mobjects)}\n"
+        code = import_stmt + code
+
+    # Auto-inject cinematic camera helpers if referenced
+    cinematic_names = [
+        "focus_on",
+        "pan_to",
+        "reset_frame",
+        "subtle_drift",
+        "GlowAura",
+        "HeroMetricBadge",
+    ]
+    used_cinematic = [name for name in cinematic_names if re.search(r'\b' + name + r'\b', code)]
+    if used_cinematic and "prompt2render.cinematic" not in code:
+        import_stmt = f"from prompt2render.cinematic import {', '.join(used_cinematic)}\n"
+        code = import_stmt + code
+
+    # Auto-inject symbolic engine solvers if referenced
+    symbolic_names = [
+        "trace_sorting",
+        "trace_binary_search",
+        "trace_euclid_gcd",
+        "compute_tree_layout",
+        "trace_bst_insertion",
+        "derive_calculus_step",
+        "solve_equation_step",
+    ]
+    used_symbolic = [name for name in symbolic_names if re.search(r'\b' + name + r'\b', code)]
+    if used_symbolic and "prompt2render.symbolic_engine" not in code:
+        import_stmt = f"from prompt2render.symbolic_engine import {', '.join(used_symbolic)}\n"
+        code = import_stmt + code
+
+    # Inject common position/color constants if referenced as bare names
+    aliases = {
+        "CYAN": '"#00FFFF"',
+        "MAGENTA": '"#FF00FF"',
+        "AMBER": '"#FFBF00"',
+        "LIME": '"#00FF00"',
+        "VIOLET": '"#8A2BE2"',
+        "INDIGO": '"#4B0082"',
+        "CENTER": "ORIGIN",
+    }
+    for alias, val in aliases.items():
+        if re.search(r'\b' + alias + r'\b', code) and not re.search(r'\b' + alias + r'\s*=', code):
+            code = f"{alias} = {val}\n" + code
+
+    # Strip .lighten(...) / .darken(...) method chains on Mobjects
+    code = re.sub(r'\.(?:lighten|darken)\s*\([^)]*\)', '', code)
+    # Strip .glow() / .pulse() / .resize() method chains
+    code = re.sub(r'\.(?:glow|pulse|resize)\s*\([^)]*\)', '', code)
+    # Strip .set_color_by_gradient(...) method chains
+    code = re.sub(r'\.set_color_by_gradient\s*\([^)]*\)', '', code)
+    # Fix Code(code=...) -> Code(code_string=...)
+    code = re.sub(r'\bCode\(\s*code=', 'Code(code_string=', code)
+    # Fix Code(..., insert_line_numbers=...) -> Code(..., add_line_numbers=...)
+    code = re.sub(r'\binsert_line_numbers=', 'add_line_numbers=', code)
+    # Strip invalid kwargs in Text(...)
+    code = re.sub(r',?\s*alignment=[^,)]+', '', code)
+    code = re.sub(r',?\s*include_background=[^,)]+', '', code)
+    code = re.sub(r',?\s*word_wrap_width=[^,)]+', '', code)
+    # Strip invalid or complex t2c mappings in Text(...) to prevent Manim regex crashes
+    code = re.sub(r',?\s*t2c\s*=\s*\{[^}]*\}', '', code)
+    # Heal Circle highlighting text -> SurroundingRectangle
+    code = re.sub(
+        r'Circle\s*\([^)]*?\)\.move_to\(\s*([a-zA-Z0-9_]+)\.get_center\(\)\s*\)',
+        r'SurroundingRectangle(\1, color=YELLOW, buff=0.15, corner_radius=0.1)',
+        code,
+    )
+    # Auto-wrap coordinate-returning lambda calls inside always_redraw into Dot() Mobjects
+    def _fix_always_redraw_coords(m):
+        inner = m.group(1).strip()
+        if any(kw in inner for kw in ("c2p(", "coords_to_point(", "get_center(", "get_top(", "get_bottom(", "get_left(", "get_right(")):
+            if not inner.startswith(("Dot(", "Line(", "Arrow(", "Text(", "MathTex(", "Tex(", "Circle(", "Square(", "Rectangle(", "VGroup(", "Polygon(")):
+                return f"always_redraw(lambda: Dot({inner}))"
+        return m.group(0)
+
+    code = re.sub(r'always_redraw\(\s*lambda\s*:\s*([^\n\r]+?)\s*\)', _fix_always_redraw_coords, code)
+    # Fix move_to(..., corner=...) -> remove corner parameter
+    code = re.sub(r',?\s*corner=[^,)]+', '', code)
+
+    # 1. SPATIAL AUTO-LAYOUT GUARD: Clamp long Text and MathTex width to prevent horizontal overflow (> 12.5 width)
+    # If a Text instantiation has a literal string longer than 45 chars and doesn't scale_to_fit_width, clamp it
+    def _clamp_wide_text(m):
+        txt_call = m.group(0)
+        content = m.group(1)
+        if len(content) > 42 and "scale_to_fit_width" not in txt_call:
+            return f"{txt_call}.scale_to_fit_width(12.0)"
+        return txt_call
+
+    code = re.sub(r'Text\s*\(\s*([\'"][^\'"]{43,}[\'"])[^)]*\)', _clamp_wide_text, code)
+
+    # 2. SPATIAL AUTO-LAYOUT GUARD: Clamp non-caption elements from moving into bottom caption zone (y < -2.5)
+    def _clamp_caption_trespass(m):
+        var_name = m.group(1)
+        x_val_str = m.group(2).strip()
+        y_val_str = m.group(3).strip()
+        try:
+            y_val = float(y_val_str)
+            if "caption" not in var_name.lower() and "sub" not in var_name.lower() and y_val < -2.5:
+                # Clamp safely above caption band to y = -2.2
+                return f"{var_name}.move_to(({x_val_str}, -2.2, 0))"
+        except Exception:
+            pass
+        return m.group(0)
+
+    code = re.sub(r'(\b\w+)\.move_to\(\s*\(\s*([^,]+?)\s*,\s*(-[2-9](?:\.\d+)?)\s*(?:,\s*[^)]*)?\)\s*\)', _clamp_caption_trespass, code)
+
+    # 3. SPATIAL AUTO-LAYOUT GUARD: Fix duplicate sibling anchoring collision
+    # If two consecutive lines anchor different targets to the SAME anchor with next_to(anchor, DOWN, buff=X)
+    # e.g.:
+    #   item1.next_to(box, DOWN, buff=0.2)
+    #   item2.next_to(box, DOWN, buff=0.4) -> re-anchor item2.next_to(item1, DOWN, buff=0.25)
+    def _fix_parallel_down_anchoring(source: str) -> str:
+        lines = source.splitlines()
+        anchors_seen: dict[str, str] = {} # anchor_name -> last_placed_child
+        new_lines = []
+        pattern = re.compile(r'^\s*([a-zA-Z0-9_]+)\.next_to\(\s*([a-zA-Z0-9_]+)\s*,\s*DOWN\b([^)]*)\)')
+        for line in lines:
+            m = pattern.search(line)
+            if m:
+                child = m.group(1)
+                anchor = m.group(2)
+                extra_args = m.group(3)
+                if anchor in anchors_seen:
+                    # Parallel placement detected! Chain to the previous child instead
+                    prev_child = anchors_seen[anchor]
+                    if prev_child != child:
+                        indent = line[:len(line) - len(line.lstrip())]
+                        line = f"{indent}{child}.next_to({prev_child}, DOWN, buff=0.3)"
+                anchors_seen[anchor] = child
+            new_lines.append(line)
+        return "\n".join(new_lines)
+
+    code = _fix_parallel_down_anchoring(code)
+
+    # Heal ImageMobject paths so Manim can find staged assets regardless of working directory
+    from pathlib import Path
+    def _fix_image_path(m):
+        raw_path = m.group(1).strip("'\"")
+        p = Path(raw_path)
+        if not p.is_file():
+            # Search project trees for this asset file
+            candidates = list(Path("projects").glob(f"*/build/assets/{p.name}"))
+            if not candidates:
+                candidates = list(Path("projects").glob(f"*/assets/{p.name}"))
+            if candidates:
+                resolved = candidates[0].resolve().as_posix()
+                return f"ImageMobject('{resolved}')"
+        return m.group(0)
+
+    # 4. COGNITIVE SIGNALING HEALING: Fix invalid kwargs on attention animators
+    # duration= -> run_time= for Indicate, Circumscribe, Flash, Wiggle
+    code = re.sub(r'\b(Indicate|Circumscribe|Flash|Wiggle)\s*\(([^)]*?)\bduration\s*=', r'\1(\2run_time=', code)
+    # Fix shape string argument in Circumscribe (e.g. shape="circle" or shape="rectangle")
+    code = re.sub(r'Circumscribe\s*\(([^)]*?)\bshape\s*=\s*[\'"]circle[\'"]', r'Circumscribe(\1Circle', code)
+    code = re.sub(r'Circumscribe\s*\(([^)]*?)\bshape\s*=\s*[\'"]rectangle[\'"]', r'Circumscribe(\1Rectangle', code)
+
+    return code
+
+
+
+def _extract_semantic_scene_summary(code: str) -> str:
+    """Extract a compact semantic summary of previous scene objects to reduce tokens by 70%."""
+    import re
+    mobjects = set(re.findall(r'(\b\w+)\s*=\s*(?:Text|MathTex|Tex|VGroup|Line|Arrow|Circle|Square|Rectangle|Dot|Axes|Table)\(', code))
+    anchors = re.findall(r'(\b\w+)\.move_to\(([^)]+)\)', code)
+    summary_lines = []
+    if mobjects:
+        summary_lines.append(f"- Defined Mobjects: {', '.join(sorted(list(mobjects))[:15])}")
+    if anchors:
+        summary_lines.append(f"- Coordinate Anchors: {'; '.join([f'{a[0]} at {a[1].strip()}' for a in anchors[:6]])}")
+    return "\n".join(summary_lines) if summary_lines else "None."
+
+
 def select_renderer(sec) -> str:
-    """Select the renderer from explicit section tags or semantic cues."""
+    """Select the renderer from explicit section tags, env var, or brief."""
     explicit = getattr(sec, "renderer", None)
     if isinstance(explicit, str):
         explicit = explicit.strip().lower()
         if explicit in {"manim", "matplotlib"}:
             return explicit
 
+    # Env override takes priority if set
+    env_default = (os.environ.get("P2R_RENDERER") or os.environ.get("P2R_DEFAULT_RENDERER", "")).strip().lower()
+    if env_default in {"manim", "matplotlib"}:
+        return env_default
+
     brief = str(getattr(sec, "anim", "") or "").lower()
 
-    # Explicit tags in the animation brief always win.
-    if "[manim]" in brief:
-        return "manim"
+    # Explicit tags in the animation brief
     if "[matplotlib]" in brief or "[scenekit]" in brief:
         return "matplotlib"
-
-    # Strong continuous-animation signals.
-    manim_terms = (
-        "animate", "animation", "move", "transform", "morph", "lift",
-        "drop", "rotate", "zoom", "camera", "tower of hanoi", "recursion",
-        "sorting", "pointer moves", "traverse", "step through", "trajectory",
-        "physical motion",
-    )
-    if any(term in brief for term in manim_terms):
+    if "[manim]" in brief:
         return "manim"
 
-    # Plot/data-heavy sections remain on the mature Matplotlib backend.
+    # In --manim mode / when P2R_MANIM_VERSION is declared, default to Manim
+    if os.environ.get("P2R_MANIM_VERSION") or os.environ.get("P2R_MANIM"):
+        return "manim"
+
     return "matplotlib"
 
 
 def build_manim_prompt(script: Script, sec, sents: list[dict],
-                       previous_context: str = "") -> str:
+                       previous_context: str = "", asset_hint: str = "") -> str:
     numbered = "\n".join(
         f"  [{i}] t={s['start']:6.1f}s -> {s['end']:6.1f}s  {s['text']}"
         for i, s in enumerate(sents)
@@ -1246,8 +1705,10 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
     ANIMATION BRIEF:
         {sec.anim}
 
-    PREVIOUS SECTION CONTEXT:
+    PREVIOUS SECTION ANCHORS:
         {previous_context}
+
+    {asset_hint}
 
     NARRATION TIMELINE:
         Total duration: {total:.2f} seconds
@@ -1288,7 +1749,8 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
 
 
 def _render_manim(proj: Path, src: Path, section_dir: Path,
-                  class_name: str) -> list[Path]:
+                  class_name: str, quality: str | None = None,
+                  timeout: int | None = None) -> list[Path]:
     """Render a real Manim scene through the installed Manim CLI."""
     import subprocess
 
@@ -1306,11 +1768,13 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
     media_dir = section_dir / "_manim_media"
     media_dir.mkdir(parents=True, exist_ok=True)
 
-    quality = os.environ.get("P2R_MANIM_QUALITY", "-qh")
+    if quality is None:
+        quality = os.environ.get("P2R_MANIM_QUALITY", "-qh")
     if quality not in {"-ql", "-qm", "-qh", "-qp"}:
         quality = "-qh"
 
-    timeout = int(os.environ.get("P2R_MANIM_TIMEOUT", "600"))
+    if timeout is None:
+        timeout = int(os.environ.get("P2R_MANIM_TIMEOUT", "600"))
 
     cmd = [
         sys.executable,
@@ -1319,15 +1783,21 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
         quality,
         "--disable_caching",
         "--media_dir",
-        str(media_dir),
-        str(src),
+        str(media_dir.resolve()),
+        str(src.resolve()),
         class_name,
     ]
+
+    repo_root = str(Path(__file__).parent.parent.resolve())
+    env = dict(os.environ)
+    current_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{current_pythonpath}" if current_pythonpath else repo_root
 
     try:
         proc = subprocess.run(
             cmd,
-            cwd=str(proj),
+            cwd=str(proj.resolve()),
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -1347,18 +1817,83 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
         )
         raise SystemExit("Manim render failed:\n" + output)
 
-    videos = sorted(
-        media_dir.rglob("*.mp4"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not videos:
-        raise SystemExit("Manim completed without producing an MP4")
+    search_dirs = [
+        media_dir,
+        proj / "media",
+        Path("media"),
+        section_dir,
+    ]
+    videos: list[Path] = []
+    for d in search_dirs:
+        if d.exists():
+            videos.extend([
+                p for p in d.rglob(f"*{class_name}*.mp4") 
+                if "partial_movie_files" not in str(p)
+            ])
 
+    if not videos:
+        for d in search_dirs:
+            if d.exists():
+                videos.extend([
+                    p for p in d.rglob("*.mp4") 
+                    if "partial_movie_files" not in str(p)
+                ])
+
+    if not videos:
+        raise SystemExit(f"Manim completed without producing an MP4 for {class_name}")
+
+    videos.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     target = section_dir / f"{src.stem}.mp4"
     shutil.copy2(videos[0], target)
 
     return sorted(media_dir.rglob("*.png"))
+
+
+def render_manim_parallel(
+    proj: Path,
+    script: Script,
+    quality: str = "-qh",
+    max_workers: int | None = None,
+) -> dict[str, Path]:
+    """Render all Manim scenes concurrently across multi-core worker processes.
+    
+    Uses Cairo by default for rock-solid stability. If P2R_MANIM_OPENGL=1 is set,
+    attempts experimental OpenGL rendering with automatic fallback to Cairo.
+    """
+    import concurrent.futures
+
+    outdir = proj / "build" / "scenes"
+    manim_dir = proj / "build" / "manim"
+    sections = [s for s in script.sections if select_renderer(s) == "manim"]
+    if not sections:
+        return {}
+
+    workers = max_workers or min(len(sections), (os.cpu_count() or 4))
+    cfg.say(f"Rendering {len(sections)} Manim scenes in parallel ({workers} worker threads)...")
+
+    results: dict[str, Path] = {}
+
+    def _render_worker(sec) -> tuple[str, Path]:
+        src = outdir / f"scene_{sec.stem}.py"
+        if not src.exists() and (manim_dir / f"scene_{sec.stem}.py").exists():
+            src = manim_dir / f"scene_{sec.stem}.py"
+        section_dir = outdir / sec.stem
+        _render_manim(proj, src, section_dir, f"Scene{sec.stem}", quality=quality)
+        mp4_path = section_dir / f"{src.stem}.mp4"
+        return sec.stem, mp4_path
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_render_worker, sec): sec for sec in sections}
+        for fut in concurrent.futures.as_completed(futures):
+            sec = futures[fut]
+            try:
+                stem, mp4_path = fut.result()
+                results[stem] = mp4_path
+                cfg.say(f"Section {stem}: parallel render completed ({mp4_path.name})")
+            except Exception as exc:
+                sys.exit(f"[prompt2render] Parallel render failed on section {sec.stem}: {exc}")
+
+    return results
 
 
 def _generate_manim(proj: Path, script: Script, index: int,
@@ -1399,16 +1934,15 @@ def _generate_manim(proj: Path, script: Script, index: int,
         if prev_sec:
             prev_dst = outdir / f"scene_{prev_sec.stem}.py"
             if prev_dst.exists():
+                summary = _extract_semantic_scene_summary(prev_dst.read_text(encoding='utf-8'))
                 previous_context = (
-                    "Previous Manim scene for continuity. Preserve important "
-                    "coordinates, scale and visual identity:\n"
-                    f"```python\n"
-                    f"{prev_dst.read_text(encoding='utf-8')[-10000:]}\n"
-                    f"```\n"
+                    "Previous Manim scene anchors for continuity (preserve scale/visual identity):\n"
+                    f"{summary}\n"
                 )
 
+    _, manim_hint = stage_external_assets_for_section(proj, sec)
     prompt = build_manim_prompt(
-        script, sec, sents, previous_context
+        script, sec, sents, previous_context=previous_context, asset_hint=manim_hint
     )
     feedback = extra_feedback
 
@@ -1434,12 +1968,19 @@ def _generate_manim(proj: Path, script: Script, index: int,
                 **({"model_env": model_env} if model_env else {}),
             )
         except Exception as exc:
-            sys.exit(
-                f"[prompt2render] Manim section {sec.stem}: "
-                f"LLM call failed — {exc}"
-            )
+            cfg.say(f"Manim section {sec.stem}: transient connection error ({exc}) — retrying...")
+            import time
+            time.sleep(2)
+            if max_attempts is not None and attempt >= max_attempts:
+                sys.exit(
+                    f"[prompt2render] Manim section {sec.stem}: "
+                    f"LLM call failed — {exc}"
+                )
+            attempt += 1
+            continue
 
         raw = strip_fences(code or "").strip()
+        raw = heal_manim_source(raw)
         if not raw:
             sys.exit(
                 f"[prompt2render] Manim section {sec.stem}: empty completion"
@@ -1477,15 +2018,26 @@ def _generate_manim(proj: Path, script: Script, index: int,
                 + "; ".join(errors)
             )
 
+        # Apply deterministic timing correction to prevent LLM temporal drift
+        try:
+            from . import timing_corrector
+            total_dur = sents[-1]["end"] if sents else 0.0
+            raw = timing_corrector.correct_manim_timing(raw, sents, total_dur)
+        except Exception:
+            pass
+
         dst.write_text(raw, encoding="utf-8")
 
         try:
             with _RENDER_LOCK:
+                verify_q = os.environ.get("P2R_MANIM_VERIFY_QUALITY", "-ql")
                 frames = _render_manim(
                     proj,
                     dst,
                     section_dir,
                     f"Scene{sec.stem}",
+                    quality=verify_q,
+                    timeout=360,
                 )
         except SystemExit as exc:
             err = str(exc)
@@ -1615,7 +2167,8 @@ def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 
                         f"```python\n{last_state}\n```\n"
                     )
 
-    prompt = build_prompt(script, sec, sents, previous_context=previous_context)
+    mat_hint, _ = stage_external_assets_for_section(proj, sec)
+    prompt = build_prompt(script, sec, sents, previous_context=previous_context, asset_hint=mat_hint)
     # extra_feedback: repair_router's harness-level cycle (prompt2render/harness/plugins/repair_router)
     # seeds diagnostics from *its own* prior repair attempts here — separate from this loop's own
     # internal `feedback`, which is still exactly the same reject-and-retry text as before.
@@ -1727,6 +2280,12 @@ def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 
                     "state with a three-peg state or compose a different multi-column visual from "
                     "generic primitives.\n"
                 )
+            elif "crowded" in err or "too many distinct visual elements" in err:
+                feedback_msg += (
+                    "\n\nCROWDING FIX: Your state has too many separate elements in a single frame (density ceiling is 8). "
+                    "Split the diagram into 2-3 progressive reveal steps using `{\"steps\": 2}` or `{\"steps\": 3}`, "
+                    "or split the crowded elements across separate sequential states.\n"
+                )
                 
             feedback = extra_feedback + feedback_msg
             # The rejected code already shows whether this section wants
@@ -1777,6 +2336,17 @@ def generate_all(proj: Path, script: Script, index: int | None = None,
         if index is not None and sec.index != index:
             continue
         dst = stills.scene_path(proj, sec.stem)
+        alt_dst = proj / "scenes" / f"{sec.stem}.py"
+        if select_renderer(sec) == "manim":
+            if dst.exists():
+                cfg.say(f"section {sec.stem}: Manim scene already written, skipping (delete it to regenerate)")
+                continue
+            elif alt_dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copyfile(alt_dst, dst)
+                cfg.say(f"section {sec.stem}: using pre-authored scene from {alt_dst}")
+                continue
         # dst.exists() alone isn't "done": generate() writes the .py file
         # before the audit runs, so a section that exhausted its retries
         # (raising SystemExit, which used to abort the whole run) leaves a

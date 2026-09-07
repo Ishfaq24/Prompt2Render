@@ -183,6 +183,75 @@ def _run_pipeline(d, s, a) -> int:
     voice.build(d, s, voice.settings(a))
     align.align(d, s)
     scenes.generate_all(d, s, jobs=a.scene_jobs)
+    # If any section is rendered with Manim, assemble through the Manim pipeline
+    is_manim = any(
+        scenes.select_renderer(sec) == "manim" for sec in s.sections
+    )
+    if is_manim:
+        from prompt2render.scenes import _render_manim, heal_manim_source
+        clips = {}
+        for sec in s.sections:
+            src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
+            if not src.exists():
+                for cand in [d / "scenes" / f"{sec.stem}.py", d / "scenes" / f"scene_{sec.stem}.py"]:
+                    if cand.exists():
+                        src = cand
+                        break
+            section_dir = d / "build" / "scenes" / sec.stem
+            class_name = f"Scene{sec.stem}"
+            clip_path = section_dir / f"scene_{sec.stem}.mp4"
+            if not clip_path.exists():
+                sec_cand = d / "sections" / f"{sec.stem}.mp4"
+                if sec_cand.exists():
+                    clip_path = sec_cand
+                elif src.exists():
+                    code = src.read_text(encoding="utf-8")
+                    healed = heal_manim_source(code)
+                    if healed != code:
+                        src.write_text(healed, encoding="utf-8")
+                    _render_manim(d, src, section_dir, class_name)
+            if clip_path.exists():
+                clips[sec.stem] = clip_path
+            else:
+                sys.exit(f"[prompt2render] no rendered clip for section {sec.stem}")
+
+        # Automatically render procedural foley sound track before final muxing
+        foley_wav = d / "build" / "foley.wav"
+        if not foley_wav.exists() or foley_wav.stat().st_size <= 44:
+            try:
+                from prompt2render.audio_foley import extract_foley_events_from_code, render_foley_track
+                all_events = []
+                amap_path = d / "build" / "audio_map.json"
+                amap = {}
+                if amap_path.exists():
+                    import json
+                    amap = json.loads(amap_path.read_text(encoding="utf-8"))
+                for sec in s.sections:
+                    sec_src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
+                    if not sec_src.exists():
+                        for cand in [d / "scenes" / f"{sec.stem}.py", d / "scenes" / f"scene_{sec.stem}.py"]:
+                            if cand.exists():
+                                sec_src = cand
+                                break
+                    if sec_src.exists():
+                        code_txt = sec_src.read_text(encoding="utf-8")
+                        sec_start = float(amap.get("sections", {}).get(sec.stem, {}).get("start", 0.0))
+                        evs = extract_foley_events_from_code(code_txt, offset_s=sec_start)
+                        all_events.extend(evs)
+                master_file = d / "build" / "master.m4a"
+                if not master_file.exists():
+                    master_file = d / "build" / "master.wav"
+                total_dur = cfg.duration(master_file) if master_file.exists() else 0.0
+                if all_events and total_dur > 0:
+                    cfg.say(f"generating procedural foley audio track ({len(all_events)} cues)...")
+                    render_foley_track(all_events, total_dur, foley_wav)
+            except Exception as exc:
+                cfg.warn(f"foley audio track generation: {exc}")
+
+        finish.finish_manim(d, s, clips, burn=a.burn)
+        publish.build_packet(d, s)
+        return qc.check(d, s, strict=a.strict)
+
     # Usually a no-op: `prompt2render scenes` writes the stills for a section the moment
     # it accepts that section's module, so there is nothing left to draw.
     stills.render_many(_stills_jobs(d, s))
@@ -198,10 +267,9 @@ def _run_pipeline(d, s, a) -> int:
 def cmd_build(a):
     """The whole chain. Every stage is cached, so re-running is cheap."""
     if getattr(a, "manim", False) and not getattr(a, "harness", False):
-        sys.exit(
-            "[prompt2render] --manim requires the harness path; "
-            "use `build SLUG --harness --manim`"
-        )
+        import os
+        os.environ["P2R_RENDERER"] = "manim"
+        os.environ["P2R_MANIM"] = "1"
     if getattr(a, "harness", False):
         # Route through the harness instead of the raw pipeline
         cmd_harness(a)
@@ -1126,10 +1194,9 @@ def cmd_auto(a):
     voiced -- opted into here because the caller asked for exactly that.
     """
     if getattr(a, "manim", False) and not getattr(a, "harness", False):
-        sys.exit(
-            "[prompt2render] --manim requires the harness path; "
-            "use `auto SLUG --harness --manim`"
-        )
+        import os
+        os.environ["P2R_RENDERER"] = "manim"
+        os.environ["P2R_MANIM"] = "1"
     from prompt2render import draft, outline
     d = cfg.PROJECTS / a.slug
     if d.exists():

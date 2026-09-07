@@ -1,0 +1,125 @@
+{
+  "category": "hardware",
+  "version": "1.0.0",
+  "objects": [
+    {
+      "id": "cpu_core",
+      "name": "CPU Core",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/cpu_core.svg",
+      "author": "Prompt2Render Team",
+      "keywords": ["cpu", "processor", "core", "alu", "central processing unit", "instruction cycle"],
+      "description": "Clean microprocessor chip icon with data pins and core boundary.",
+      "asset_file": "svg/hardware_cpu.svg",
+      "default_bounds": { "width": 2.5, "height": 2.5 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 0.5, "maximum": 10.0 },
+          "height": { "type": "number", "minimum": 0.5, "maximum": 10.0 },
+          "color": { "type": "string" }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "id": "memory_bank",
+      "name": "Memory Bank",
+      "type": "manim_component",
+      "backends": ["manim"],
+      "license": "MIT",
+      "source_url": "https://prompt2render.internal/assets/memory_bank.py",
+      "author": "Prompt2Render Team",
+      "keywords": ["ram", "memory", "memory bank", "cache", "address space", "memory array"],
+      "description": "Parametric addressable memory bank with animated read/write cell highlights.",
+      "module": "prompt2render.assets.mobjects.hardware",
+      "class_name": "MemoryBankMobject",
+      "default_bounds": { "width": 4.0, "height": 3.0 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "num_cells": { "type": "integer", "minimum": 1, "maximum": 32 },
+          "cell_width": { "type": "number", "minimum": 0.5, "maximum": 5.0 },
+          "cell_height": { "type": "number", "minimum": 0.2, "maximum": 2.0 },
+          "highlight_color": { "type": "string" }
+        }
+      }
+    },
+    {
+      "id": "register_file",
+      "name": "Register File",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/register_file.svg",
+      "author": "Prompt2Render Team",
+      "keywords": ["register", "registers", "register file", "accumulator", "program counter", "pc", "ir"],
+      "description": "Hardware register file box with labeled word slots.",
+      "asset_file": "svg/register_file.svg",
+      "default_bounds": { "width": 3.0, "height": 2.0 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 0.5, "maximum": 10.0 },
+          "height": { "type": "number", "minimum": 0.5, "maximum": 10.0 },
+          "color": { "type": "string" }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "id": "alu_unit",
+      "name": "ALU (Arithmetic Logic Unit)",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/alu_unit.svg",
+      "author": "Prompt2Render Team",
+      "keywords": ["alu", "arithmetic logic unit", "adder", "logic unit", "multiplier", "computation unit"],
+      "description": "Standard V-shaped ALU hardware functional unit symbol.",
+      "asset_file": "svg/alu_unit.svg",
+      "default_bounds": { "width": 2.8, "height": 2.2 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 0.5, "maximum": 10.0 },
+          "height": { "type": "number", "minimum": 0.5, "maximum": 10.0 },
+          "color": { "type": "string" }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "id": "bus_line",
+      "name": "System Bus Line",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/bus_line.svg",
+      "author": "Prompt2Render Team",
+      "keywords": ["bus", "data bus", "address bus", "control bus", "interconnect", "wire"],
+      "description": "Multi-lane hardware data/address bus connector with bidirectional indicators.",
+      "asset_file": "svg/bus_line.svg",
+      "default_bounds": { "width": 4.0, "height": 1.0 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 0.5, "maximum": 16.0 },
+          "height": { "type": "number", "minimum": 0.2, "maximum": 5.0 },
+          "color": { "type": "string" }
+        },
+        "required": ["x", "y"]
+      }
+    }
+  ]
+}

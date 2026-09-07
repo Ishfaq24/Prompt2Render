@@ -146,11 +146,17 @@ def drawtext_font_arg() -> str:
 
 # ------------------------------------------------------------------ env ----
 
-def load_env(path: Path | None = None) -> None:
+_ENV_LOADED = False
+
+def load_env(path: Path | None = None, force: bool = False) -> None:
     """Minimal .env loader without requiring python-dotenv at import time."""
+    global _ENV_LOADED
+    if _ENV_LOADED and not force and path is None:
+        return
     path = path or (ROOT / ".env")
     if not path.exists():
         return
+    _ENV_LOADED = True
 
     for line in path.read_text(
         encoding="utf-8"

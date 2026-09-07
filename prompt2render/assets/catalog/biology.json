@@ -1,0 +1,138 @@
+{
+  "category": "biology",
+  "version": "1.0.0",
+  "objects": [
+    {
+      "id": "heart_anatomy",
+      "name": "Heart Anatomy & Coronary Vasculature",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/heart_anatomy.svg",
+      "author": "Prompt2Render Team",
+      "keywords": [
+        "heart",
+        "cardiac",
+        "anatomy",
+        "myocardium",
+        "coronary",
+        "aorta",
+        "lad",
+        "left anterior descending",
+        "ventricle",
+        "infarction"
+      ],
+      "description": "High-fidelity vector illustration of anterior human heart with aorta, vena cava, and LAD coronary vasculature.",
+      "asset_file": "svg/heart_anatomy.svg",
+      "default_bounds": { "width": 6.5, "height": 4.5 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 1.0, "maximum": 12.0 }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "id": "coronary_artery",
+      "name": "Coronary Artery & Atherosclerotic Plaque",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/coronary_artery.svg",
+      "author": "Prompt2Render Team",
+      "keywords": [
+        "artery",
+        "arterial",
+        "plaque",
+        "atherosclerosis",
+        "lumen",
+        "endothelium",
+        "cholesterol",
+        "lipid",
+        "vessel",
+        "cap"
+      ],
+      "description": "Cross-sectional histology diagram of coronary artery lumen, tunica media, and lipid-rich atherosclerotic plaque.",
+      "asset_file": "svg/coronary_artery.svg",
+      "default_bounds": { "width": 6.0, "height": 4.5 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 1.0, "maximum": 12.0 }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "id": "thrombus_occlusion",
+      "name": "Plaque Rupture & Acute Thrombus Occlusion",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/thrombus_occlusion.svg",
+      "author": "Prompt2Render Team",
+      "keywords": [
+        "thrombus",
+        "thrombosis",
+        "clot",
+        "rupture",
+        "fissure",
+        "occlusion",
+        "platelet",
+        "fibrin",
+        "ischemia",
+        "blockage"
+      ],
+      "description": "Cross-section showing fibrous cap tear, tissue factor exposure, platelet-fibrin thrombus, and 99 percent luminal occlusion.",
+      "asset_file": "svg/thrombus_occlusion.svg",
+      "default_bounds": { "width": 6.0, "height": 4.5 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 1.0, "maximum": 12.0 }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "id": "cardiac_conduction",
+      "name": "STEMI ECG & Ischemic Injury Current",
+      "type": "svg",
+      "backends": ["manim", "scenekit"],
+      "license": "CC-BY-4.0",
+      "source_url": "https://prompt2render.internal/assets/cardiac_conduction.svg",
+      "author": "Prompt2Render Team",
+      "keywords": [
+        "ecg",
+        "ekg",
+        "stemi",
+        "st-segment",
+        "elevation",
+        "electrocardiogram",
+        "arrhythmia",
+        "conduction",
+        "necrosis",
+        "infarction"
+      ],
+      "description": "Medical monitor tracing contrasting normal sinus P-QRS-T complex with pathognomonic acute ST-segment elevation STEMI.",
+      "asset_file": "svg/cardiac_conduction.svg",
+      "default_bounds": { "width": 6.5, "height": 4.5 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "width": { "type": "number", "minimum": 1.0, "maximum": 12.0 }
+        },
+        "required": ["x", "y"]
+      }
+    }
+  ]
+}

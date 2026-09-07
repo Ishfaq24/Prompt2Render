@@ -498,6 +498,14 @@ class SceneContext:
         default_factory=dict
     )
 
+    # Provenance tracking for external assets (photographer, source, license).
+    asset_provenance: dict[
+        str,
+        list[dict[str, Any]],
+    ] = field(
+        default_factory=dict
+    )
+
     # ------------------------------------------------------------------
     # Human feedback
     # ------------------------------------------------------------------

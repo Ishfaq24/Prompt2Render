@@ -153,6 +153,18 @@ def manim_zones(frame_w: float = 14.222, frame_h: float = 8.0) -> dict[str, tupl
     }
 
 
+def manim_slots(frame_w: float = 14.222, frame_h: float = 8.0) -> dict[str, dict[str, float]]:
+    """Defines the 4 canonical layout slots for Manim scene composition."""
+    zones = manim_zones(frame_w, frame_h)
+    safe_x = frame_w / 2 - MANIM_SAFE_MARGIN_X
+    return {
+        "title": {"y_min": zones["title"][0], "y_max": zones["title"][1], "x_min": -safe_x, "x_max": safe_x},
+        "hero": {"y_min": zones["content"][0], "y_max": zones["content"][1], "x_min": -safe_x * 0.85, "x_max": safe_x * 0.85},
+        "sidebar": {"y_min": zones["content"][0], "y_max": zones["content"][1], "x_min": safe_x * 0.45, "x_max": safe_x},
+        "caption": {"y_min": zones["caption"][0], "y_max": zones["caption"][1], "x_min": -safe_x, "x_max": safe_x},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -191,6 +203,7 @@ __all__ = [
     "MANIM_ZONES_FRACTIONAL",
     "Zone",
     "manim_zones",
+    "manim_slots",
     "scenekit_caption_zone",
     "scenekit_title_zone",
 ]

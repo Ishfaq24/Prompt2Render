@@ -1,0 +1,64 @@
+{
+  "category": "networking",
+  "version": "1.0.0",
+  "objects": [
+    {
+      "id": "packet_stream",
+      "name": "Network Packet Stream",
+      "type": "lottie",
+      "backends": ["manim", "scenekit"],
+      "license": "MIT",
+      "source_url": "https://prompt2render.internal/assets/lottie/packet_stream.json",
+      "author": "Prompt2Render Team",
+      "keywords": ["packet", "network", "router", "packets", "stream", "data transfer", "transmission", "tcp", "ip"],
+      "description": "Smooth continuous vector animation of animated data packets traveling across a high-speed data stream.",
+      "asset_file": "lottie/packet_stream.json",
+      "duration_seconds": 2.0,
+      "loopable": true,
+      "fps": 60,
+      "render_mode": "raster_overlay",
+      "default_bounds": { "width": 4.0, "height": 1.5 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "start_time": { "type": "number", "minimum": 0.0 },
+          "duration": { "type": "number", "minimum": 0.2 },
+          "scale": { "type": "number", "minimum": 0.2, "maximum": 5.0 },
+          "speed": { "type": "number", "minimum": 0.2, "maximum": 4.0 },
+          "tint_color": { "type": "string" }
+        },
+        "required": ["x", "y"]
+      }
+    },
+    {
+      "id": "server_rack_pulse",
+      "name": "Server Rack Activity",
+      "type": "lottie",
+      "backends": ["manim", "scenekit"],
+      "license": "MIT",
+      "source_url": "https://prompt2render.internal/assets/lottie/server_rack_pulse.json",
+      "author": "Prompt2Render Team",
+      "keywords": ["server", "rack", "datacenter", "host", "backend", "cloud server", "dns server"],
+      "description": "Datacenter server rack with pulsating status lights and activity indicators.",
+      "asset_file": "lottie/server_rack_pulse.json",
+      "duration_seconds": 1.5,
+      "loopable": true,
+      "fps": 60,
+      "render_mode": "raster_overlay",
+      "default_bounds": { "width": 3.0, "height": 3.0 },
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "start_time": { "type": "number", "minimum": 0.0 },
+          "duration": { "type": "number", "minimum": 0.2 },
+          "scale": { "type": "number", "minimum": 0.2, "maximum": 5.0 }
+        },
+        "required": ["x", "y"]
+      }
+    }
+  ]
+}
