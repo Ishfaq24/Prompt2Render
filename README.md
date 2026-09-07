@@ -572,3 +572,4 @@ font size down proportionally, and only scales as a last resort.
 | `prompt2render scenes` returns 429s it didn't before | sections are storyboarded three at a time now, which meters against the free tier's per-minute cap — `--jobs 1` restores the old one-at-a-time pace |
 | `prompt2render serve` says "a job is already running" | only one pipeline job runs at a time, server-wide, by design (see **Web dashboard**) — wait for it to finish or cancel it from the Pipeline page |
 | `prompt2render animate` exits immediately | retired — it drove the old Manim/Code2Video path. Use `prompt2render scenes` instead; see `docs/RETIRED.md` |
+# Prompt2Render
