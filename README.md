@@ -93,35 +93,7 @@ The critic verifies pixel geometry to ensure labels, arrows, and visual componen
 | ![Audit S2 F12](test_fixed_s2_f12.png) | ![Audit S2 F30](test_fixed_s2_f30.png) | ![Audit S2 F40](test_fixed_s2_f40.png) |
 | *Text-box boundary verification* | *Intermediate layout verification* | *Final scene verification* |
 
----
 
-### Adding Your Own Media (Videos & Photos)
-
-You can easily showcase your own animations and renders inside this README by placing assets in the `media/` directory:
-
-```
-media/
-├── images/
-│   ├── your_photo_or_diagram.png    # Add your stills / screenshots here
-│   ├── scene_01/                    # Generated scene stills
-│   └── test_fixed_s1_f10.png
-└── videos/
-    ├── your_custom_video.mp4        # Drop your MP4 clips here
-    ├── final.mp4                    # Default master assembly
-    └── demo_scene/
-```
-
-To display your newly added media in this document, simply reference them using standard Markdown:
-
-```markdown
-<!-- To embed an image or thumbnail -->
-![Custom Diagram](media/images/your_photo_or_diagram.png)
-
-<!-- To link a playable video -->
-[▶ Watch Custom Video](media/videos/your_custom_video.mp4)
-```
-
----
 
 ## 📖 Project Overview & Core Philosophy
 
