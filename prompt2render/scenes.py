@@ -206,6 +206,11 @@ only once the step has reached it:
 def stage_external_assets_for_section(proj: Path, sec) -> tuple[str, str]:
     """Retrieve external realistic assets from configured providers (Pixabay, Unsplash, Pexels),
     stage them to build/assets/, and return prompt hints for (matplotlib, manim)."""
+    if os.environ.get("P2R_DISABLE_EXTERNAL_ASSETS", "").strip().lower() in ("1", "true", "yes"):
+        return "", ""
+    if getattr(sec, "assets", True) is False:
+        return "", ""
+
     try:
         from .assets.providers import get_available_providers, search_all_providers
         from .assets.cache import AssetCache
@@ -1403,8 +1408,11 @@ CANVAS & 4-SLOT LAYOUT CONTRACT:
     1. Title Band: y in [3.1, 3.8] -> Use title.to_edge(UP, buff=0.35).
     2. Hero Stage: y in [-1.6, 2.8] -> Place your FlowStage, SplitStage, or HeroFocusStage here.
     3. Caption Buffer: y in [-3.8, -2.6] -> Dedicated subtitle area (e.g. DOWN * 3.15).
-  * SINGLE CAPTION INVARIANT: Exactly ONE caption Mobject per scene. Update with Transform(caption, new_caption).
-  * OBJECT PERSISTENCE: Do NOT wipe the screen (FadeOut all) between sentences. Keep persistent architecture or data elements alive and update their state with Transform / Indicate.
+  * TEXT & CAPTION TRANSITIONS:
+    - NEVER use Transform(text_a, text_b) on sentences or different text! In Manim, transforming different text morphs letter outlines and causes letters to explode and scatter across the screen.
+    - ALWAYS use FadeOut(caption, shift=UP*0.1) and FadeIn(new_caption, shift=UP*0.1) or ReplacementTransform.
+    - REDUNDANCY PRINCIPLE: Do NOT put giant multi-line narration paragraphs on screen — subtitles are already handled. Use concise callout cards, step labels, and mathematical/anatomical terms.
+  * OBJECT PERSISTENCE: Do NOT wipe the screen (FadeOut all) between sentences. Keep persistent diagrams alive and update their state cleanly.
 
 STRICT ZERO-OVERLAP COLLISION RULES (MANDATORY):
   1. NEVER PLACE TRAVELING PACKETS/TEXT INSIDE SERVER/LAPTOP BOXES:
