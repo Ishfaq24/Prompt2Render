@@ -371,6 +371,8 @@ class Section:
     start: float = 0.0
     dur: float = 0.0
     renderer: str | None = None
+    media_type: str = "auto"
+    source_media: Path | None = None
 
     @property
     def stem(self) -> str:
@@ -568,15 +570,35 @@ def parse_script(path: Path) -> Script:
 
         anim_lines: list[str] = []
         narration_lines: list[str] = []
+        media_type = "auto"
+        source_media: Path | None = None
 
         for line in body.splitlines():
             stripped = line.strip()
 
             if stripped.upper().startswith("> ANIM:"):
                 value = stripped.split(":", 1)[1].strip()
-
                 if value:
                     anim_lines.append(value)
+
+            elif stripped.upper().startswith("> VIDEO:"):
+                value = stripped.split(":", 1)[1].strip()
+                media_type = "video"
+                if value:
+                    source_media = Path(value)
+                    anim_lines.append(f"[video] {value}")
+
+            elif stripped.upper().startswith("> 3D:"):
+                value = stripped.split(":", 1)[1].strip()
+                media_type = "manim_3d"
+                if value:
+                    anim_lines.append(f"[3d] {value}")
+
+            elif stripped.upper().startswith("> SPLIT:"):
+                value = stripped.split(":", 1)[1].strip()
+                media_type = "split"
+                if value:
+                    anim_lines.append(f"[split] {value}")
 
             elif stripped.startswith(">"):
                 # Other blockquote lines are treated as editorial metadata,
@@ -586,13 +608,28 @@ def parse_script(path: Path) -> Script:
             else:
                 narration_lines.append(line)
 
+        anim_text = " ".join(anim_lines).strip()
+        lower_anim = anim_text.lower()
+        if media_type == "auto":
+            if "[3d]" in lower_anim or "[manim_3d]" in lower_anim:
+                media_type = "manim_3d"
+            elif "[split]" in lower_anim:
+                media_type = "split"
+            elif "[video" in lower_anim or "[broll" in lower_anim:
+                media_type = "video"
+                m = re.search(r"\[(?:video|broll)[:=]([^\]]+)\]", anim_text, re.IGNORECASE)
+                if m:
+                    source_media = Path(m.group(1).strip())
+
         section = Section(
             index=int(head.group(1)),
             title=head.group(2).strip()
             or f"Section {head.group(1)}",
-            anim=" ".join(anim_lines).strip(),
+            anim=anim_text,
             narration=_clean_narration(narration_lines),
             renderer=meta.get("renderer"),
+            media_type=media_type,
+            source_media=source_media,
         )
 
         sections.append(section)

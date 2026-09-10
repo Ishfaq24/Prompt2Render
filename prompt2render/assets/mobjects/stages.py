@@ -214,6 +214,51 @@ class SplitStage(Group):
         self.add(*self.elements)
 
 
+class MediaCard(Group):
+    """Photographic / visual media card with stylish border and badge."""
+
+    def __init__(
+        self,
+        media: Any,
+        label: str = "Real-World Reference",
+        badge_color: str = CYAN_ACCENT,
+        border_color: str = SLATE_BORDER,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.media = media
+        self.elements = [self.media]
+
+        if hasattr(media, "width") and hasattr(media, "height"):
+            w = getattr(media, "width", 5.0)
+            h = getattr(media, "height", 3.2)
+            frame = RoundedRectangle(
+                width=w + 0.1,
+                height=h + 0.1,
+                corner_radius=0.1,
+                stroke_color=border_color,
+                stroke_width=2.0,
+            )
+            if hasattr(self.media, "get_center"):
+                frame.move_to(self.media.get_center())
+            self.elements.append(frame)
+
+        if label:
+            lbl = Text(label.upper(), font_size=12, weight="BOLD", color=badge_color)
+            if hasattr(self.media, "get_critical_point") and hasattr(lbl, "next_to"):
+                try:
+                    lbl.next_to(self.media, DOWN, buff=0.2)
+                except Exception:
+                    h = getattr(self.media, "height", 3.0)
+                    lbl.move_to(self.media.get_center() + DOWN * (h / 2.0 + 0.25))
+            elif hasattr(self.media, "get_center") and hasattr(lbl, "move_to"):
+                h = getattr(self.media, "height", 3.0)
+                lbl.move_to(self.media.get_center() + DOWN * (h / 2.0 + 0.25))
+            self.elements.append(lbl)
+
+        self.add(*self.elements)
+
+
 class HeroFocusStage(VGroup):
     """Central hero visualization with peripheral callout badges."""
 

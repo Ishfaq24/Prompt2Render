@@ -331,10 +331,17 @@ def _scene_class_name(source: Path) -> str | None:
     except (OSError, SyntaxError):
         return None
 
+    allowed_scene_bases = {
+        "Scene",
+        "ThreeDScene",
+        "MovingCameraScene",
+        "LinearTransformationScene",
+        "SpecialThreeDScene",
+    }
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and any(
-            (isinstance(base, ast.Name) and base.id == "Scene")
-            or (isinstance(base, ast.Attribute) and base.attr == "Scene")
+            (isinstance(base, ast.Name) and base.id in allowed_scene_bases)
+            or (isinstance(base, ast.Attribute) and base.attr in allowed_scene_bases)
             for base in node.bases
         ):
             return node.name

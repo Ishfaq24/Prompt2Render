@@ -21,6 +21,7 @@ from .stages import (
     SafeCaptionZone,
     CaptionDock,
     AnnotatedCard,
+    MediaCard,
 )
 from .algo_math_widgets import (
     ArrayGrid,
@@ -47,6 +48,7 @@ __all__ = [
     "SafeCaptionZone",
     "CaptionDock",
     "AnnotatedCard",
+    "MediaCard",
     "ArrayGrid",
     "FormulaCard",
     "KeyBadge",

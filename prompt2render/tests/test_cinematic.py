@@ -68,3 +68,33 @@ def test_camera_pan_and_reset():
 
     subtle_drift(frame, distance=0.4)
     assert frame.animate.called
+
+
+def test_orbit_3d_camera():
+    from prompt2render.cinematic import orbit_3d_camera
+    scene = MagicMock()
+    scene.camera.theta = 0.5
+    orbit_3d_camera(scene, delta_theta=45.0, run_time=2.0)
+    assert scene.move_camera.called
+    kwargs = scene.move_camera.call_args[1]
+    assert "theta" in kwargs
+    assert kwargs["run_time"] == 2.0
+
+
+def test_cinematic_3d_pitch_yaw():
+    from prompt2render.cinematic import cinematic_3d_pitch_yaw
+    scene = MagicMock()
+    cinematic_3d_pitch_yaw(scene, phi=70.0, theta=-45.0, zoom=1.2, run_time=1.5)
+    assert scene.move_camera.called
+    kwargs = scene.move_camera.call_args[1]
+    assert "phi" in kwargs
+    assert "theta" in kwargs
+    assert kwargs["zoom"] == 1.2
+    assert kwargs["run_time"] == 1.5
+
+
+def test_create_3d_grid_plane():
+    from prompt2render.cinematic import create_3d_grid_plane
+    grid = create_3d_grid_plane(size=4.0, step=1.0)
+    assert len(grid.submobjects) > 0
+

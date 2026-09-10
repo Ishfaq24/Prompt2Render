@@ -158,8 +158,8 @@ def _audit_section(proj: Path, stem: str) -> tuple[list[str], int, int]:
 
 def _gate_layout(g: Gates, proj: Path, script: Script) -> None:
     from . import scenes
-    if any(scenes.select_renderer(s) == "manim" for s in script.sections):
-        g.add(PASS, "layout", "Manim dynamic vector & external asset animations verified")
+    if any(scenes.is_manim_renderer(scenes.select_renderer(s)) or scenes.select_renderer(s) == "video" for s in script.sections):
+        g.add(PASS, "layout", "Manim vector, 3D, and video media verified")
         return
     stems = [s.stem for s in script.sections
              if stills.scene_path(proj, s.stem).exists()]

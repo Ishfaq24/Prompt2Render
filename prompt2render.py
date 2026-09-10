@@ -183,20 +183,17 @@ def _run_pipeline(d, s, a) -> int:
     voice.build(d, s, voice.settings(a))
     align.align(d, s)
     scenes.generate_all(d, s, jobs=a.scene_jobs)
-    # If any section is rendered with Manim, assemble through the Manim pipeline
+    # If any section is rendered with Manim, 3D, or Video, assemble through the section clip pipeline
     is_manim = any(
-        scenes.select_renderer(sec) == "manim" for sec in s.sections
+        scenes.is_manim_renderer(scenes.select_renderer(sec)) or scenes.select_renderer(sec) == "video"
+        for sec in s.sections
     )
     if is_manim:
         from prompt2render.scenes import _render_manim, heal_manim_source
+        from prompt2render.video_conform import conform_video_for_section
         clips = {}
         for sec in s.sections:
-            src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
-            if not src.exists():
-                for cand in [d / "scenes" / f"{sec.stem}.py", d / "scenes" / f"scene_{sec.stem}.py"]:
-                    if cand.exists():
-                        src = cand
-                        break
+            rend = scenes.select_renderer(sec)
             section_dir = d / "build" / "scenes" / sec.stem
             class_name = f"Scene{sec.stem}"
             clip_path = section_dir / f"scene_{sec.stem}.mp4"
@@ -204,12 +201,21 @@ def _run_pipeline(d, s, a) -> int:
                 sec_cand = d / "sections" / f"{sec.stem}.mp4"
                 if sec_cand.exists():
                     clip_path = sec_cand
-                elif src.exists():
-                    code = src.read_text(encoding="utf-8")
-                    healed = heal_manim_source(code)
-                    if healed != code:
-                        src.write_text(healed, encoding="utf-8")
-                    _render_manim(d, src, section_dir, class_name)
+                elif rend == "video" or getattr(sec, "media_type", "") == "video":
+                    clip_path = conform_video_for_section(d, s, sec, clip_path)
+                else:
+                    src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
+                    if not src.exists():
+                        for cand in [d / "scenes" / f"{sec.stem}.py", d / "scenes" / f"scene_{sec.stem}.py"]:
+                            if cand.exists():
+                                src = cand
+                                break
+                    if src.exists():
+                        code = src.read_text(encoding="utf-8")
+                        healed = heal_manim_source(code)
+                        if healed != code:
+                            src.write_text(healed, encoding="utf-8")
+                        _render_manim(d, src, section_dir, class_name)
             if clip_path.exists():
                 clips[sec.stem] = clip_path
             else:

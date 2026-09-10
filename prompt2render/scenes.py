@@ -1004,11 +1004,14 @@ def validate_manim_source(code: str) -> list[str]:
             has_scene_class = True
             
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            # Only allow from manim import * or import math/numpy or prompt2render.assets.mobjects
-            if isinstance(node, ast.ImportFrom) and (node.module == "manim" or (node.module and node.module.startswith("prompt2render.assets.mobjects"))):
-                continue
-            if isinstance(node, ast.Import) and any(alias.name in {"math", "numpy"} for alias in node.names):
-                continue
+            # Only allow from manim import * or import math/numpy or prompt2render helper modules
+            if isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").strip()
+                if mod == "manim" or mod.startswith("manim.") or mod.startswith("prompt2render") or mod in {"math", "numpy", "random"}:
+                    continue
+            if isinstance(node, ast.Import):
+                if any(alias.name in {"manim", "math", "numpy", "random"} or alias.name.startswith("manim.") or alias.name.startswith("prompt2render") for alias in node.names):
+                    continue
             errors.append(f"imports other than 'manim', 'math', or 'numpy' are not allowed (line {node.lineno})")
             
         if isinstance(node, ast.Call):
@@ -1174,19 +1177,26 @@ def validate_manim_source(code: str) -> list[str]:
     # the same rules (previously only verifier_execution used this
     # function; scenes._generate_manim's own retry loop used a private,
     # looser-in-some-ways/stricter-in-others duplicate -- SS15/F15).
+    allowed_scene_bases = {
+        "Scene",
+        "ThreeDScene",
+        "MovingCameraScene",
+        "LinearTransformationScene",
+        "SpecialThreeDScene",
+    }
     scene_classes = [
         node
         for node in tree.body
         if isinstance(node, ast.ClassDef)
         and any(
-            (isinstance(base, ast.Name) and base.id == "Scene")
-            or (isinstance(base, ast.Attribute) and base.attr == "Scene")
+            (isinstance(base, ast.Name) and base.id in allowed_scene_bases)
+            or (isinstance(base, ast.Attribute) and base.attr in allowed_scene_bases)
             for base in node.bases
         )
     ]
 
     if not scene_classes:
-        errors.append("no class inheriting from Scene was generated")
+        errors.append("no class inheriting from Scene (or ThreeDScene) was generated")
     elif len(scene_classes) != 1:
         errors.append("generate exactly one main Scene subclass")
 
@@ -1481,6 +1491,7 @@ def heal_manim_source(code: str) -> str:
         "MemoryBankMobject",
         "BinaryTreeMobject",
         "CoordinateGridMobject",
+        "MediaCard",
     ]
     used_mobjects = [name for name in mobject_names if re.search(r'\b' + name + r'\b', code)]
     if used_mobjects and "prompt2render.assets.mobjects" not in code:
@@ -1495,6 +1506,9 @@ def heal_manim_source(code: str) -> str:
         "subtle_drift",
         "GlowAura",
         "HeroMetricBadge",
+        "orbit_3d_camera",
+        "cinematic_3d_pitch_yaw",
+        "create_3d_grid_plane",
     ]
     used_cinematic = [name for name in cinematic_names if re.search(r'\b' + name + r'\b', code)]
     if used_cinematic and "prompt2render.cinematic" not in code:
@@ -1658,12 +1672,24 @@ def _extract_semantic_scene_summary(code: str) -> str:
     return "\n".join(summary_lines) if summary_lines else "None."
 
 
+def is_manim_renderer(rend: str) -> bool:
+    """Return whether the renderer uses the Manim execution and assembly pipeline."""
+    return rend in {"manim", "manim_3d", "split"}
+
+
 def select_renderer(sec) -> str:
     """Select the renderer from explicit section tags, env var, or brief."""
+    # Check media_type on section if set
+    media_type = getattr(sec, "media_type", "auto")
+    if media_type and media_type != "auto":
+        media_type = media_type.strip().lower()
+        if media_type in {"manim", "matplotlib", "manim_3d", "video", "split"}:
+            return media_type
+
     explicit = getattr(sec, "renderer", None)
     if isinstance(explicit, str):
         explicit = explicit.strip().lower()
-        if explicit in {"manim", "matplotlib"}:
+        if explicit in {"manim", "matplotlib", "manim_3d", "video", "split"}:
             return explicit
 
     # Env override takes priority if set
@@ -1676,6 +1702,12 @@ def select_renderer(sec) -> str:
     # Explicit tags in the animation brief
     if "[matplotlib]" in brief or "[scenekit]" in brief:
         return "matplotlib"
+    if "[3d]" in brief or "[manim_3d]" in brief:
+        return "manim_3d"
+    if "[video" in brief or "[broll" in brief:
+        return "video"
+    if "[split]" in brief:
+        return "split"
     if "[manim]" in brief:
         return "manim"
 
@@ -1694,6 +1726,30 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
     )
     total = sents[-1]["end"] if sents else 0.0
     class_name = f"Scene{sec.stem}"
+    rend = select_renderer(sec)
+    is_3d = rend == "manim_3d" or "[3d]" in str(getattr(sec, "anim", "")).lower()
+    base_class = "ThreeDScene" if is_3d else "Scene"
+    extra_3d_doc = ""
+    if is_3d:
+        extra_3d_doc = textwrap.dedent(f"""
+    3D ANIMATION & CAMERA SPECIFICATION (ThreeDScene):
+      * The class MUST inherit from ThreeDScene:
+            class {class_name}(ThreeDScene):
+      * In construct(self), establish the initial 3D camera orientation:
+            self.set_camera_orientation(phi=75 * DEGREES, theta=-45 * DEGREES)
+      * Use 3D mathematical and geometric primitives:
+            ThreeDAxes(x_range=[-4, 4], y_range=[-4, 4], z_range=[-3, 3])
+            Surface(lambda u, v: np.array([u, v, f(u, v)]), u_range=[-2, 2], v_range=[-2, 2])
+            Sphere(radius=0.8), Cylinder(), Cube(side_length=1.5), Dot3D(point=[1, 2, 0]), Arrow3D()
+      * Camera moves and orbits:
+            orbit_3d_camera(self, delta_theta=60, run_time=3.0)
+            cinematic_3d_pitch_yaw(self, phi=70, theta=-45, zoom=1.1, run_time=2.0)
+            create_3d_grid_plane(size=6.0, step=1.0)
+      * On-screen 2D text, title cards, or metric badges that must NOT tilt with the 3D camera:
+            self.add_fixed_in_frame_mobjects(title_group, metric_badge)
+      * STABILITY CONTRACT: Never pass a scalar float where a 3D coordinate vector is required.
+    """)
+
     manim_api_doc = MANIM_API_DOC_TEMPLATE.replace(
         "__MANIM_VERSION__", manimver.target_version()
     )
@@ -1724,12 +1780,13 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
     {numbered}
 
     {manim_api_doc}
+    {extra_3d_doc}
 
     OUTPUT CONTRACT:
       * Output ONLY complete Python source.
       * Start with: from manim import *
       * Define exactly one main class named {class_name}.
-      * It MUST inherit from Scene and implement construct(self).
+      * It MUST inherit from {base_class} and implement construct(self).
       * Do NOT define states().
       * Do NOT use Scenekit k.* primitives.
       * Do NOT use Matplotlib.
@@ -1872,7 +1929,7 @@ def render_manim_parallel(
 
     outdir = proj / "build" / "scenes"
     manim_dir = proj / "build" / "manim"
-    sections = [s for s in script.sections if select_renderer(s) == "manim"]
+    sections = [s for s in script.sections if is_manim_renderer(select_renderer(s))]
     if not sections:
         return {}
 
@@ -2109,7 +2166,7 @@ def generate(proj: Path, script: Script, index: int, retries: int = 0,
 
     cfg.say(f"section {sec.stem}: renderer={renderer.upper()}")
 
-    if renderer == "manim":
+    if is_manim_renderer(renderer):
         return _generate_manim(
             proj, script, index,
             retries=retries,
@@ -2117,6 +2174,11 @@ def generate(proj: Path, script: Script, index: int, retries: int = 0,
             dst=dst,
             model_env=model_env,
         )
+
+    if renderer == "video":
+        target = dst or stills.scene_path(proj, sec.stem)
+        cfg.say(f"section {sec.stem}: video/b-roll media section, skipping code generation")
+        return target
 
     return _generate_matplotlib(
         proj, script, index,
@@ -2345,7 +2407,11 @@ def generate_all(proj: Path, script: Script, index: int | None = None,
             continue
         dst = stills.scene_path(proj, sec.stem)
         alt_dst = proj / "scenes" / f"{sec.stem}.py"
-        if select_renderer(sec) == "manim":
+        rend = select_renderer(sec)
+        if rend == "video":
+            cfg.say(f"section {sec.stem}: video/b-roll media section, skipping code generation")
+            continue
+        if is_manim_renderer(rend):
             if dst.exists():
                 cfg.say(f"section {sec.stem}: Manim scene already written, skipping (delete it to regenerate)")
                 continue
