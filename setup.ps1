@@ -41,11 +41,14 @@ python -m venv .venv
 # Manim version is pinned in requirements.txt and mirrored by
 # prompt2render/manimver.py. $env:P2R_MANIM_VERSION installs a different one
 # (0.19.0 reproduces the Code2Video comparison - docs/MANIM_EXPERIMENT_PROTOCOL.md).
-$ManimVersion = if ($env:P2R_MANIM_VERSION) { $env:P2R_MANIM_VERSION } else { "0.21.0" }
-
-Say "installing prompt2render deps (Manim $ManimVersion drives the --manim scene backend and the 'prompt2render manim' escape hatch)"
-& .\.venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
-& .\.venv\Scripts\python.exe -m pip install "manim==$ManimVersion" --quiet
+if ($env:P2R_MANIM_VERSION) {
+  Say "installing prompt2render deps with Manim $env:P2R_MANIM_VERSION override"
+  & .\.venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
+  & .\.venv\Scripts\python.exe -m pip install "manim==$env:P2R_MANIM_VERSION" --quiet
+} else {
+  Say "installing prompt2render deps from requirements.txt"
+  & .\.venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
+}
 
 # ------------------------------------------------------------------- .env
 if (-not (Test-Path .env)) {

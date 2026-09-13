@@ -24,6 +24,7 @@ the model can actually act on.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import json
@@ -36,7 +37,53 @@ from pathlib import Path
 from . import cfg, scenekit as k
 
 
+def validate_scene_security(path: Path) -> None:
+    """Audit scene Python source against arbitrary code execution before in-process execution."""
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+    except Exception as exc:
+        raise SystemExit(f"scene module failed to parse:\n{exc}")
+
+    banned_modules = {
+        "subprocess", "shutil", "socket", "urllib", "requests", "http",
+        "pty", "ctypes", "multiprocessing", "threading", "webbrowser",
+        "pip", "venv", "winreg"
+    }
+    banned_calls = {"eval", "exec", "__import__", "compile"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root_pkg = alias.name.split(".")[0]
+                if root_pkg in banned_modules:
+                    raise SystemExit(
+                        f"[prompt2render] security rejection in {path.name}: "
+                        f"importing '{alias.name}' is strictly forbidden in scene scripts"
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                root_pkg = node.module.split(".")[0]
+                if root_pkg in banned_modules:
+                    raise SystemExit(
+                        f"[prompt2render] security rejection in {path.name}: "
+                        f"importing from '{node.module}' is strictly forbidden in scene scripts"
+                    )
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in banned_calls:
+                raise SystemExit(
+                    f"[prompt2render] security rejection in {path.name}: "
+                    f"calling '{node.func.id}()' is strictly forbidden in scene scripts"
+                )
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in {"system", "popen", "spawn"}:
+                raise SystemExit(
+                    f"[prompt2render] security rejection in {path.name}: "
+                    f"invoking '{node.func.attr}()' is strictly forbidden in scene scripts"
+                )
+
+
 def load(path: Path):
+    validate_scene_security(path)
     spec = importlib.util.spec_from_file_location("prompt2render_scene_mod", path)
     mod = importlib.util.module_from_spec(spec)
     mod.k = k                      # the kit is injected, not imported

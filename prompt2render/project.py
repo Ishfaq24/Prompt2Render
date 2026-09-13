@@ -650,18 +650,13 @@ def parse_script(path: Path) -> Script:
 
 def _scaffold_dirs(slug: str) -> Path:
     """Create the standard project directory structure."""
-    slug = str(slug).strip()
+    clean_slug = cfg.validate_slug(slug)
 
-    if not slug:
-        raise SystemExit(
-            "[prompt2render] project slug cannot be empty"
-        )
-
-    d = cfg.PROJECTS / slug
+    d = cfg.PROJECTS / clean_slug
 
     if d.exists():
         raise SystemExit(
-            f"[prompt2render] project '{slug}' already exists at {d}"
+            f"[prompt2render] project '{clean_slug}' already exists at {d}"
         )
 
     for sub in (
@@ -685,6 +680,10 @@ def new_project(
     sections: int | None = None,
 ) -> Path:
     """Create a deterministic Prompt2Render project."""
+    if any(sep in str(slug) for sep in ('/', '\\', '..', ':', '\0')):
+        slug = cfg.validate_slug(slug)
+    else:
+        slug = cfg.slugify(slug)
     d = _scaffold_dirs(slug)
 
     title = (
@@ -720,6 +719,10 @@ def new_project_from_sections(
 
     Used by ``new --ai`` with ``outline.generate()``.
     """
+    if any(sep in str(slug) for sep in ('/', '\\', '..', ':', '\0')):
+        slug = cfg.validate_slug(slug)
+    else:
+        slug = cfg.slugify(slug)
     d = _scaffold_dirs(slug)
 
     script = render_from_sections(

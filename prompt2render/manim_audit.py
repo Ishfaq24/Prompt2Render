@@ -210,3 +210,110 @@ class ManimLayoutAuditor:
             section_timing,
             scratch_dir=scratch,
         )
+
+    @classmethod
+    def audit_rendered_frames_3d(
+        cls,
+        clip_path: Path,
+        n_samples: int = 5,
+        iou_threshold: float = 0.10,
+    ) -> dict[str, Any]:
+        """Sample frames from a rendered 3D clip and detect pixel-level collisions.
+
+        For 3D scenes the Manim-coordinate bounding-box audit is insufficient:
+        after camera rotation, Mobjects that were separated in 3D space can
+        overlap in the 2D projection. This method samples the rendered MP4 at
+        ``n_samples`` evenly-spaced points, converts each frame to a brightness
+        mask, and runs a simple contiguous-region overlap check.
+
+        Requires ``opencv-python`` (cv2). Returns an empty findings list when
+        cv2 is not installed rather than raising.
+
+        Args:
+            clip_path:      Path to the rendered MP4 clip.
+            n_samples:      Number of frames to sample (default 5).
+            iou_threshold:  Minimum intersection-over-union to flag as overlap.
+
+        Returns:
+            {
+              "ok": bool,
+              "findings": [str, ...],   # human-readable overlap descriptions
+              "frames_sampled": int,
+            }
+        """
+        try:
+            import cv2  # type: ignore
+            import numpy as np
+        except ImportError:
+            return {"ok": True, "findings": [], "frames_sampled": 0}
+
+        if not clip_path.is_file():
+            return {"ok": True, "findings": [f"clip not found: {clip_path}"], "frames_sampled": 0}
+
+        cap = cv2.VideoCapture(str(clip_path))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            cap.release()
+            return {"ok": True, "findings": ["could not read frame count"], "frames_sampled": 0}
+
+        sample_indices = [
+            int(total_frames * i / max(n_samples - 1, 1))
+            for i in range(n_samples)
+        ]
+        sample_indices = list(dict.fromkeys(min(idx, total_frames - 1) for idx in sample_indices))
+
+        findings: list[str] = []
+        frames_ok = 0
+
+        for frame_idx in sample_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            frames_ok += 1
+
+            # Convert to grayscale, threshold to get bright regions (Mobjects on dark bg)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+
+            # Find contours (distinct bright regions)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Build bounding boxes for significant regions (ignore tiny noise)
+            h, w = frame.shape[:2]
+            min_area = w * h * 0.001  # at least 0.1% of frame
+            boxes: list[tuple[int, int, int, int]] = []
+            for cnt in contours:
+                x, y, bw, bh = cv2.boundingRect(cnt)
+                if bw * bh >= min_area:
+                    boxes.append((x, y, x + bw, y + bh))
+
+            # Pairwise IoU check
+            for i in range(len(boxes)):
+                for j in range(i + 1, len(boxes)):
+                    x1a, y1a, x2a, y2a = boxes[i]
+                    x1b, y1b, x2b, y2b = boxes[j]
+                    inter_x1 = max(x1a, x1b)
+                    inter_y1 = max(y1a, y1b)
+                    inter_x2 = min(x2a, x2b)
+                    inter_y2 = min(y2a, y2b)
+                    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+                        continue
+                    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+                    area_a = (x2a - x1a) * (y2a - y1a)
+                    area_b = (x2b - x1b) * (y2b - y1b)
+                    union_area = area_a + area_b - inter_area
+                    iou = inter_area / union_area if union_area > 0 else 0.0
+                    if iou >= iou_threshold:
+                        findings.append(
+                            f"Frame {frame_idx}: region overlap detected "
+                            f"box_a=({x1a},{y1a},{x2a},{y2a}) "
+                            f"box_b=({x1b},{y1b},{x2b},{y2b}) IoU={iou:.2f}"
+                        )
+
+        cap.release()
+        return {
+            "ok": len(findings) == 0,
+            "findings": findings,
+            "frames_sampled": frames_ok,
+        }

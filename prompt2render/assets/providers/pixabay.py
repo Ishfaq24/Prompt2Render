@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -68,7 +69,19 @@ class PixabayProvider(AssetProvider):
         try:
             with urllib.request.urlopen(req, timeout=12.0) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except Exception:
+        except urllib.error.HTTPError as err:
+            if err.code in (401, 403):
+                cfg.warn(f"Pixabay API authentication failed ({err.code}): invalid or inactive PIXABAY_API_KEY")
+            elif err.code == 429:
+                cfg.warn(f"Pixabay API rate limit exceeded ({err.code}): quota reached")
+            else:
+                cfg.warn(f"Pixabay API HTTP error {err.code}: {err.reason}")
+            return []
+        except urllib.error.URLError as err:
+            cfg.warn(f"Pixabay API connection error: {err.reason}")
+            return []
+        except Exception as exc:
+            cfg.warn(f"Pixabay API unexpected error: {exc}")
             return []
 
         hits_data = data.get("hits", [])

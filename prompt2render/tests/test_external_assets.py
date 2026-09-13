@@ -179,3 +179,32 @@ def test_publish_attributions(tmp_path: Path):
     assert "TechArtist" in content
     assert "Pixabay" in content
     assert "Server Hardware" in content
+
+
+def test_asset_provider_http_error_diagnostics(monkeypatch):
+    import urllib.error
+    from prompt2render.assets.providers.pexels import PexelsProvider
+
+    warnings = []
+    monkeypatch.setattr("prompt2render.cfg.warn", lambda msg: warnings.append(msg))
+
+    def fake_urlopen_401(*args, **kwargs):
+        raise urllib.error.HTTPError("https://api.pexels.com", 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen_401)
+    prov = PexelsProvider(api_key="invalid_key")
+    hits = prov.search("technology")
+    assert hits == []
+    assert any("authentication failed (401)" in w for w in warnings)
+
+    warnings.clear()
+
+    def fake_urlopen_429(*args, **kwargs):
+        raise urllib.error.HTTPError("https://pixabay.com", 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen_429)
+    pix_prov = PixabayProvider(api_key="rate_limited_key")
+    pix_hits = pix_prov.search("robotics")
+    assert pix_hits == []
+    assert any("rate limit exceeded (429)" in w for w in warnings)
+

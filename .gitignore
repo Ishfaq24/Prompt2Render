@@ -2,14 +2,27 @@
 .env
 *.key
 *.env
-# Generated media
+# Generated media & transient build outputs
 projects/*/sections/
 projects/*/audio/
 projects/*/build/
 projects/*/out/
 !.gitkeep
 .manim019-cache-quarantine/
-/media
+
+# Ignore local media renders but preserve curated showcase gallery
+/media/*
+!/media/showcase/
+
+# Root-level loose media generated during ad-hoc runs or tests
+/*.mp4
+/*.png
+/*.jpg
+/*.jpeg
+/*.wav
+/*.m4a
+/*.gif
+/*.webm
 
 # Python & test artifacts
 __pycache__/

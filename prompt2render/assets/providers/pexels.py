@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -19,14 +20,13 @@ class PexelsProvider(AssetProvider):
 
     def __init__(self, api_key: str | None = None) -> None:
         cfg.load_env()
-        self.api_key = (
-            api_key
-            or os.environ.get("PEXELS_API_KEY")
-            or ""
-        ).strip().strip("'\"")
+        self.api_key = (api_key or os.environ.get("PEXELS_API_KEY", "")).strip().strip("'\"")
 
     def is_configured(self) -> bool:
         return bool(self.api_key)
+
+    def is_available(self) -> bool:
+        return self.is_configured()
 
     def search(
         self,
@@ -39,9 +39,11 @@ class PexelsProvider(AssetProvider):
             return []
 
         ori_map = {
+            "horizontal": "landscape",
             "landscape": "landscape",
+            "vertical": "portrait",
             "portrait": "portrait",
-            "all": None,
+            "square": "square",
         }
         pexels_orientation = ori_map.get(orientation.lower(), "landscape")
 
@@ -64,7 +66,19 @@ class PexelsProvider(AssetProvider):
         try:
             with urllib.request.urlopen(req, timeout=12.0) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except Exception:
+        except urllib.error.HTTPError as err:
+            if err.code in (401, 403):
+                cfg.warn(f"Pexels API authentication failed ({err.code}): invalid or inactive PEXELS_API_KEY")
+            elif err.code == 429:
+                cfg.warn(f"Pexels API rate limit exceeded ({err.code}): quota reached")
+            else:
+                cfg.warn(f"Pexels API HTTP error {err.code}: {err.reason}")
+            return []
+        except urllib.error.URLError as err:
+            cfg.warn(f"Pexels API connection error: {err.reason}")
+            return []
+        except Exception as exc:
+            cfg.warn(f"Pexels API unexpected error: {exc}")
             return []
 
         photos_data = data.get("photos", [])

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -628,17 +629,119 @@ def video_params(path: Path) -> dict:
 
 # --------------------------------------------------------------- paths -----
 
+def validate_slug(slug: str, *, exit_on_error: bool = True) -> str:
+    """Validate project slug against directory traversal, illegal characters, and escape.
+
+    Returns the validated slug string. Raises ValueError (or SystemExit if exit_on_error=True)
+    if the slug is empty, malformed, or attempts to escape cfg.PROJECTS.
+    """
+    if not isinstance(slug, str):
+        msg = f"[prompt2render] project slug must be a string, got {type(slug).__name__}"
+        if exit_on_error:
+            sys.exit(msg)
+        raise ValueError(msg)
+
+    clean_slug = slug.strip()
+    if not clean_slug:
+        msg = "[prompt2render] project slug cannot be empty"
+        if exit_on_error:
+            sys.exit(msg)
+        raise ValueError(msg)
+
+    # Strictly disallow path separators, traversal dots, colons, null bytes
+    if any(sep in clean_slug for sep in ('/', '\\', '..', ':', '\0')):
+        msg = f"[prompt2render] invalid project slug '{slug}': path traversal and separators are forbidden"
+        if exit_on_error:
+            sys.exit(msg)
+        raise ValueError(msg)
+
+    # Must be valid safe identifier: alphanumeric start, only [a-zA-Z0-9._-]
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', clean_slug):
+        msg = f"[prompt2render] invalid project slug '{slug}': must start with alphanumeric and contain only [a-zA-Z0-9._-]"
+        if exit_on_error:
+            sys.exit(msg)
+        raise ValueError(msg)
+
+    # Explicit boundary check
+    target = (PROJECTS / clean_slug).resolve()
+    try:
+        target.relative_to(PROJECTS.resolve())
+    except ValueError:
+        msg = f"[prompt2render] invalid project slug '{slug}': escapes project directory"
+        if exit_on_error:
+            sys.exit(msg)
+        raise ValueError(msg)
+
+    return clean_slug
+
+
+def slugify(text: str) -> str:
+    """Convert arbitrary text into a safe, canonical project slug.
+
+    Lowercases, replaces spaces and separators with hyphens, strips invalid
+    characters, and trims leading/trailing non-alphanumerics.
+    Ensures output conforms to validate_slug rules.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    clean = text.strip().lower()
+    # Replace whitespace, underscores, and path separators with hyphens
+    clean = re.sub(r"[\s_/\\]+", "-", clean)
+    # Remove any character that is not alphanumeric, dot, or hyphen
+    clean = re.sub(r"[^a-z0-9.-]", "", clean)
+    # Collapse multiple consecutive hyphens
+    clean = re.sub(r"-+", "-", clean)
+    # Strip non-alphanumeric leading characters (e.g. leading dots or hyphens)
+    clean = re.sub(r"^[^a-z0-9]+", "", clean)
+    # Strip trailing dots or hyphens
+    clean = re.sub(r"[.-]+$", "", clean)
+    if not clean:
+        clean = "project"
+    return clean
+
+
 def project_dir(slug: str) -> Path:
-    directory = PROJECTS / slug
+    clean_slug = validate_slug(slug)
+    directory = PROJECTS / clean_slug
 
     if not directory.exists():
         sys.exit(
-            f"[prompt2render] no project '{slug}' — "
+            f"[prompt2render] no project '{clean_slug}' — "
             "run: python prompt2render.py new "
-            f"{slug}"
+            f"{clean_slug}"
         )
 
     return directory
+
+
+def safe_subprocess_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return a sanitized environment dictionary for subprocess execution of untrusted code.
+
+    Preserves standard execution variables while stripping sensitive API keys, tokens,
+    and passwords to prevent leakage to LLM-generated code.
+    """
+    safe_prefixes = (
+        "PATH", "SYSTEM", "WINDIR", "TEMP", "TMP", "COMSPEC", "PATHEXT",
+        "PYTHON", "LANG", "LC_", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+        "HOME", "OS", "PROCESSOR", "NUMBER_OF_PROCESSORS", "TERM",
+    )
+    forbidden_substrings = ("KEY", "SECRET", "TOKEN", "PASSWORD", "AUTH", "CREDENTIAL", "PRIVATE")
+
+    sanitized: dict[str, str] = {}
+    for k, v in os.environ.items():
+        k_upper = k.upper()
+        if any(sub in k_upper for sub in forbidden_substrings):
+            continue
+        if any(k_upper.startswith(prefix) for prefix in safe_prefixes):
+            sanitized[k] = v
+
+    if extra_env:
+        for k, v in extra_env.items():
+            k_upper = k.upper()
+            if not any(sub in k_upper for sub in forbidden_substrings):
+                sanitized[k] = v
+
+    return sanitized
 
 
 def say(message: str) -> None:
@@ -697,9 +800,12 @@ __all__ = [
     "probe_jobs",
     "project_dir",
     "run",
+    "safe_subprocess_env",
     "say",
+    "slugify",
     "stream_run",
     "try_run",
+    "validate_slug",
     "video_params",
     "warn",
 ]

@@ -381,7 +381,7 @@ def stage_external_assets_for_section(proj: Path, sec) -> tuple[str, str]:
 
 def build_prompt(script: Script, sec, sents: list[dict],
                  include_reveal: bool = True, previous_context: str = "",
-                 asset_hint: str = "") -> str:
+                 asset_hint: str = "", trace_hint: str = "") -> str:
     # Give the model the clock, not just the words. Without timings it cannot
     # tell that two adjacent cues are 30 seconds apart, and it leaves frames
     # sitting on screen long past the point they stop being interesting.
@@ -401,6 +401,8 @@ def build_prompt(script: Script, sec, sents: list[dict],
     {previous_context}
 
     {asset_hint}
+
+    {trace_hint}
 
     The narration is already recorded and measured. It runs {total:.0f} seconds.
     These are its sentences, with the time each is spoken and the index you must
@@ -1196,7 +1198,7 @@ def validate_manim_source(code: str) -> list[str]:
     ]
 
     if not scene_classes:
-        errors.append("no class inheriting from Scene (or ThreeDScene) was generated")
+        errors.append("no class inheriting from Scene was generated")
     elif len(scene_classes) != 1:
         errors.append("generate exactly one main Scene subclass")
 
@@ -1420,9 +1422,54 @@ CANVAS & 4-SLOT LAYOUT CONTRACT:
     3. Caption Buffer: y in [-3.8, -2.6] -> Dedicated subtitle area (e.g. DOWN * 3.15).
   * TEXT & CAPTION TRANSITIONS:
     - NEVER use Transform(text_a, text_b) on sentences or different text! In Manim, transforming different text morphs letter outlines and causes letters to explode and scatter across the screen.
-    - ALWAYS use FadeOut(caption, shift=UP*0.1) and FadeIn(new_caption, shift=UP*0.1) or ReplacementTransform.
+    - ALWAYS use FadeOut(caption, shift=UP*0.1) and FadeIn(new_caption, shift=UP*0.1) or ReplacementTransform for caption updates.
+    - For EQUATION morphing between related formulas: use TransformMatchingTex(eq1, eq2, run_time=1.2) — this correctly matches like terms.
     - REDUNDANCY PRINCIPLE: Do NOT put giant multi-line narration paragraphs on screen — subtitles are already handled. Use concise callout cards, step labels, and mathematical/anatomical terms.
   * OBJECT PERSISTENCE: Do NOT wipe the screen (FadeOut all) between sentences. Keep persistent diagrams alive and update their state cleanly.
+
+ANIMATION VOCABULARY — match the animation type to the semantic event:
+
+  FIRST APPEARANCE (elements drawing themselves onto the screen):
+    - Geometric shape:     Create(shape, run_time=0.8)
+    - Text/label:          Write(text, run_time=0.8)
+    - Data flow in:        FadeIn(mob, shift=UP*0.3, run_time=0.5)
+    - Border then fill:    DrawBorderThenFill(shape, run_time=1.0)
+
+  STATE CHANGE / VALUE UPDATE (element already on screen changes):
+    - Highlight a cell:    Indicate(cell, scale_factor=1.3, run_time=0.4,
+                               rate_func=rate_functions.there_and_back)
+    - Cell value changes:  cell.animate.become(new_cell)  (after Indicate)
+    - Equation transform:  TransformMatchingTex(eq1, eq2, run_time=1.2)
+    - Surround/focus:      Circumscribe(node, color=YELLOW, run_time=0.6)
+
+  PHYSICAL MOTION (elements moving across the canvas):
+    - Element slides:      mob.animate.move_to(target, run_time=0.5)
+    - Swap two elements:   AnimationGroup(
+                               a.animate.move_to(b_pos),
+                               b.animate.move_to(a_pos),
+                               run_time=0.6, rate_func=rate_functions.smooth)
+    - Path traversal:      MoveAlongPath(dot, path, run_time=1.0,
+                               rate_func=rate_functions.ease_in_out_sine)
+    - Sequential reveal:   AnimationGroup(*anims, lag_ratio=0.15)
+
+  EMPHASIS / ATTENTION (guide viewer focus):
+    - Spoken-term pulse:   Indicate(mob, run_time=0.3,
+                               rate_func=rate_functions.there_and_back)
+    - Final answer:        Flash(mob, color=GREEN, run_time=0.8)
+    - Error/wrong state:   Wiggle(mob, run_time=0.5)
+    - Camera zoom-in:      focus_on(self.camera.frame, hero, scale=0.6)
+
+  DISMISSAL (use sparingly — prefer keeping elements on screen):
+    - Remove a group:      FadeOut(group, shift=LEFT*0.5, run_time=0.4)
+    - Caption update:      FadeOut(cap, run_time=0.2) then FadeIn(new_cap, run_time=0.2)
+
+  EASING CURVES (choose the right feel for each motion type):
+    rate_functions.smooth           -> default, all-purpose S-curve
+    rate_functions.ease_in_out_sine -> physical element motion (swaps, slides)
+    rate_functions.there_and_back   -> pulse/blink highlights (Indicate)
+    rate_functions.rush_into        -> snap attention to an urgent element
+    rate_functions.ease_out_bounce  -> element "landing" at its destination
+    lag_ratio=0.15 in AnimationGroup -> staggered sequential reveal
 
 STRICT ZERO-OVERLAP COLLISION RULES (MANDATORY):
   1. NEVER PLACE TRAVELING PACKETS/TEXT INSIDE SERVER/LAPTOP BOXES:
@@ -1492,6 +1539,10 @@ def heal_manim_source(code: str) -> str:
         "BinaryTreeMobject",
         "CoordinateGridMobject",
         "MediaCard",
+        "NeuralNetworkMobject3D",
+        "StackMobject",
+        "QueueMobject",
+        "AnimatedCurveMobject",
     ]
     used_mobjects = [name for name in mobject_names if re.search(r'\b' + name + r'\b', code)]
     if used_mobjects and "prompt2render.assets.mobjects" not in code:
@@ -1715,11 +1766,22 @@ def select_renderer(sec) -> str:
     if os.environ.get("P2R_MANIM_VERSION") or os.environ.get("P2R_MANIM"):
         return "manim"
 
+    # Auto-route motion-heavy topics to Manim when P2R_MOTION_ROUTING is not disabled
+    if os.environ.get("P2R_MOTION_ROUTING", "1").strip().lower() not in ("0", "false", "off", "no"):
+        try:
+            from .topic_router import brief_suggests_motion
+            if brief_suggests_motion(brief):
+                cfg.say(f"section auto-routed to Manim (motion topic detected in brief)")
+                return "manim"
+        except Exception:
+            pass
+
     return "matplotlib"
 
 
 def build_manim_prompt(script: Script, sec, sents: list[dict],
-                       previous_context: str = "", asset_hint: str = "") -> str:
+                       previous_context: str = "", asset_hint: str = "",
+                       trace_hint: str = "") -> str:
     numbered = "\n".join(
         f"  [{i}] t={s['start']:6.1f}s -> {s['end']:6.1f}s  {s['text']}"
         for i, s in enumerate(sents)
@@ -1741,6 +1803,7 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
             ThreeDAxes(x_range=[-4, 4], y_range=[-4, 4], z_range=[-3, 3])
             Surface(lambda u, v: np.array([u, v, f(u, v)]), u_range=[-2, 2], v_range=[-2, 2])
             Sphere(radius=0.8), Cylinder(), Cube(side_length=1.5), Dot3D(point=[1, 2, 0]), Arrow3D()
+            NeuralNetworkMobject3D(layer_sizes=[...])
       * Camera moves and orbits:
             orbit_3d_camera(self, delta_theta=60, run_time=3.0)
             cinematic_3d_pitch_yaw(self, phi=70, theta=-45, zoom=1.1, run_time=2.0)
@@ -1773,6 +1836,8 @@ def build_manim_prompt(script: Script, sec, sents: list[dict],
         {previous_context}
 
     {asset_hint}
+
+    {trace_hint}
 
     NARRATION TIMELINE:
         Total duration: {total:.2f} seconds
@@ -1854,9 +1919,9 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
     ]
 
     repo_root = str(Path(__file__).parent.parent.resolve())
-    env = dict(os.environ)
-    current_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{current_pythonpath}" if current_pythonpath else repo_root
+    current_pythonpath = os.environ.get("PYTHONPATH", "")
+    pypath = f"{repo_root}{os.pathsep}{current_pythonpath}" if current_pythonpath else repo_root
+    env = cfg.safe_subprocess_env({"PYTHONPATH": pypath})
 
     try:
         proc = subprocess.run(
@@ -2006,8 +2071,19 @@ def _generate_manim(proj: Path, script: Script, index: int,
                 )
 
     _, manim_hint = stage_external_assets_for_section(proj, sec)
+    try:
+        from .topic_trace import detect_and_trace as _detect_and_trace
+        _trace_hint = _detect_and_trace(
+            getattr(sec, "anim", "") or "",
+            " ".join(s["text"] for s in sents),
+        ) or ""
+        if _trace_hint:
+            cfg.say(f"section {sec.stem}: injecting pre-computed algorithm trace")
+    except Exception:
+        _trace_hint = ""
     prompt = build_manim_prompt(
-        script, sec, sents, previous_context=previous_context, asset_hint=manim_hint
+        script, sec, sents, previous_context=previous_context,
+        asset_hint=manim_hint, trace_hint=_trace_hint,
     )
     feedback = extra_feedback
 
@@ -2065,6 +2141,22 @@ def _generate_manim(proj: Path, script: Script, index: int,
             cfg.say(
                 f"Manim section {sec.stem}: rejected — {errors[0][:120]}"
             )
+            # Try source-level nudge before paying for an LLM retry
+            try:
+                from .manim_nudge import nudge_source
+                nudged, n_fixes = nudge_source(raw)
+                if n_fixes > 0 and nudged != raw:
+                    cfg.say(f"Manim section {sec.stem}: auto-nudged {n_fixes} layout issues — re-validating")
+                    raw = nudged
+                    errors = validate_manim_source(raw)
+                    if not errors:
+                        dst.write_text(raw, encoding="utf-8")
+                        cfg.say(f"Manim section {sec.stem}: nudge resolved all errors — skipping LLM retry")
+                        attempt += 1
+                        continue
+            except Exception as _nudge_err:
+                cfg.warn(f"Manim section {sec.stem}: nudge skipped ({_nudge_err})")
+
             feedback = (
                 "\n\nRETURN THE COMPLETE CORRECTED MANIM MODULE.\n"
                 "Do not return a patch or explanation.\n\n"
@@ -2109,6 +2201,16 @@ def _generate_manim(proj: Path, script: Script, index: int,
             cfg.say(
                 f"Manim section {sec.stem}: render rejected — {err[:120]}"
             )
+            # Try source-level nudge on overlap errors before LLM retry
+            if any(kw in err.lower() for kw in ("overlap", "collision", "next_to", "same y")):
+                try:
+                    from .manim_nudge import nudge_source
+                    nudged, n_fixes = nudge_source(dst.read_text(encoding="utf-8"))
+                    if n_fixes > 0:
+                        cfg.say(f"Manim section {sec.stem}: nudge applied {n_fixes} fixes to overlap error")
+                        dst.write_text(nudged, encoding="utf-8")
+                except Exception:
+                    pass
             feedback = (
                 "\n\nRETURN THE COMPLETE CORRECTED MANIM MODULE.\n\n"
                 "RUNTIME/RENDER FAILURE:\n"
@@ -2238,7 +2340,18 @@ def _generate_matplotlib(proj: Path, script: Script, index: int, retries: int = 
                     )
 
     mat_hint, _ = stage_external_assets_for_section(proj, sec)
-    prompt = build_prompt(script, sec, sents, previous_context=previous_context, asset_hint=mat_hint)
+    try:
+        from .topic_trace import detect_and_trace as _detect_and_trace
+        _trace_hint = _detect_and_trace(
+            getattr(sec, "anim", "") or "",
+            " ".join(s["text"] for s in sents),
+        ) or ""
+        if _trace_hint:
+            cfg.say(f"section {sec.stem}: injecting pre-computed algorithm trace (matplotlib)")
+    except Exception:
+        _trace_hint = ""
+    prompt = build_prompt(script, sec, sents, previous_context=previous_context,
+                          asset_hint=mat_hint, trace_hint=_trace_hint)
     # extra_feedback: repair_router's harness-level cycle (prompt2render/harness/plugins/repair_router)
     # seeds diagnostics from *its own* prior repair attempts here — separate from this loop's own
     # internal `feedback`, which is still exactly the same reject-and-retry text as before.

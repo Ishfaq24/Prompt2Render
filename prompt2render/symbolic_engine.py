@@ -400,3 +400,73 @@ def solve_equation_step(
             f"{var} = " + ", ".join(sol_latex) if sol_latex else "\\text{No solution}"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# 5. 3D Neural Network Layout Solver
+# ---------------------------------------------------------------------------
+
+def compute_neural_network_layout_3d(
+    layer_sizes: list[int],
+    *,
+    layer_spacing: float = 2.2,
+    node_spacing: float = 0.85,
+    z_depth: float = 0.0,
+) -> dict:
+    """Compute guaranteed collision-free 3D (x, y, z) coordinates for a neural network.
+
+    Positions nodes in a left-to-right layer arrangement. Each layer is centred
+    vertically (y-axis) so the whole network is centred at (0, 0, z_depth).
+
+    Args:
+        layer_sizes:    Number of nodes per layer, e.g. [3, 4, 4, 2].
+        layer_spacing:  Horizontal gap between successive layers (Manim units).
+        node_spacing:   Vertical gap between nodes in the same layer.
+        z_depth:        Fixed z-coordinate for all nodes (use 0.0 for a flat 2D-in-3D layout).
+
+    Returns::
+        {
+          "layers": [[(x, y, z), ...], ...],   # node positions, outer=layer, inner=node
+          "edges": [(li, ni, lj, nj), ...],     # fully-connected layer pairs
+          "bounds": {"x": (x_min, x_max), "y": (y_min, y_max)},
+          "layer_sizes": layer_sizes,
+        }
+    """
+    if not layer_sizes or any(n < 1 for n in layer_sizes):
+        raise ValueError("layer_sizes must be a non-empty list of positive integers")
+
+    n_layers = len(layer_sizes)
+    # Centre all layers around x=0
+    total_width = (n_layers - 1) * layer_spacing
+    x_start = -total_width / 2.0
+
+    layers: list[list[tuple[float, float, float]]] = []
+    for li, n_nodes in enumerate(layer_sizes):
+        x = x_start + li * layer_spacing
+        total_height = (n_nodes - 1) * node_spacing
+        y_start = total_height / 2.0
+        layer_positions = []
+        for ni in range(n_nodes):
+            y = y_start - ni * node_spacing
+            layer_positions.append((round(x, 4), round(y, 4), round(z_depth, 4)))
+        layers.append(layer_positions)
+
+    # Fully-connected edges between adjacent layers
+    edges: list[tuple[int, int, int, int]] = []
+    for li in range(n_layers - 1):
+        for ni in range(layer_sizes[li]):
+            for nj in range(layer_sizes[li + 1]):
+                edges.append((li, ni, li + 1, nj))
+
+    all_x = [pos[0] for layer in layers for pos in layer]
+    all_y = [pos[1] for layer in layers for pos in layer]
+
+    return {
+        "layers": layers,
+        "edges": edges,
+        "bounds": {
+            "x": (min(all_x), max(all_x)),
+            "y": (min(all_y), max(all_y)),
+        },
+        "layer_sizes": layer_sizes,
+    }

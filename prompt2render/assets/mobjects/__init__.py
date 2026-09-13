@@ -52,6 +52,27 @@ __all__ = [
     "ArrayGrid",
     "FormulaCard",
     "KeyBadge",
+    "NeuralNetworkMobject3D",
+    "StackMobject",
+    "QueueMobject",
+    "AnimatedCurveMobject",
 ]
 
 
+# Phase 5 — 3D neural network
+try:
+    from .neural_3d import NeuralNetworkMobject3D
+except Exception:
+    pass
+
+# Phase 6 — Algorithm widgets
+try:
+    from .algorithm_widgets import StackMobject, QueueMobject
+except Exception:
+    pass
+
+# Phase 6 — Math widgets
+try:
+    from .math_widgets import AnimatedCurveMobject
+except Exception:
+    pass

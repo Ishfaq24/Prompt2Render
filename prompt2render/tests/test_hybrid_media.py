@@ -14,7 +14,11 @@ from prompt2render.video_conform import (
 )
 
 
-def test_script_multimedia_parsing():
+def test_script_multimedia_parsing(monkeypatch):
+    monkeypatch.delenv("P2R_RENDERER", raising=False)
+    monkeypatch.delenv("P2R_DEFAULT_RENDERER", raising=False)
+    monkeypatch.delenv("P2R_MANIM", raising=False)
+    monkeypatch.delenv("P2R_MANIM_VERSION", raising=False)
     content = """---
 title: Hybrid Video Test
 ---
@@ -96,6 +100,26 @@ Examining optimization landscape.
         assert "ThreeDScene" in prompt
         assert "set_camera_orientation" in prompt
         assert "orbit_3d_camera" in prompt
+
+
+def test_validate_threedscene_passes_static_verifier():
+    from prompt2render.scenes import validate_manim_source
+
+    code = """
+from manim import *
+import numpy as np
+from prompt2render.cinematic import orbit_3d_camera, create_3d_grid_plane
+
+class Scene03(ThreeDScene):
+    def construct(self):
+        self.set_camera_orientation(phi=75 * DEGREES, theta=-45 * DEGREES)
+        axes = ThreeDAxes()
+        self.play(Create(axes))
+        orbit_3d_camera(self, delta_theta=30.0, run_time=2.0)
+        self.wait(1)
+"""
+    errors = validate_manim_source(code)
+    assert not errors, f"Expected no errors, got: {errors}"
 
 
 def test_media_card_creation():

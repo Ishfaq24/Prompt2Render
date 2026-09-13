@@ -53,10 +53,10 @@ pip install -r requirements.txt
 # Manim version is pinned in requirements.txt and mirrored by
 # prompt2render/manimver.py. P2R_MANIM_VERSION installs a different one
 # (0.19.0 reproduces the Code2Video comparison - docs/MANIM_EXPERIMENT_PROTOCOL.md).
-MANIM_VERSION="${P2R_MANIM_VERSION:-0.21.0}"
-
-say "installing Manim Community ${MANIM_VERSION} (drives the --manim scene backend and the 'prompt2render manim' escape hatch)"
-pip install "manim==${MANIM_VERSION}"
+if [ -n "${P2R_MANIM_VERSION:-}" ]; then
+  say "installing Manim Community ${P2R_MANIM_VERSION} override"
+  pip install "manim==${P2R_MANIM_VERSION}"
+fi
 
 # ------------------------------------------------------------------- .env
 if [ ! -f .env ]; then

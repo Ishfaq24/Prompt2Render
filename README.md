@@ -11,7 +11,7 @@
 
 > **Prompt2Render** is an industrial, local-first, end-to-end video synthesis pipeline designed for producing frame-accurate, mathematically animated, and human-narrated educational videos.
 >
-> Unlike unconstrained "prompt-to-video" diffusion or raw LLM-to-Manim wrappers, Prompt2Render combines **sample-accurate neural voice synthesis (Kokoro-82M)**, **word-level force alignment (Whisper)**, a **closed-loop layout critic with pixel geometry auditing**, and an **autonomous self-correction harness** to guarantee production-ready video artifacts without text collisions, audio drift, or hallucinatory layouts.
+> Unlike unconstrained "prompt-to-video" diffusion or raw LLM-to-Manim wrappers, Prompt2Render combines **sample-accurate neural voice synthesis (Kokoro-82M)**, **word-level force alignment (Whisper)**, a **closed-loop layout critic with pixel geometry auditing**, and an **autonomous self-correction harness** to enforce rigorous defect containment, automated geometric layout auditing, and synchronized multi-modal video synthesis.
 
 > **Repository note:** rendered media, downloaded models, and per-project build outputs are generated locally and are intentionally excluded from Git. Showcase paths below therefore apply after generating the corresponding artifacts in a working checkout.
 
@@ -55,12 +55,12 @@ Prompt2Render outputs fully mastered 1080p videos alongside inspectable intermed
 
 | Video Output | Description | Resolution & Profile | Direct Link |
 | :--- | :--- | :--- | :--- |
-| **Complete Final Master** | Full multi-section explainer video with master audio, subtitles, and chapter markers. | 1080p @ 30fps / -14 LUFS | [▶ Watch final.mp4](final.mp4) |
-| **Cinematic Bubble Sort** | Cinematic algorithm visualization generated with synchronized auditory sound effects (foley). | 480p15 / 1080p Preview | [▶ Watch BubbleSortCinematic.mp4](BubbleSortCinematic_WithSound.mp4) |
-| **Modular Section 01** | Section 1 individual cut clip showing intro text, LaTeX equations, and vector animations. | 480p15 / 1080p | [▶ Watch Scene01.mp4](Scene01.mp4) |
-| **Modular Section 02** | Section 2 breakdown with highlighted pointer logic and animated array elements. | 480p15 / 1080p | [▶ Watch Scene02.mp4](media/videos/02/480p15/Scene02.mp4) |
-| **Modular Section 03** | Section 3 algorithmic complexity analysis and logarithmic curve plotting. | 480p15 / 1080p | [▶ Watch Scene03.mp4](Scene03.mp4) |
-| **High-Fidelity 1080p60** | 60 FPS master render demonstrating smooth Manim vector transformations and sharp typography. | 1080p @ 60fps | [▶ Watch scene_01_1080p60.mp4](scene_01.mp4) |
+| **Complete Final Master** | Full multi-section explainer video with master audio, subtitles, and chapter markers. | 1080p @ 30fps / -14 LUFS | [▶ Watch final.mp4](media/showcase/videos/final.mp4) |
+| **Cinematic Bubble Sort** | Cinematic algorithm visualization generated with synchronized auditory sound effects (foley). | 480p15 / 1080p Preview | [▶ Watch BubbleSortCinematic.mp4](media/showcase/videos/BubbleSortCinematic_WithSound.mp4) |
+| **Modular Section 01** | Section 1 individual cut clip showing intro text, LaTeX equations, and vector animations. | 480p15 / 1080p | [▶ Watch Scene01.mp4](media/showcase/videos/Scene01.mp4) |
+| **Modular Section 02** | Section 2 breakdown with highlighted pointer logic and animated array elements. | 480p15 / 1080p | [▶ Watch Scene02.mp4](media/showcase/videos/Scene02.mp4) |
+| **Modular Section 03** | Section 3 algorithmic complexity analysis and logarithmic curve plotting. | 480p15 / 1080p | [▶ Watch Scene03.mp4](media/showcase/videos/Scene03.mp4) |
+| **High-Fidelity 1080p60** | 60 FPS master render demonstrating smooth Manim vector transformations and sharp typography. | 1080p @ 60fps | [▶ Watch scene_01_1080p60.mp4](media/showcase/videos/scene_01.mp4) |
 
 > 💡 *Note: If viewing on GitHub, click the links above or clone the repository to play the media directly in your media player.*
 
@@ -68,29 +68,29 @@ Prompt2Render outputs fully mastered 1080p videos alongside inspectable intermed
 
 ### Frame-Accurate Visual Gallery
 
-Below are production render stills and layout audit inspections generated in the repository root:
+Below are production render stills and layout audit inspections generated in the repository:
 
 | Scene 01: Concept Introduction | Scene 02: Core Mechanics | Scene 03: Algorithmic Steps |
 | :---: | :---: | :---: |
-| ![Scene 01](Scene01_ManimCE_v0.19.0.png) | ![Scene 02](Scene02_ManimCE_v0.19.0.png) | ![Scene 03](Scene03_ManimCE_v0.19.0.png) |
+| ![Scene 01](media/showcase/images/Scene01_ManimCE_v0.19.0.png) | ![Scene 02](media/showcase/images/Scene02_ManimCE_v0.19.0.png) | ![Scene 03](media/showcase/images/Scene03_ManimCE_v0.19.0.png) |
 | *LaTeX typography & layout safe-zones* | *Dynamic geometric structures* | *Step-by-step state transformation* |
 
 | Scene 04: Edge Cases & Proof | Scene 05: Performance Profiling | Scene 06: Final Summary & Takeaways |
 | :---: | :---: | :---: |
-| ![Scene 04](Scene04_ManimCE_v0.19.0.png) | ![Scene 05](Scene05_ManimCE_v0.19.0.png) | ![Scene 06](Scene06_ManimCE_v0.19.0.png) |
+| ![Scene 04](media/showcase/images/Scene04_ManimCE_v0.19.0.png) | ![Scene 05](media/showcase/images/Scene05_ManimCE_v0.19.0.png) | ![Scene 06](media/showcase/images/Scene06_ManimCE_v0.19.0.png) |
 | *Graph & tree traversal visuals* | *Data structures & complexity curves* | *Synthesized recap with safe margins* |
 
 #### Layout Criticism & Visual Verification Stills
-The critic verifies pixel geometry to ensure labels, arrows, and visual components never collide. These audit frames are stored in the repository root:
+The critic verifies pixel geometry to ensure labels, arrows, and visual components never collide. These audit frames are stored in `media/showcase/images/`:
 
 | Scene 1 Audit (Frame 10) | Scene 1 Audit (Frame 32) | Scene 1 Audit (Frame 48) |
 | :---: | :---: | :---: |
-| ![Audit S1 F10](test_fixed_s1_f10.png) | ![Audit S1 F32](test_fixed_s1_f32.png) | ![Audit S1 F48](test_fixed_s1_f48.png) |
+| ![Audit S1 F10](media/showcase/images/test_fixed_s1_f10.png) | ![Audit S1 F32](media/showcase/images/test_fixed_s1_f32.png) | ![Audit S1 F48](media/showcase/images/test_fixed_s1_f48.png) |
 | *Initial geometry check* | *Passed zero-overlap collision gate* | *Final scene verification* |
 
 | Scene 2 Audit (Frame 12) | Scene 2 Audit (Frame 30) | Scene 2 Audit (Frame 40) |
 | :---: | :---: | :---: |
-| ![Audit S2 F12](test_fixed_s2_f12.png) | ![Audit S2 F30](test_fixed_s2_f30.png) | ![Audit S2 F40](test_fixed_s2_f40.png) |
+| ![Audit S2 F12](media/showcase/images/test_fixed_s2_f12.png) | ![Audit S2 F30](media/showcase/images/test_fixed_s2_f30.png) | ![Audit S2 F40](media/showcase/images/test_fixed_s2_f40.png) |
 | *Text-box boundary verification* | *Intermediate layout verification* | *Final scene verification* |
 
 
@@ -523,6 +523,37 @@ python prompt2render.py doctor --render-test
 | **`publish`** | `python prompt2render.py publish <slug>` | Builds the release packet: YouTube description, thumbnail, checklist. | None |
 | **`doctor`** | `python prompt2render.py doctor` | Audits system dependencies, Manim, FFmpeg, LaTeX, and models. | `--render-test` |
 | **`models`** | `python prompt2render.py models` | Pre-downloads required Whisper ASR, Kokoro, and VAD weights. | `--asr base.en`, `--kokoro` |
+| **`serve`** | `python prompt2render.py serve` | Launches the local FastAPI inspection dashboard and preview studio. | `--host 127.0.0.1`, `--port 8787` |
+
+---
+
+## 📊 Empirical Benchmark & Ground-Truth Evaluation
+
+To validate multi-modal animation, 3D camera choreography, B-roll conforming, and real-time audio synchronization, Prompt2Render was evaluated on a comprehensive 9-section benchmark: **"How a Neural Network Learns: From Input to Prediction"**.
+
+### End-to-End Benchmark Execution Matrix
+
+| Sec | Chapter Title | Media Architecture | Engine | Rendered Output |
+|:---:|:---|:---:|:---:|:---|
+| **01** | The Problem: Bridging Pixels to Perception | Split Stage Comparison | Manim + SplitStage | `01/scene_01.mp4` (19.6s) |
+| **02** | The Input Layer: Numerical Feature Mapping | 2D Continuous Vector | Manim CE 0.19.0 | `02/scene_02.mp4` (21.2s) |
+| **03** | Hidden Layers: Folding in 3D Space | 3D Graph + Azimuth Orbit | Manim `ThreeDScene` | `03/scene_03.mp4` (18.2s) |
+| **04** | Weights & Biases: Synaptic Knobs | Dynamic Synapse Pulses | Manim CE 0.19.0 | `04/scene_04.mp4` (18.0s) |
+| **05** | Forward Propagation: Cascading Signals | ReLU Non-linear Flow | Manim CE 0.19.0 | `05/scene_05.mp4` (19.3s) |
+| **06** | Prediction: Probability Distribution | Softmax Bar Chart | Manim + SplitStage | `06/scene_06.mp4` (17.1s) |
+| **07** | Training: Navigating the 3D Loss Landscape | 3D Parametric Surface | Manim `ThreeDScene` | `07/scene_07.mp4` (16.5s) |
+| **08** | Real-World Applications | 1080p 30fps B-Roll Video | FFmpeg Video Conformer | `08/scene_08.mp4` (17.7s) |
+| **09** | Summary: Architecture of Artificial Thought | Infographic Stage | Manim CE 0.19.0 | `09/scene_09.mp4` (18.6s) |
+
+### Measured Empirical Verification Metrics (`qc.json`)
+
+- **Master Output**: `projects/how-neural-networks-learn/out/final.mp4` (7.24 MB, 166.70s / 2.78 min)
+- **Audio-to-Video Length Delta**: **25 ms** (Video 166.700s vs Audio 166.725s)
+- **Per-Section Sync**: **9 / 9 sections** aligned to exact audio sentence boundaries
+- **Loudness Compliance**: **-14.1 LUFS**, true peak **-1.7 dBTP** (target: -14.0 LUFS EBU R128 / YouTube)
+- **Audio Clipping & Dead Air**: **0 clipped samples**, 0 stretches of dead air > 1.5s
+- **Caption Drift**: **0 ms max drift**, p95 **0 ms** across 25 sentences / 47 cards
+- **Layout & Geometry Audit**: All bounding boxes and continuous 3D transforms verified
 
 ---
 
@@ -533,10 +564,10 @@ The final gate `prompt2render check --strict` validates the output against produ
 ```
 [PASS] Codec Check        : H.264 High Profile / AAC 48kHz Stereo
 [PASS] Geometry Check     : Exactly 1920x1080 @ 30.00 fps
-[PASS] Loudness Gate      : -14.0 LUFS Integrated Loudness (+/- 0.5 LUFS)
+[PASS] Loudness Gate      : -14.1 LUFS Integrated Loudness (+/- 0.5 LUFS)
 [PASS] True Peak Check    : <= -1.0 dBFS True Peak (Zero clipping)
 [PASS] Caption Sync Drift : Max drift < 42ms across all sentence boundaries
-[PASS] Visual Overlap     : 0 pixel-level bounding-box intersections detected
+[PASS] Visual Overlap     : Continuous bounding-box collision detection and geometry audit
 ```
 
 ---
