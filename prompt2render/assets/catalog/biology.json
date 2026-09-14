@@ -118,6 +118,9 @@
         "electrocardiogram",
         "arrhythmia",
         "conduction",
+        "pacemaker",
+        "sinoatrial",
+        "purkinje",
         "necrosis",
         "infarction"
       ],

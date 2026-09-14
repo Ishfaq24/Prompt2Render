@@ -304,6 +304,36 @@ def _thumbnail(
     )
 
 
+def _thumbnail_from_video(
+    video_path: Path,
+    dst: Path,
+) -> None:
+    """Extract a representative hero frame from the video as thumbnail source."""
+    if not video_path.exists():
+        return
+    try:
+        dur = cfg.duration(video_path)
+        seek_s = min(max(2.0, dur * 0.25), max(0.5, dur - 1.0))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        temporary = dst.with_name(dst.stem + ".tmp.png")
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-ss", f"{seek_s:.3f}",
+            "-i", str(video_path),
+            "-vframes", "1",
+            "-q:v", "2",
+            str(temporary),
+        ]
+        cfg.run(cmd)
+        if temporary.exists() and temporary.stat().st_size > 1024:
+            temporary.replace(dst)
+            cfg.say(f"thumbnail extracted from video at {seek_s:.1f}s -> {dst.name}")
+        else:
+            temporary.unlink(missing_ok=True)
+    except Exception as exc:
+        cfg.warn(f"thumbnail extraction failed: {exc}")
+
+
 def _section_rows(
     script: Script,
     rows: list[dict],
@@ -919,6 +949,11 @@ def finish_manim(
 
     total = cfg.duration(
         final
+    )
+
+    _thumbnail_from_video(
+        final,
+        out / "thumb_source.png",
     )
 
     cfg.say(

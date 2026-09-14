@@ -31,12 +31,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from prompt2render import cfg
-from prompt2render.harness_old.context import SceneContext
-from prompt2render.harness_old.events import EventBus
-from prompt2render.harness_old.loader import DEFAULT_CONFIG_PATH, load_config, resolve_order
-from prompt2render.harness_old.logging_ import StructuredLogger
-from prompt2render.harness_old.plugins import NON_PIPELINE, REGISTRY
-from prompt2render.harness_old.runner import GateFailure, HarnessRunner
+from prompt2render.harness.context import SceneContext
+from prompt2render.harness.events import EventBus
+from prompt2render.harness.loader import DEFAULT_CONFIG_PATH, load_config, resolve_order
+from prompt2render.harness.logging_ import StructuredLogger
+from prompt2render.harness.plugins import NON_PIPELINE, REGISTRY
+from prompt2render.harness.runner import GateFailure, HarnessRunner
 
 CONDITIONS = [
     {"spatial": False, "lifecycle": False},
@@ -122,30 +122,8 @@ def run_condition(slug: str, spatial_on: bool, lifecycle_on: bool, base_config: 
     return rows
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--slug", default="hash-tables")
-    ap.add_argument("--config", type=Path, default=None)
-    ap.add_argument("--out", type=Path, default=None)
-    a = ap.parse_args()
-
-    cfg.load_env()
-    base_config = load_config(a.config or DEFAULT_CONFIG_PATH)
-
-    all_rows = []
-    for condition in CONDITIONS:
-        print(f"[ablation] condition spatial={condition['spatial']} "
-              f"lifecycle={condition['lifecycle']}")
-        rows = run_condition(a.slug, condition["spatial"], condition["lifecycle"], base_config)
-        all_rows.extend(rows)
-        assert all(r["repair_cycles_used"] == 0 for r in rows), \
-            "Phase A invariant violated: repair cycles were used"
-
-    out_path = a.out or (cfg.project_dir(a.slug) / "build" / "harness" / "ablation_results.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(all_rows, indent=2), encoding="utf-8")
-    print(f"[ablation] wrote {len(all_rows)} rows to {out_path}")
-
+from prompt2render.tools.ablation_runner import run_ablation, main
 
 if __name__ == "__main__":
     main()
+
