@@ -204,154 +204,171 @@ only once the step has reached it:
 
 
 def stage_external_assets_for_section(proj: Path, sec) -> tuple[str, str]:
-    """Retrieve external realistic assets from configured providers (Pixabay, Unsplash, Pexels),
-    stage them to build/assets/, and return prompt hints for (matplotlib, manim)."""
+    """Retrieve external realistic assets or curated catalog diagrams for a scene section.
+
+    Priority hierarchy:
+      1. Local project assets (`projects/<proj>/assets/`)
+      2. Curated domain vector/diagram catalog (`prompt2render/assets/catalog/`)
+      3. External verified stock assets (Pixabay, Unsplash, Pexels) with relevance gating
+    """
     if os.environ.get("P2R_DISABLE_EXTERNAL_ASSETS", "").strip().lower() in ("1", "true", "yes"):
         return "", ""
     if getattr(sec, "assets", True) is False:
         return "", ""
 
-    try:
-        from .assets.providers import get_available_providers, search_all_providers
-        from .assets.cache import AssetCache
-        from .assets.preprocessor import prepare_scene_asset
-        from .harness.plugins.retriever_external_asset import _extract_asset_queries
-    except Exception:
-        return "", ""
-
-    providers = get_available_providers(allow_mock_fallback=False)
+    import shutil
 
     anim_text = getattr(sec, "anim", "") or ""
     narr_text = getattr(sec, "narration", "") or ""
-    queries = _extract_asset_queries(anim_text, narr_text)
+    combined_text = f"{anim_text} {narr_text}".lower()
 
     build_assets = proj / "build" / "assets"
     build_assets.mkdir(parents=True, exist_ok=True)
-    cache = AssetCache()
 
-    hits = []
-    if providers and queries:
-        for q_info in queries:
-            q = q_info["query"]
-            t = q_info.get("type", "photo")
-            found = search_all_providers(query=q, providers=providers, limit_per_provider=2, asset_type=t)
-            for f in found:
-                if f.id not in {h[0].id for h in hits}:
-                    hits.append((f, q_info.get("role", "card")))
-            if len(hits) >= 2:
-                break
+    matplot_hints: list[str] = []
+    manim_hints: list[str] = []
 
-    matplot_hints = []
-    manim_hints = []
-
-    for hit, role in hits:
-        try:
-            prov = next((p for p in providers if p.name == hit.provider), providers[0])
-            cached_raw = cache.fetch_or_download(hit, prov)
-            staged_name = f"{sec.stem}_{hit.provider}_{hit.id.split('_', 1)[-1]}.png"
-            staged_file = build_assets / staged_name
-
-            prepare_scene_asset(
-                cached_raw,
-                staged_file,
-                role=role,
-                target_width=1920 if role == "background" else 960,
-                target_height=1080 if role == "background" else 540,
-            )
-
-            rel_staged = f"assets/{staged_name}"
-            matplot_hints.append(
-                f"- Asset '{rel_staged}': Real-world photo of {hit.title} by {hit.author} ({hit.provider.title()}).\n"
-                f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
-            )
-            abs_staged = staged_file.resolve().as_posix()
-            manim_hints.append(
-                f"- Asset '{abs_staged}': Real-world photo of {hit.title} by {hit.author} ({hit.provider.title()}).\n"
-                f"  Display with:\n"
-                f"    img = ImageMobject('{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
-                f"    self.play(FadeIn(img))"
-            )
-        except Exception:
-            continue
-
-    # Fallback to local project assets and curated built-in catalog if no provider hits
-    if not matplot_hints and not manim_hints:
-        import shutil
-        combined_text = f"{anim_text} {narr_text}".lower()
-
-        # Check local project assets in proj / "assets"
-        local_assets_dir = proj / "assets"
-        if local_assets_dir.is_dir():
-            for p in sorted(local_assets_dir.glob("*.*")):
-                if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".webp"}:
-                    stem_words = p.stem.lower().replace("_", " ").replace("-", " ").split()
-                    if any(w in combined_text for w in stem_words if len(w) > 2):
-                        staged_name = f"{sec.stem}_{p.name}"
-                        staged_file = build_assets / staged_name
-                        try:
-                            shutil.copyfile(p, staged_file)
-                            abs_staged = staged_file.resolve().as_posix()
-                            rel_staged = f"assets/{staged_name}"
-                            if p.suffix.lower() == ".svg":
-                                manim_hints.append(
-                                    f"- Vector Diagram '{abs_staged}': Realistic diagram of {p.stem.replace('_', ' ').title()}.\n"
-                                    f"  Display with:\n"
-                                    f"    diag = SVGMobject(r'{abs_staged}').scale_to_fit_width(6.0).move_to(ORIGIN)\n"
-                                    f"    self.play(FadeIn(diag))"
-                                )
-                            else:
-                                manim_hints.append(
-                                    f"- Visual Asset '{abs_staged}': Reference graphic of {p.stem.replace('_', ' ').title()}.\n"
-                                    f"  Display with:\n"
-                                    f"    img = ImageMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
-                                    f"    self.play(FadeIn(img))"
-                                )
-                            matplot_hints.append(
-                                f"- Asset '{rel_staged}': Reference graphic.\n"
-                                f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
+    # -------------------------------------------------------------------------
+    # Tier 1: Local project assets in proj / "assets"
+    # -------------------------------------------------------------------------
+    local_assets_dir = proj / "assets"
+    if local_assets_dir.is_dir():
+        for p in sorted(local_assets_dir.glob("*.*")):
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".svg", ".webp"}:
+                stem_words = p.stem.lower().replace("_", " ").replace("-", " ").split()
+                if any(w in combined_text for w in stem_words if len(w) > 2):
+                    staged_name = f"{sec.stem}_{p.name}"
+                    staged_file = build_assets / staged_name
+                    try:
+                        shutil.copyfile(p, staged_file)
+                        abs_staged = staged_file.resolve().as_posix()
+                        rel_staged = f"assets/{staged_name}"
+                        if p.suffix.lower() == ".svg":
+                            manim_hints.append(
+                                f"- Vector Diagram '{abs_staged}': Realistic diagram of {p.stem.replace('_', ' ').title()}.\n"
+                                f"  Display with:\n"
+                                f"    diag = SVGMobject(r'{abs_staged}').scale_to_fit_width(6.0).move_to(ORIGIN)\n"
+                                f"    self.play(FadeIn(diag))"
                             )
-                            break
-                        except Exception:
-                            pass
+                        else:
+                            manim_hints.append(
+                                f"- Visual Asset '{abs_staged}': Reference graphic of {p.stem.replace('_', ' ').title()}.\n"
+                                f"  Display with:\n"
+                                f"    img = ImageMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
+                                f"    self.play(FadeIn(img))"
+                            )
+                        matplot_hints.append(
+                            f"- Asset '{rel_staged}': Reference graphic.\n"
+                            f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
+                        )
+                        break
+                    except Exception:
+                        pass
 
-        # Check built-in catalog if still no hints
-        if not manim_hints:
-            try:
-                from .assets.loader import load_catalog
-                catalog = load_catalog()
-                for asset_id, asset_def in catalog.items():
-                    if any(kw in combined_text for kw in asset_def.keywords):
-                        f_path = asset_def.resolved_file_path()
-                        if f_path and f_path.is_file():
-                            staged_name = f"{sec.stem}_{f_path.name}"
-                            staged_file = build_assets / staged_name
-                            try:
-                                shutil.copyfile(f_path, staged_file)
-                                abs_staged = staged_file.resolve().as_posix()
-                                rel_staged = f"assets/{staged_name}"
-                                if f_path.suffix.lower() == ".svg":
-                                    manim_hints.append(
-                                        f"- Vector Asset '{abs_staged}': Realistic anatomical/scientific diagram of {asset_def.name}.\n"
-                                        f"  Display with:\n"
-                                        f"    diag = SVGMobject(r'{abs_staged}').scale_to_fit_width(6.0).move_to(ORIGIN)\n"
-                                        f"    self.play(FadeIn(diag))"
-                                    )
-                                else:
-                                    manim_hints.append(
-                                        f"- Visual Asset '{abs_staged}': Graphic of {asset_def.name}.\n"
-                                        f"  Display with:\n"
-                                        f"    img = ImageMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
-                                        f"    self.play(FadeIn(img))"
-                                    )
-                                matplot_hints.append(
-                                    f"- Asset '{rel_staged}': {asset_def.name}.\n"
-                                    f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
-                                )
-                                break
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+    # -------------------------------------------------------------------------
+    # Tier 2: Built-in curated catalog (heart_anatomy, coronary_artery, etc.)
+    # -------------------------------------------------------------------------
+    if not manim_hints:
+        try:
+            from .assets.loader import load_catalog
+            from .harness.plugins.retriever_asset_rag import match_assets
+            catalog = load_catalog()
+            matched_defs = match_assets(combined_text, catalog, max_matches=1, mode="hybrid")
+            if matched_defs:
+                asset_def = matched_defs[0]
+                f_path = asset_def.resolved_file_path()
+                if f_path and f_path.is_file():
+                    staged_name = f"{sec.stem}_{f_path.name}"
+                    staged_file = build_assets / staged_name
+                    try:
+                        shutil.copyfile(f_path, staged_file)
+                        abs_staged = staged_file.resolve().as_posix()
+                        rel_staged = f"assets/{staged_name}"
+                        if f_path.suffix.lower() == ".svg":
+                            manim_hints.append(
+                                f"- Vector Asset '{abs_staged}': Realistic anatomical/scientific diagram of {asset_def.name}.\n"
+                                f"  Display with:\n"
+                                f"    diag = SVGMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
+                                f"    self.play(FadeIn(diag))"
+                            )
+                        else:
+                            manim_hints.append(
+                                f"- Visual Asset '{abs_staged}': Graphic of {asset_def.name}.\n"
+                                f"  Display with:\n"
+                                f"    img = ImageMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
+                                f"    self.play(FadeIn(img))"
+                            )
+                        matplot_hints.append(
+                            f"- Asset '{rel_staged}': {asset_def.name}.\n"
+                            f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------------------
+    # Tier 3: External stock providers with strict semantic relevance gating
+    # -------------------------------------------------------------------------
+    if not manim_hints and not matplot_hints:
+        try:
+            from .assets.providers import get_available_providers, search_all_providers
+            from .assets.cache import AssetCache
+            from .assets.preprocessor import prepare_scene_asset
+            from .assets.relevance import is_asset_relevant
+            from .harness.plugins.retriever_external_asset import _extract_asset_queries
+
+            providers = get_available_providers(allow_mock_fallback=False)
+            queries = _extract_asset_queries(anim_text, narr_text)
+
+            cache = AssetCache()
+            hits = []
+
+            if providers and queries:
+                for q_info in queries:
+                    q = q_info["query"]
+                    t = q_info.get("type", "photo")
+                    found = search_all_providers(query=q, providers=providers, limit_per_provider=3, asset_type=t)
+                    for f in found:
+                        is_rel, score, reason = is_asset_relevant(f, f"{anim_text} {narr_text}")
+                        if not is_rel:
+                            continue
+                        if f.id not in {h[0].id for h in hits}:
+                            hits.append((f, q_info.get("role", "card")))
+                    if len(hits) >= 2:
+                        break
+
+            for hit, role in hits:
+                try:
+                    prov = next((p for p in providers if p.name == hit.provider), providers[0])
+                    cached_raw = cache.fetch_or_download(hit, prov)
+                    staged_name = f"{sec.stem}_{hit.provider}_{hit.id.split('_', 1)[-1]}.png"
+                    staged_file = build_assets / staged_name
+
+                    prepare_scene_asset(
+                        cached_raw,
+                        staged_file,
+                        role=role,
+                        target_width=1920 if role == "background" else 960,
+                        target_height=1080 if role == "background" else 540,
+                    )
+
+                    rel_staged = f"assets/{staged_name}"
+                    matplot_hints.append(
+                        f"- Asset '{rel_staged}': Real-world photo of {hit.title} by {hit.author} ({hit.provider.title()}).\n"
+                        f"  Draw with: k.draw_asset(ax, '{rel_staged}', x=5.0, y=4.5, width=6.5, height=4.2)"
+                    )
+                    abs_staged = staged_file.resolve().as_posix()
+                    manim_hints.append(
+                        f"- Asset '{abs_staged}': Real-world photo of {hit.title} by {hit.author} ({hit.provider.title()}).\n"
+                        f"  Display with:\n"
+                        f"    img = ImageMobject(r'{abs_staged}').scale_to_fit_width(5.5).to_edge(LEFT)\n"
+                        f"    self.play(FadeIn(img))"
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     mat_block = ""
     if matplot_hints:
@@ -364,16 +381,13 @@ def stage_external_assets_for_section(proj: Path, sec) -> tuple[str, str]:
     manim_block = ""
     if manim_hints:
         manim_block = (
-            "CRITICAL VISUAL REQUIREMENT — MANDATORY REAL-WORLD PHOTOGRAPHY INTEGRATION:\n"
-            "This video must combine authentic real-world photography with mathematical animation to explain the medical concepts clearly.\n"
-            "You MUST include and prominently feature the following staged photographic asset in your scene:\n"
+            "VISUAL ASSET INTEGRATION (Staged verified reference asset):\n"
+            "Incorporate the following verified reference asset into your scene to anchor the explanation:\n"
             + "\n".join(manim_hints)
             + "\nRECOMMENDED LAYOUT PATTERN:\n"
-            "  * Frame the ImageMobject using a styled border: border = SurroundingRectangle(img, color='#388BFD', buff=0.05, stroke_width=2)\n"
-            "  * Add a label below the photo: label = Text('Clinical Reference / Micrograph', font_size=14, color=GRAY)\n"
-            "  * Group them: photo_group = Group(img, border, label)\n"
-            "  * Place the photo on one side (e.g. LEFT * 3.4 + UP * 0.2) and build the animated anatomical/cellular mechanics on the opposite side (RIGHT * 3.4 + UP * 0.2) or use SplitStage.\n"
-            "  * Keep the real photograph present on screen as a grounding anchor throughout the explanation!\n"
+            "  * Place the visual asset in a dedicated anchor zone (e.g. LEFT * 3.2 + UP * 0.2) and place the dynamic animations / equations in the opposite zone (e.g. RIGHT * 3.2 + UP * 0.2) or use SplitStage.\n"
+            "  * For ImageMobjects, frame with a styled subtle border: border = SurroundingRectangle(img, color='#388BFD', buff=0.05, stroke_width=2)\n"
+            "  * Keep the visual asset clearly separated from the bottom caption safe zone (y < -3.0).\n"
         )
 
     return mat_block, manim_block

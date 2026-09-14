@@ -31,7 +31,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.transforms import Bbox
-from matplotlib.patches import Circle, FancyArrow, FancyBboxPatch, Rectangle, Wedge
+from matplotlib.patches import Circle, FancyArrow, FancyBboxPatch, PathPatch, Rectangle, Wedge
+from matplotlib.path import Path as MPath
 
 W, H = 16.0, 9.0
 DPI = 100
@@ -733,12 +734,108 @@ def bus(ax, p1, p2, label=None, active=False, lw=2.5):
                 fontsize=17, fontfamily=MONO, zorder=4)
 
 
+def _draw_svg_asset_patches(ax, svg_path: Path, center_x: float, center_y: float,
+                            width: float, height: float | None = None,
+                            alpha: float = 1.0, zorder: int = 2) -> bool:
+    """Render an SVG vector graphic into Matplotlib axes using svgelements."""
+    try:
+        import svgelements
+        svg = svgelements.SVG.parse(str(svg_path))
+        bbox = svg.bbox()
+        if not bbox:
+            return False
+        xmin, ymin, xmax, ymax = bbox
+        svg_w = max(1e-6, xmax - xmin)
+        svg_h = max(1e-6, ymax - ymin)
+        if height is None:
+            scale = width / svg_w
+            height = svg_h * scale
+        else:
+            scale = min(width / svg_w, height / svg_h)
+
+        rendered_any = False
+        for el in svg.elements():
+            if isinstance(el, svgelements.Text) and el.text:
+                tx = center_x + (el.x - xmin - svg_w / 2.0) * scale
+                ty = center_y - (el.y - ymin - svg_h / 2.0) * scale
+                col = el.fill.hex if getattr(el, 'fill', None) and el.fill.value is not None else '#f8fafc'
+                fs = float(el.font_size) * scale * 1.5 if hasattr(el, 'font_size') and el.font_size else 20
+                ax.text(tx, ty, el.text, color=col, fontsize=max(20, int(fs)), ha='center', va='center', zorder=zorder + 1, alpha=alpha)
+                rendered_any = True
+                continue
+
+            try:
+                path_obj = svgelements.Path(el)
+            except Exception:
+                continue
+
+            verts = []
+            codes = []
+            for seg in path_obj.segments():
+                if isinstance(seg, svgelements.Move):
+                    px = center_x + (seg.end.x - xmin - svg_w / 2.0) * scale
+                    py = center_y - (seg.end.y - ymin - svg_h / 2.0) * scale
+                    verts.append((px, py))
+                    codes.append(MPath.MOVETO)
+                elif isinstance(seg, svgelements.Line):
+                    px = center_x + (seg.end.x - xmin - svg_w / 2.0) * scale
+                    py = center_y - (seg.end.y - ymin - svg_h / 2.0) * scale
+                    verts.append((px, py))
+                    codes.append(MPath.LINETO)
+                elif isinstance(seg, svgelements.Close):
+                    codes.append(MPath.CLOSEPOLY)
+                    verts.append((0, 0))
+                elif isinstance(seg, svgelements.CubicBezier):
+                    c1x = center_x + (seg.control1.x - xmin - svg_w / 2.0) * scale
+                    c1y = center_y - (seg.control1.y - ymin - svg_h / 2.0) * scale
+                    c2x = center_x + (seg.control2.x - xmin - svg_w / 2.0) * scale
+                    c2y = center_y - (seg.control2.y - ymin - svg_h / 2.0) * scale
+                    px = center_x + (seg.end.x - xmin - svg_w / 2.0) * scale
+                    py = center_y - (seg.end.y - ymin - svg_h / 2.0) * scale
+                    verts.extend([(c1x, c1y), (c2x, c2y), (px, py)])
+                    codes.extend([MPath.CURVE4, MPath.CURVE4, MPath.CURVE4])
+                elif isinstance(seg, svgelements.QuadraticBezier):
+                    cx = center_x + (seg.control.x - xmin - svg_w / 2.0) * scale
+                    cy = center_y - (seg.control.y - ymin - svg_h / 2.0) * scale
+                    px = center_x + (seg.end.x - xmin - svg_w / 2.0) * scale
+                    py = center_y - (seg.end.y - ymin - svg_h / 2.0) * scale
+                    verts.extend([(cx, cy), (px, py)])
+                    codes.extend([MPath.CURVE3, MPath.CURVE3])
+                elif isinstance(seg, svgelements.Arc):
+                    for cubic in seg.as_cubic_curves():
+                        c1x = center_x + (cubic.control1.x - xmin - svg_w / 2.0) * scale
+                        c1y = center_y - (cubic.control1.y - ymin - svg_h / 2.0) * scale
+                        c2x = center_x + (cubic.control2.x - xmin - svg_w / 2.0) * scale
+                        c2y = center_y - (cubic.control2.y - ymin - svg_h / 2.0) * scale
+                        px = center_x + (cubic.end.x - xmin - svg_w / 2.0) * scale
+                        py = center_y - (cubic.end.y - ymin - svg_h / 2.0) * scale
+                        verts.extend([(c1x, c1y), (c2x, c2y), (px, py)])
+                        codes.extend([MPath.CURVE4, MPath.CURVE4, MPath.CURVE4])
+
+            if not verts:
+                continue
+
+            mpath = MPath(verts, codes)
+            fc = el.fill.hex if getattr(el, 'fill', None) and el.fill.value is not None else 'none'
+            sc = el.stroke.hex if getattr(el, 'stroke', None) and el.stroke.value is not None else 'none'
+            lw = float(el.stroke_width) * scale if getattr(el, 'stroke_width', None) and el.stroke_width else 1.0
+
+            patch = PathPatch(mpath, facecolor=fc, edgecolor=sc, linewidth=max(0.5, min(lw, 3.0)), zorder=zorder, alpha=alpha)
+            ax.add_patch(patch)
+            rendered_any = True
+        return rendered_any
+    except Exception:
+        return False
+
+
 def draw_asset(ax, asset, x, y, width=2.5, height=None, color=None, zorder=2, alpha=1.0):
     """Draw a visual asset from the catalog or file at (x, y) on the 16x9 canvas.
 
     Returns edge anchor points {"left", "right", "top", "bottom", "center"} so
     k.bus() or k.arrow() can connect to it cleanly.
     """
+    from pathlib import Path
+
     w = float(width)
     h = float(height) if height is not None else w * 0.8
     ec = color or ACCENT
@@ -749,37 +846,63 @@ def draw_asset(ax, asset, x, y, width=2.5, height=None, color=None, zorder=2, al
         boxstyle="round,pad=0.03,rounding_size=0.10",
         facecolor="#05080c", edgecolor="none", zorder=zorder - 1, alpha=alpha))
 
-    # Check if asset is a valid image file path
-    from pathlib import Path
-    img_path = None
-    candidate_paths = [Path(str(asset)), Path("build") / str(asset), Path(".") / str(asset)]
-    for p in candidate_paths:
-        if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-            img_path = p
-            break
+    resolved_path: Path | None = None
 
-    if img_path is not None:
-        try:
-            from PIL import Image
-            with Image.open(img_path) as raw_img:
-                img_data = np.asarray(raw_img)
-            ax.imshow(
-                img_data,
-                extent=[x - w / 2, x + w / 2, y - h / 2, y + h / 2],
-                zorder=zorder,
-                aspect="auto",
-                alpha=alpha,
-            )
-            # Border frame
-            ax.add_patch(FancyBboxPatch(
-                (x - w / 2, y - h / 2), w, h,
-                boxstyle="round,pad=0.01,rounding_size=0.05",
-                facecolor="none", edgecolor=ec, linewidth=2.0, zorder=zorder + 1, alpha=alpha))
-        except Exception:
-            img_path = None
+    # 1. Check catalog lookup
+    try:
+        from .assets import loader
+        catalog = loader.load_catalog()
+        aid = str(asset).strip().lower()
+        if aid in catalog:
+            cpath = catalog[aid].resolved_file_path()
+            if cpath and cpath.is_file():
+                resolved_path = cpath
+    except Exception:
+        pass
 
-    if img_path is None:
-        # Main container
+    # 2. Check candidate disk paths
+    if resolved_path is None:
+        candidate_paths = [
+            Path(str(asset)),
+            Path("build") / str(asset),
+            Path(".") / str(asset),
+            Path(__file__).parent / "assets" / "svg" / f"{asset}.svg",
+            Path(__file__).parent / "assets" / "svg" / str(asset),
+        ]
+        for p in candidate_paths:
+            if p.is_file():
+                resolved_path = p
+                break
+
+    rendered = False
+    if resolved_path is not None:
+        suffix = resolved_path.suffix.lower()
+        if suffix == ".svg":
+            rendered = _draw_svg_asset_patches(ax, resolved_path, x, y, w, h, alpha=alpha, zorder=zorder)
+        elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+            try:
+                from PIL import Image
+                with Image.open(resolved_path) as raw_img:
+                    img_data = np.asarray(raw_img)
+                ax.imshow(
+                    img_data,
+                    extent=[x - w / 2, x + w / 2, y - h / 2, y + h / 2],
+                    zorder=zorder,
+                    aspect="auto",
+                    alpha=alpha,
+                )
+                rendered = True
+            except Exception:
+                rendered = False
+
+    if rendered:
+        # Border frame
+        ax.add_patch(FancyBboxPatch(
+            (x - w / 2, y - h / 2), w, h,
+            boxstyle="round,pad=0.01,rounding_size=0.05",
+            facecolor="none", edgecolor=ec, linewidth=2.0, zorder=zorder + 1, alpha=alpha))
+    else:
+        # Fallback container
         ax.add_patch(FancyBboxPatch(
             (x - w / 2, y - h / 2), w, h,
             boxstyle="round,pad=0.03,rounding_size=0.10",

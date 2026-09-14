@@ -20,6 +20,7 @@ from ....assets.providers import (
     get_available_providers,
     search_all_providers,
 )
+from ....assets.relevance import is_asset_relevant
 
 
 def _extract_asset_queries(anim_text: str, narration_text: str) -> list[dict[str, str]]:
@@ -29,14 +30,24 @@ def _extract_asset_queries(anim_text: str, narration_text: str) -> list[dict[str
 
     # Topic-specific visual metaphors checked first for precise scientific relevance
     metaphor_rules = [
+        # Cardiovascular & Medical Anatomy (checked before generic patterns)
+        (r"\b(heart|cardiac|myocardium|ventricle|atrium)\b", "human heart anatomy medical illustration", "card"),
+        (r"\b(coronary|artery|arteries|arterial|plaque|stenosis|atherosclerosis|lumen|endothelium)\b", "coronary artery blood vessel cross section", "card"),
+        (r"\b(thrombus|thrombosis|blood clot|platelet|fibrin|occlusion)\b", "thrombosis blood clot medical", "card"),
+        (r"\b(ecg|ekg|electrocardiogram|stemi|infarction|ischemia|ischemic)\b", "electrocardiogram ecg heart monitor", "card"),
+
+        # Immunology & Microbiology
         (r"\b(white blood|neutrophil|macrophage|phagocytosis|leukocyte|immune)\b", "blood cells microscope immunology", "card"),
         (r"\b(bacteria|streptococcus|pneumococcal|bacilli|microorganism)\b", "bacteria microscope microbiology", "card"),
         (r"\b(virus|capsid|influenza|coronavirus|virion)\b", "virus microscopic medical", "card"),
         (r"\b(x-ray|ct scan|radiograph|consolidation|opacity|radiology)\b", "lungs xray medical", "card"),
         (r"\b(antibiotic|medicine|oximeter|stethoscope|therapeutics|treatment|recovery)\b", "doctor stethoscope medicine", "card"),
         (r"\b(lung|lungs|pulmonary|alveoli|respiratory|bronchi|trachea)\b", "human lungs anatomy medical", "card"),
+
+        # Networking & Computer Science (Disambiguated from biological/vascular networks)
         (r"\b(dns|domain name|nameserver)\b", "server network data center", "background"),
-        (r"\b(internet|network|packet|routing|switch|router)\b", "computer networking server cables", "background"),
+        (r"\b(internet|packet|routing|switch|router|ethernet|cables|datacenter)\b", "computer networking server cables", "background"),
+        (r"(?<!vascular\s)(?<!neural\s)(?<!arterial\s)(?<!capillary\s)(?<!biological\s)\b(?:computer\s+)?network(?:ing)?\b(?!\s+(?:of\s+)?(?:arter|vessel|capillar|neuron|cell))", "computer networking server cables", "background"),
         (r"\b(database|sql|index|query|btree|b-tree)\b", "server storage hard drive digital", "card"),
         (r"\b(security|encryption|ssl|tls|ssh|certificate)\b", "cyber security padlock digital lock", "card"),
         (r"\b(cpu|processor|memory|ram|cache|register)\b", "microchip circuit board motherboard hardware", "card"),
@@ -51,11 +62,14 @@ def _extract_asset_queries(anim_text: str, narration_text: str) -> list[dict[str
 
     if not queries:
         anim_clean = re.sub(r"^anim:\s*", "", anim_text.strip(), flags=re.IGNORECASE)
-        words = [w for w in re.findall(r"\b[a-z]{3,}\b", anim_clean.lower()) if w not in {"the", "and", "for", "with", "this", "that", "scene", "show", "diagram", "macro", "real", "high", "resolution"}]
+        stop_words = {
+            "the", "and", "for", "with", "this", "that", "scene", "show",
+            "diagram", "macro", "real", "high", "resolution", "draw",
+            "showing", "stylized", "view", "into", "from", "over", "each",
+        }
+        words = [w for w in re.findall(r"\b[a-z]{3,}\b", anim_clean.lower()) if w not in stop_words]
         if words:
             queries.append({"query": " ".join(words[:3]), "role": "card", "type": "photo"})
-
-    return queries
 
     return queries
 
@@ -114,9 +128,13 @@ class RetrieverExternalAssetPlugin(Plugin):
                     providers=providers,
                     orientation="landscape",
                     asset_type=asset_type,
-                    limit_per_provider=2,
+                    limit_per_provider=3,
                 )
+                combined_scene_text = f"{anim_text} {narr_text}"
                 for f in found:
+                    is_rel, score, reason = is_asset_relevant(f, combined_scene_text)
+                    if not is_rel:
+                        continue
                     if f.id not in {h.id for h in scene_hits}:
                         scene_hits.append(f)
                     if len(scene_hits) >= max_assets_per_scene:
