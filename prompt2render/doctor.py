@@ -470,18 +470,42 @@ def _check_align(r: Report) -> None:
 
 
 def _check_scenes(r: Report) -> None:
-    if os.environ.get("GEMINI_API_KEY"):
+    from . import llm
+
+    active_endpoint = llm.endpoint()
+    is_gemini_default = active_endpoint == llm.ENDPOINT
+    endpoint_label = "Google Gemini (default)" if is_gemini_default else active_endpoint
+
+    r.add(
+        OK,
+        "LLM endpoint",
+        endpoint_label,
+    )
+
+    has_key = bool(
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+        or os.environ.get("P2R_LLM_API_KEY", "").strip()
+    )
+    is_local = any(h in active_endpoint.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+
+    if has_key:
         r.add(
             OK,
-            "GEMINI_API_KEY",
+            "LLM API key",
             "set",
+        )
+    elif is_local:
+        r.add(
+            OK,
+            "LLM API key",
+            "not required (local endpoint)",
         )
     else:
         r.add(
             WARN,
-            "GEMINI_API_KEY",
-            "unset — "
-            "`prompt2render scenes` cannot run",
+            "LLM API key",
+            "unset — GEMINI_API_KEY or OPENAI_API_KEY needed for scene generation",
         )
 
     try:

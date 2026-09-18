@@ -1,0 +1,19 @@
+services:
+  studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: prompt2render:latest
+    container_name: prompt2render-studio
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./projects:/app/projects
+      - ./models:/app/models
+      - ./tools/kokoro:/app/tools/kokoro
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

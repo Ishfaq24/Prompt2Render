@@ -143,6 +143,7 @@ def _front_matter(
     *,
     ai: bool = False,
     topic: str | None = None,
+    aspect: str = "16:9",
 ) -> str:
     """Render the canonical script front matter."""
     title = str(title).strip()
@@ -161,6 +162,7 @@ def _front_matter(
 title: {title}
 topic: {topic}
 audience: undergraduate computer science
+aspect: {aspect}
 ---
 
 <!-- HOW THIS FILE WORKS
@@ -179,6 +181,7 @@ def render_template(
     title: str,
     minutes: float | None = None,
     sections: int | None = None,
+    aspect: str = "16:9",
 ) -> str:
     """Render the deterministic starter script."""
     n, minutes = _resolve_outline(minutes, sections)
@@ -195,6 +198,7 @@ def render_template(
             n,
             ai=False,
             topic=title,
+            aspect=aspect,
         )
     ]
 
@@ -303,6 +307,7 @@ def render_from_sections(
     sections: list[dict],
     minutes: float | None = None,
     topic: str | None = None,
+    aspect: str = "16:9",
 ) -> str:
     """Render script.md from an explicit ``[{"title", "anim"}, ...]`` list.
 
@@ -341,6 +346,7 @@ def render_from_sections(
             n,
             ai=True,
             topic=topic or title,
+            aspect=aspect,
         )
     ]
 
@@ -417,29 +423,56 @@ def _parse_front_matter(raw: str) -> tuple[dict, str]:
     This is not intended to be a general YAML parser. The script contract uses
     simple scalar ``key: value`` fields.
     """
-    meta: dict[str, str] = {}
+    meta: dict[str, Any] = {}
 
     match = _FRONT.match(raw)
 
     if not match:
         return meta, raw
 
-    for line in match.group(1).splitlines():
-        line = line.strip()
+    current_dict_key = None
+    for raw_line in match.group(1).splitlines():
+        line = raw_line.strip()
 
         if not line or line.startswith("#"):
             continue
 
+        # Check for indented key-value pair under a parent mapping (e.g. voices:)
+        if (raw_line.startswith("  ") or raw_line.startswith("\t")) and current_dict_key and ":" in line:
+            sub_k, sub_v = line.split(":", 1)
+            sub_k = sub_k.strip()
+            sub_v = sub_v.strip()
+            if len(sub_v) >= 2 and sub_v[0] == sub_v[-1] and sub_v[0] in {'"', "'"}:
+                sub_v = sub_v[1:-1]
+            if isinstance(meta.get(current_dict_key), dict):
+                meta[current_dict_key][sub_k] = sub_v
+            continue
+
+        current_dict_key = None
         if ":" not in line:
             continue
 
         key, value = line.split(":", 1)
-
         key = key.strip()
         value = value.strip()
 
         if not key:
             continue
+
+        # If value is empty, this starts a nested dictionary section (e.g. voices:)
+        if not value:
+            meta[key] = {}
+            current_dict_key = key
+            continue
+
+        # Support inline JSON dictionaries: e.g. voices: {"A": "af_heart", "B": "am_adam"}
+        if value.startswith("{") and value.endswith("}"):
+            try:
+                import json
+                meta[key] = json.loads(value)
+                continue
+            except Exception:
+                pass
 
         # Remove matching surrounding quotes while preserving internal content.
         if (
@@ -678,8 +711,9 @@ def new_project(
     title: str | None = None,
     minutes: float | None = None,
     sections: int | None = None,
+    aspect: str = "16:9",
 ) -> Path:
-    """Create a deterministic Prompt2Render project."""
+    """Create a new project workspace directory with an initial script.md."""
     if any(sep in str(slug) for sep in ('/', '\\', '..', ':', '\0')):
         slug = cfg.validate_slug(slug)
     else:
@@ -696,6 +730,7 @@ def new_project(
         title,
         minutes=minutes,
         sections=sections,
+        aspect=aspect,
     )
 
     script_path = d / "script.md"
@@ -714,6 +749,7 @@ def new_project_from_sections(
     sections: list[dict],
     minutes: float | None = None,
     topic: str | None = None,
+    aspect: str = "16:9",
 ) -> Path:
     """Create a project whose section structure is already decided.
 
@@ -730,6 +766,7 @@ def new_project_from_sections(
         sections,
         minutes=minutes,
         topic=topic,
+        aspect=aspect,
     )
 
     script_path = d / "script.md"

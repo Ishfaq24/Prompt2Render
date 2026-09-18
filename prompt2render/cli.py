@@ -35,7 +35,11 @@ from prompt2render import cfg, project
 
 def _load(slug: str):
     d = cfg.project_dir(slug)
-    return d, project.parse_script(d / "script.md")
+    script = project.parse_script(d / "script.md")
+    aspect = script.meta.get("aspect", "") or script.meta.get("format", "")
+    if aspect:
+        cfg.set_dimensions(aspect)
+    return d, script
 
 
 # ------------------------------------------------------------- scaffolding --
@@ -46,6 +50,8 @@ def cmd_new(a):
     if slug != raw_slug:
         cfg.say(f"normalized slug: '{raw_slug}' -> '{slug}'")
     default_title = a.title or raw_slug.replace("-", " ").strip().title()
+    aspect = getattr(a, "aspect", "16:9") or "16:9"
+    cfg.set_dimensions(aspect)
 
     if a.ai:
         from prompt2render import outline
@@ -55,9 +61,9 @@ def cmd_new(a):
                                fixed_title=bool(a.title))
         title = a.title or out["title"]
         d = project.new_project_from_sections(slug, title, out["sections"],
-                                              minutes=a.minutes, topic=out["topic"])
+                                              minutes=a.minutes, topic=out["topic"], aspect=aspect)
     else:
-        d = project.new_project(slug, default_title, minutes=a.minutes, sections=a.sections)
+        d = project.new_project(slug, default_title, minutes=a.minutes, sections=a.sections, aspect=aspect)
     print(f"\ncreated {d}\n\nNext: open {d/'script.md'} and write the narration.\n"
           "That script is the whole moat — it is the part no tool makes for you.\n")
 
@@ -101,7 +107,7 @@ def cmd_serve(a):
 def cmd_voice(a):
     from prompt2render import voice
     d, s = _load(a.slug)
-    voice.build(d, s, voice.settings(a), only=a.only, force=a.force)
+    voice.build(d, s, voice.settings(a, script=s), only=a.only, force=a.force)
 
 
 def cmd_align(a):
@@ -186,7 +192,7 @@ def _run_pipeline(d, s, a) -> int:
     calling sys.exit() itself, so callers can decide what to do with it.
     """
     from prompt2render import align, encode, finish, publish, qc, scenes, stills, timeline, voice
-    voice.build(d, s, voice.settings(a))
+    voice.build(d, s, voice.settings(a, script=s))
     align.align(d, s)
     scenes.generate_all(d, s, jobs=a.scene_jobs)
     # If any section is rendered with Manim, 3D, or Video, assemble through the section clip pipeline
@@ -1324,6 +1330,8 @@ def main() -> None:
                         "briefs for this specific topic, instead of the "
                         "fixed generic arc (needs GEMINI_API_KEY; narration "
                         "is still left as a placeholder either way)")
+    n.add_argument("--aspect", choices=["16:9", "9:16", "1:1", "portrait", "landscape", "shorts", "square"],
+                   default="16:9", help="Video aspect ratio profile (default 16:9; 9:16 for vertical shorts)")
 
     dr = add("draft", cmd_draft, "ask Gemini to draft narration for script.md")
     dr.add_argument("slug")
@@ -1512,6 +1520,8 @@ def main() -> None:
                         help="route the build through the new harness layer (evaluation & repair)")
         sp.add_argument("--manim", action="store_true",
                         help="experimental: use Manim to generate scenes instead of scenekit")
+        sp.add_argument("--aspect", choices=["16:9", "9:16", "1:1", "portrait", "landscape", "shorts", "square"],
+                        default=None, help="override video aspect ratio (16:9, 9:16, 1:1)")
         sp.add_argument("--hitl-mode", dest="hitl_mode",
                         choices=["autonomous", "human_on_failure", "human_approval"],
                         default="autonomous",

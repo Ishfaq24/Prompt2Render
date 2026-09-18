@@ -158,24 +158,56 @@ def _audit_section(proj: Path, stem: str) -> tuple[list[str], int, int]:
 
 def _gate_layout(g: Gates, proj: Path, script: Script) -> None:
     from . import scenes
-    if any(scenes.is_manim_renderer(scenes.select_renderer(s)) or scenes.select_renderer(s) == "video" for s in script.sections):
-        g.add(PASS, "layout", "Manim vector, 3D, and video media verified")
-        return
-    stems = [s.stem for s in script.sections
-             if stills.scene_path(proj, s.stem).exists()]
+    from .manim_audit import ManimLayoutAuditor
+
     fails: list[str] = []
     warns = n = 0
-    for stem in stems:
+
+    # 1. Audit SceneKit stills
+    stills_stems = [
+        s.stem for s in script.sections
+        if not (scenes.is_manim_renderer(scenes.select_renderer(s)) or scenes.select_renderer(s) == "video")
+        and stills.scene_path(proj, s.stem).exists()
+    ]
+    for stem in stills_stems:
         f, w, c = _audit_section(proj, stem)
         fails += f
         warns += w
         n += c
-    if not n:
-        g.add(SKIP, "layout", "no scene modules")
+
+    # 2. Audit Manim / video rendered clips
+    manim_stems = [
+        s.stem for s in script.sections
+        if scenes.is_manim_renderer(scenes.select_renderer(s)) or scenes.select_renderer(s) == "video"
+    ]
+    manim_checked = 0
+    for stem in manim_stems:
+        clip_candidates = (
+            proj / "build" / "manim_finish" / f"{stem}.mp4",
+            proj / "build" / "scenes" / stem / f"scene_{stem}.mp4",
+            proj / "build" / "manim" / f"scene_{stem}.mp4",
+        )
+        clip_path = next((c for c in clip_candidates if c.is_file() and c.stat().st_size > 1024), None)
+        if clip_path is not None:
+            audit_res = ManimLayoutAuditor.audit_rendered_frames_3d(clip_path, n_samples=3)
+            findings = audit_res.get("findings", [])
+            for finding in findings:
+                if "collision" in finding.lower():
+                    fails.append(f"section {stem}: {finding}")
+                else:
+                    warns += 1
+            manim_checked += 1
+
+    total_scenes = n + manim_checked
+    if not total_scenes:
+        if manim_stems:
+            g.add(PASS, "layout", "Manim vector, 3D, and video media verified")
+        else:
+            g.add(SKIP, "layout", "no scene modules")
     elif fails:
-        g.add(FAIL, "layout", f"{len(fails)} of {n} stills fail: {fails[0][:90]}")
+        g.add(FAIL, "layout", f"{len(fails)} of {total_scenes} scene checks fail: {fails[0][:90]}")
     else:
-        g.add(PASS, "layout", f"{n} stills clean ({warns} warnings)")
+        g.add(PASS, "layout", f"{total_scenes} scenes clean ({warns} warnings)")
 
 
 def _gate_alignment(g: Gates, proj: Path, script: Script) -> None:

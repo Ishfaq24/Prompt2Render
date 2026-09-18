@@ -28,6 +28,20 @@ ENDPOINT = (
 )
 
 
+def endpoint() -> str:
+    """Return the active OpenAI-compatible endpoint URL.
+
+    Defaults to Google's Gemini endpoint unless overridden via
+    ``P2R_LLM_BASE_URL`` or ``OPENAI_BASE_URL`` (e.g. for Ollama, vLLM,
+    OpenAI direct, or OpenRouter).
+    """
+    return (
+        os.environ.get("P2R_LLM_BASE_URL", "").strip()
+        or os.environ.get("OPENAI_BASE_URL", "").strip()
+        or ENDPOINT
+    )
+
+
 # Strongest -> cheapest fallback. Every full model (and all of its keys) must
 # be exhausted before a "-lite" model is tried at all — lite models trade
 # quality for cost/quota and are a last resort, not an early fallback.
@@ -42,16 +56,19 @@ CANONICAL_MODELS = [
 # treated as "unknown" (e.g. gemini-2.5-flash-preview).
 _MODEL_ALIASES = {
     "gemini-2.5-flash": "gemini-2.5-flash",
-    "gemini-3.6-flash":"gemini-3.6-flash",
-        "gemini-3.5-flash":"gemini-3.5-flash"
+    "gemini-3.6-flash": "gemini-3.6-flash",
+    "gemini-3.5-flash": "gemini-3.5-flash",
 }
 
 MODEL_FALLBACKS = CANONICAL_MODELS.copy()
 
 
 def _parse_gemini_models_env() -> list[str] | None:
-    """Parse P2R_GEMINI_MODELS if set (JSON array or comma-separated)."""
-    raw = os.environ.get("P2R_GEMINI_MODELS", "").strip()
+    """Parse P2R_LLM_MODELS or P2R_GEMINI_MODELS if set (JSON array or comma-separated)."""
+    raw = (
+        os.environ.get("P2R_LLM_MODELS", "").strip()
+        or os.environ.get("P2R_GEMINI_MODELS", "").strip()
+    )
     if not raw:
         return None
     # Try JSON
@@ -79,16 +96,12 @@ def model_chain(
     Known canonical model:
         start -> progressively lower models
 
-    P2R_GEMINI_MODELS env (JSON array) overrides canonical when set:
+    P2R_LLM_MODELS / P2R_GEMINI_MODELS env overrides canonical when set:
         explicit ordered list from env
 
     Unknown/custom model:
-        primary + full canonical fallback (so a NOT_FOUND primary still
-        recovers to a known good model instead of exhausting immediately).
-
-    This preserves the old "no silent jump to stronger" for truly custom
-    models only when the env override is not set, while ensuring a typo or
-    deprecated model like gemini-2.5-flash does not brick the whole harness.
+        primary + full canonical fallback (on default Gemini endpoint),
+        or [primary] on custom/local endpoints (e.g. Ollama, vLLM).
     """
     # Env override takes precedence (user explicitly configured ordered list)
     env_chain = _parse_gemini_models_env()
@@ -106,17 +119,20 @@ def model_chain(
         index = CANONICAL_MODELS.index(primary)
         return CANONICAL_MODELS[index:]
 
-    # Unknown: try primary first, then fallback to canonical (so NOT_FOUND
-    # does not exhaust immediately). Keep order deterministic.
+    # On a custom external/local endpoint, avoid injecting Gemini model names
+    if endpoint() != ENDPOINT:
+        return [primary]
+
+    # Unknown on Gemini endpoint: try primary first, then fallback to canonical
     return [primary] + CANONICAL_MODELS
 
 
 def _backup_key_sort(item: tuple[str, str]) -> tuple[int, str]:
-    """Numerically sort GEMINI_API_KEY_BACKUP<N>."""
+    """Numerically sort <PREFIX>_BACKUP<N> or <PREFIX>_BACKUP_<N>."""
     name, _ = item
 
-    match = re.fullmatch(
-        r"GEMINI_API_KEY_BACKUP(\d+)",
+    match = re.search(
+        r"_BACKUP_?(\d+)$",
         name,
     )
 
@@ -133,24 +149,35 @@ def _backup_key_sort(item: tuple[str, str]) -> tuple[int, str]:
 
 
 def keys() -> list[str]:
-    """Return unique API keys in deterministic priority order."""
+    """Return unique API keys in deterministic priority order.
+
+    Supports GEMINI_API_KEY, OPENAI_API_KEY, P2R_LLM_API_KEY and their
+    numbered backups. Local endpoints (localhost / 127.0.0.1) fall back to a
+    default token if no key is configured.
+    """
     values: list[str] = []
     seen: set[str] = set()
 
-    primary = os.environ.get(
-        "GEMINI_API_KEY",
-        "",
-    ).strip()
+    primary = (
+        os.environ.get("P2R_LLM_API_KEY", "").strip()
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+        or os.environ.get("GEMINI_API_KEY", "").strip()
+    )
 
     if primary:
         values.append(primary)
         seen.add(primary)
 
+    prefix_candidates = (
+        "GEMINI_API_KEY_BACKUP",
+        "OPENAI_API_KEY_BACKUP",
+        "P2R_LLM_API_KEY_BACKUP",
+    )
     backups = sorted(
         (
             (name, value.strip())
             for name, value in os.environ.items()
-            if name.startswith("GEMINI_API_KEY_BACKUP")
+            if any(name.startswith(p) for p in prefix_candidates)
             and value
             and value.strip()
         ),
@@ -163,8 +190,12 @@ def keys() -> list[str]:
             seen.add(value)
 
     if not values:
+        active_endpoint = endpoint().lower()
+        if any(h in active_endpoint for h in ("localhost", "127.0.0.1", "0.0.0.0")):
+            return ["local-token"]
+
         sys.exit(
-            "[prompt2render] GEMINI_API_KEY not set "
+            "[prompt2render] GEMINI_API_KEY or OPENAI_API_KEY not set "
             "(it lives in .env)"
         )
 
@@ -172,7 +203,7 @@ def keys() -> list[str]:
 
 
 def client(key: str):
-    """Create an OpenAI-compatible Gemini client.
+    """Create an OpenAI-compatible client.
 
     max_retries=0 is intentional.
 
@@ -189,7 +220,7 @@ def client(key: str):
 
     return OpenAI(
         api_key=key,
-        base_url=ENDPOINT,
+        base_url=endpoint(),
         timeout=300.0,
         max_retries=0,
     )
@@ -416,14 +447,21 @@ def _completion(
         "low",
     ).strip()
 
-    if reasoning:
+    if reasoning and reasoning.lower() not in {"none", "off", "0", "false"}:
         kwargs["extra_body"] = {
             "reasoning_effort": reasoning
         }
 
-    return client_obj.chat.completions.create(
-        **kwargs
-    )
+    try:
+        return client_obj.chat.completions.create(
+            **kwargs
+        )
+    except Exception as exc:
+        if "extra_body" in kwargs and "reasoning_effort" in str(exc).lower():
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("extra_body", None)
+            return client_obj.chat.completions.create(**retry_kwargs)
+        raise
 
 
 # Process-level state.

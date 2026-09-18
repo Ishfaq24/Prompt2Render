@@ -31,6 +31,38 @@ MODELS = ROOT / "models"
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 CRF = "20"
 
+PROFILES: dict[str, dict[str, Any]] = {
+    "16:9": {"width": 1920, "height": 1080, "label": "landscape"},
+    "landscape": {"width": 1920, "height": 1080, "label": "landscape"},
+    "9:16": {"width": 1080, "height": 1920, "label": "portrait"},
+    "portrait": {"width": 1080, "height": 1920, "label": "portrait"},
+    "shorts": {"width": 1080, "height": 1920, "label": "portrait"},
+    "1:1": {"width": 1080, "height": 1080, "label": "square"},
+    "square": {"width": 1080, "height": 1080, "label": "square"},
+}
+
+
+def set_dimensions(aspect_or_width: str | int = "16:9", height: int | None = None) -> tuple[int, int]:
+    """Dynamically set video dimensions and aspect ratio profile."""
+    global WIDTH, HEIGHT
+    if isinstance(aspect_or_width, str):
+        key = aspect_or_width.lower().strip()
+        if key in PROFILES:
+            WIDTH = PROFILES[key]["width"]
+            HEIGHT = PROFILES[key]["height"]
+        elif "x" in key:
+            try:
+                w_str, h_str = key.split("x", 1)
+                WIDTH = int(w_str.strip())
+                HEIGHT = int(h_str.strip())
+            except ValueError:
+                pass
+    elif isinstance(aspect_or_width, int) and height is not None:
+        WIDTH = aspect_or_width
+        HEIGHT = height
+    return WIDTH, HEIGHT
+
+
 # One encoder vector for all clips that will later be concatenated with
 # -c copy. Do not change this independently in individual stages.
 VOPTS = [

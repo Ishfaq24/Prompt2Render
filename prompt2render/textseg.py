@@ -68,10 +68,14 @@ class Sentence:
     #: whole — it gets a short clause pause instead of a full stop's.
     clause_continuation: bool = False
     words: list[Word] = field(default_factory=list)
+    speaker: str | None = None
 
     @property
     def ends_question(self) -> bool:
         return self.text.rstrip().endswith(("?", "!"))
+
+
+_BRACKET_SPEAKER_RE = re.compile(r"^\[([A-Za-z0-9_\- ]+)\]\s*:?\s*(.*)$", re.DOTALL)
 
 
 def _protect(text: str) -> str:
@@ -86,8 +90,8 @@ def _restore(text: str) -> str:
     return text.replace(_DOT, ".")
 
 
-def sentences(narration: str) -> list[Sentence]:
-    """Split narration into sentences, preserving paragraph breaks.
+def sentences(narration: str, known_speakers: set[str] | None = None) -> list[Sentence]:
+    """Split narration into sentences, preserving paragraph breaks and speaker cues.
 
     Paragraph breaks survive as a flag rather than as text because the voice
     engine turns them into a longer pause — that is the only thing a blank
@@ -99,14 +103,32 @@ def sentences(narration: str) -> list[Sentence]:
         body = _protect(re.sub(r"\s+", " ", para).strip())
         if not body:
             continue
+        current_speaker: str | None = None
         for si, piece in enumerate(_SPLIT_RE.split(body)):
             piece = _restore(piece).strip()
             if not piece:
                 continue
+
+            match = _BRACKET_SPEAKER_RE.match(piece)
+            if match:
+                current_speaker = match.group(1).strip()
+                piece = match.group(2).strip()
+            elif known_speakers:
+                for spk in sorted(known_speakers, key=len, reverse=True):
+                    prefix = f"{spk}:"
+                    if piece.lower().startswith(prefix.lower()):
+                        current_speaker = spk
+                        piece = piece[len(prefix):].strip()
+                        break
+
+            if not piece:
+                continue
+
             out.append(Sentence(
                 i=len(out),
                 text=piece,
                 para_break_before=(pi > 0 and si == 0),
+                speaker=current_speaker,
             ))
     for s in out:
         s.words = words(s.text)
@@ -149,7 +171,8 @@ def fit_to_synthesiser(sent: Sentence, measure, limit: int) -> list[Sentence]:
     return [Sentence(i=sent.i, text=p,
                      para_break_before=(k == 0 and sent.para_break_before),
                      clause_continuation=(k > 0),
-                     words=words(p))
+                     words=words(p),
+                     speaker=sent.speaker)
             for k, p in enumerate(pieces)]
 
 

@@ -25,6 +25,20 @@ class ManimLayoutAuditor:
     CAPTION_CEILING_Y = -2.5
 
     @classmethod
+    def get_bounds(cls) -> tuple[float, float, float, float, float]:
+        """Returns (x_min, x_max, y_min, y_max, caption_ceiling) based on active cfg dimensions."""
+        from . import cfg
+        aspect = cfg.WIDTH / max(1, cfg.HEIGHT)
+        half_height = 4.0
+        half_width = half_height * aspect
+        x_max = round(half_width - 0.1, 2)
+        x_min = -x_max
+        y_max = 4.0
+        y_min = -4.0
+        caption_ceiling = round(y_min + (y_max - y_min) * 0.1875, 2)
+        return x_min, x_max, y_min, y_max, caption_ceiling
+
+    @classmethod
     def audit_mobjects(
         cls,
         mobjects: list[Any],
@@ -35,6 +49,7 @@ class ManimLayoutAuditor:
         """Audit a list of instantiated Manim Mobjects in a scene for collisions."""
         warnings: list[str] = []
         caption_set = set(caption_mobjects or [])
+        x_min, x_max, y_min, y_max, caption_ceiling = cls.get_bounds()
 
         # Extract bounding boxes: (x_min, y_min, x_max, y_max, name)
         boxes = []
@@ -52,17 +67,17 @@ class ManimLayoutAuditor:
                 name = getattr(mob, "name", f"mobject_{i}")
                 
                 # Check canvas bounds
-                if left < cls.X_MIN or right > cls.X_MAX or top > cls.Y_MAX or bottom < cls.Y_MIN:
+                if left < x_min or right > x_max or top > y_max or bottom < y_min:
                     warnings.append(
                         f"WARN [offframe] {name} [{left:.2f}, {bottom:.2f}, {right:.2f}, {top:.2f}] "
                         "extends past canvas boundaries"
                     )
 
                 # Check caption zone trespass
-                if bottom < cls.CAPTION_CEILING_Y:
+                if bottom < caption_ceiling:
                     warnings.append(
                         f"WARN [caption_collision] {name} bottom ({bottom:.2f}) "
-                        f"trespasses into caption safe zone (y < {cls.CAPTION_CEILING_Y})"
+                        f"trespasses into caption safe zone (y < {caption_ceiling})"
                     )
 
                 boxes.append((left, bottom, right, top, name, mob))
@@ -122,6 +137,7 @@ class ManimLayoutAuditor:
         import numpy as np
         caption_set = set(caption_mobjects or [])
         adjustments = 0
+        x_min, x_max, y_min, y_max, caption_ceiling = cls.get_bounds()
 
         for _ in range(max_iterations):
             moved = False
@@ -131,7 +147,7 @@ class ManimLayoutAuditor:
                     continue
                 try:
                     b_y = mob.get_bottom()[1]
-                    min_allowed = cls.CAPTION_CEILING_Y + margin
+                    min_allowed = caption_ceiling + margin
                     if b_y < min_allowed:
                         delta_y = min_allowed - b_y
                         mob.shift(np.array([0.0, delta_y, 0.0]))
@@ -174,9 +190,9 @@ class ManimLayoutAuditor:
 
                             # Nudge in the direction of smaller overlap
                             if overlap_y <= overlap_x:
-                                if b2 < b1 and (b2 - overlap_y - margin) >= cls.CAPTION_CEILING_Y:
+                                if b2 < b1 and (b2 - overlap_y - margin) >= caption_ceiling:
                                     m2.shift(np.array([0.0, -(overlap_y + margin), 0.0]))
-                                elif hasattr(m1, "shift") and (t1 + overlap_y + margin) <= cls.Y_MAX:
+                                elif hasattr(m1, "shift") and (t1 + overlap_y + margin) <= y_max:
                                     m1.shift(np.array([0.0, overlap_y + margin, 0.0]))
                                 else:
                                     shift_x = (overlap_x + margin) if l2 >= l1 else -(overlap_x + margin)
