@@ -68,19 +68,22 @@ def conform_video(
     out_mp4: Path,
     duration_s: float,
     *,
-    width: int = 1920,
-    height: int = 1080,
-    fps: int = 30,
+    width: int | None = None,
+    height: int | None = None,
+    fps: int | None = None,
 ) -> Path:
     """Conform an input video to project video specs and exact section duration."""
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     duration_s = max(0.5, float(duration_s))
+    w = width or cfg.WIDTH
+    h = height or cfg.HEIGHT
+    f = fps or cfg.FPS
 
-    # Scale to cover 1920x1080 without distorting aspect ratio, then crop to center
+    # Scale to cover target dimensions without distorting aspect ratio, then crop to center
     vf = (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},"
-        f"fps={fps}"
+        f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+        f"crop={w}:{h},"
+        f"fps={f}"
     )
 
     cmd = [

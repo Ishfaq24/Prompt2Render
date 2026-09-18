@@ -169,6 +169,7 @@ class Cue:
     text: str
     start: float
     end: float
+    speaker: str | None = None
 
 
 def _fade(pcm: np.ndarray, sr: int) -> np.ndarray:
@@ -214,10 +215,24 @@ def _synth_one(args: tuple) -> tuple[np.ndarray, int]:
 
 
 def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
-               pauses: dict, jobs: int | None = None) -> tuple[np.ndarray, list[Cue]]:
+               pauses: dict, jobs: int | None = None,
+               speaker_voices: dict[str, str] | None = None) -> tuple[np.ndarray, list[Cue]]:
     """Render sentences to one f32 track at KOKORO_SR, with measured cues."""
     k = kokoro()
-    if voice not in k.get_voices():
+    avail = set(k.get_voices())
+    spk_map = speaker_voices or {}
+
+    def _voice_for(sent: textseg.Sentence) -> str:
+        if sent.speaker:
+            if sent.speaker in spk_map:
+                return spk_map[sent.speaker]
+            for spk_name, v in spk_map.items():
+                if spk_name.lower() == sent.speaker.lower():
+                    return v
+        return voice
+
+    # Validate default voice
+    if voice not in avail:
         sys.exit(f"[prompt2render] kokoro voice '{voice}' not available — "
                  "run: python prompt2render.py voices")
 
@@ -227,6 +242,15 @@ def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
     prepared: list[textseg.Sentence] = []
     for s in sentences:
         prepared.extend(textseg.fit_to_synthesiser(s, phoneme_len, PHONEME_LIMIT))
+
+    # Validate all voices needed by prepared sentences
+    needed_voices = {voice}
+    for s in prepared:
+        needed_voices.add(_voice_for(s))
+    for v in needed_voices:
+        if v not in avail:
+            sys.exit(f"[prompt2render] kokoro voice '{v}' not available — "
+                     "run: python prompt2render.py voices")
 
     # The ONNX inference is what actually costs time; everything below stays
     # strictly sequential regardless (cursor position depends on every prior
@@ -238,12 +262,12 @@ def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
     jobs = jobs or cfg.env_int("P2R_VOICE_JOBS", 1)
     # TTS receives a spoken rendering of recognized math spans. Cue text stays
     # as the original narration so captions and alignment retain the source.
-    idx_text = [(i, mathspeech.speech_text(s.text))
+    idx_text = [(i, mathspeech.speech_text(s.text), _voice_for(s))
                 for i, s in enumerate(prepared) if s.text.strip()]
     if jobs > 1 and len(idx_text) > 1:
         n = max(1, min(jobs, len(idx_text)))
         cfg.say(f"synthesising {len(idx_text)} sentences, {n} at a time")
-        payload = [(t, voice, speed) for _, t in idx_text]
+        payload = [(t, v, speed) for _, t, v in idx_text]
         try:
             with ProcessPoolExecutor(max_workers=n) as pool:
                 computed = list(pool.map(_synth_one, payload))
@@ -256,8 +280,8 @@ def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
                 f"{type(exc).__name__}: {exc}"
             ) from exc
     else:
-        computed = [_synth_one((t, voice, speed)) for _, t in idx_text]
-    pcm_by_index = dict(zip((i for i, _ in idx_text), computed))
+        computed = [_synth_one((t, v, speed)) for _, t, v in idx_text]
+    pcm_by_index = dict(zip((i for i, _, _ in idx_text), computed))
 
     chunks: list[np.ndarray] = []
     cues: list[Cue] = []
@@ -275,7 +299,8 @@ def synthesise(sentences: list[textseg.Sentence], voice: str, speed: float,
         chunks.append(pcm)
         cursor += len(pcm)
         cues.append(Cue(i=len(cues), text=sent.text,
-                        start=round(start, 4), end=round(cursor / sr, 4)))
+                        start=round(start, 4), end=round(cursor / sr, 4),
+                        speaker=sent.speaker))
 
         gap = pause_after(sent, n == len(prepared) - 1, pauses)
         if gap > 0:
@@ -490,20 +515,37 @@ def master(raw_master: Path, dst_wav: Path, dst_m4a: Path,
 # --------------------------------------------------------------- driver ----
 
 def _meta(backend: str, voice: str, speed: float, text: str,
-          pauses: dict, n: int, samples: int) -> dict:
+          pauses: dict, n: int, samples: int,
+          speaker_voices: dict | None = None) -> dict:
     return {
         "engine": ENGINE, "backend": backend, "voice": voice, "speed": speed,
         "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "pauses": pauses, "n_sentences": n, "samples": samples,
+        "voices": speaker_voices or {},
     }
 
 
-def settings(args=None) -> dict:
-    """Voice settings from flags, then env, then defaults."""
+def settings(args=None, script=None) -> dict:
+    """Voice settings from flags, then script front-matter, then env, then defaults."""
     g = lambda n, d: getattr(args, n, None) or d   # noqa: E731
+    script_voice = None
+    script_voices: dict[str, str] = {}
+    if script and hasattr(script, "meta") and isinstance(script.meta, dict):
+        script_voice = script.meta.get("voice")
+        raw_v = script.meta.get("voices") or script.meta.get("speakers") or {}
+        if isinstance(raw_v, dict):
+            script_voices = {str(k): str(v) for k, v in raw_v.items()}
+
+    default_voice = (
+        g("voice", None)
+        or script_voice
+        or os.environ.get("P2R_KOKORO_VOICE", "am_eric")
+    )
+
     return {
         "backend": g("backend", os.environ.get("P2R_TTS_BACKEND", "kokoro")),
-        "voice": g("voice", os.environ.get("P2R_KOKORO_VOICE", "am_eric")),
+        "voice": default_voice,
+        "voices": script_voices,
         "speed": float(g("speed", cfg.env_float("P2R_KOKORO_SPEED", 1.0))),
         "lufs": float(g("lufs", cfg.env_float("P2R_LUFS", cfg.LUFS))),
         "profile": g("audio_profile", "tts"),
@@ -530,6 +572,13 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
     audio_dir.mkdir(exist_ok=True)
 
     backend, pauses = opts["backend"], opts["pauses"]
+    speaker_voices: dict[str, str] = dict(opts.get("voices", {}))
+    if hasattr(script, "meta") and isinstance(script.meta, dict):
+        meta_voices = script.meta.get("voices") or script.meta.get("speakers")
+        if isinstance(meta_voices, dict):
+            for k, v in meta_voices.items():
+                speaker_voices.setdefault(str(k), str(v))
+
     used_own = False
     # Whether any section actually needed (re)synthesis this run. Remastering
     # touches build/master.wav's mtime, which both align.py's per-section
@@ -575,9 +624,9 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
         if not sec.narration.strip():
             sys.exit(f"[prompt2render] section {sec.stem} has no narration text")
 
-        sents = textseg.sentences(sec.narration)
+        sents = textseg.sentences(sec.narration, known_speakers=set(speaker_voices.keys()))
         want = _meta(backend, opts["voice"], opts["speed"], sec.narration,
-                     pauses, len(sents), 0)
+                     pauses, len(sents), 0, speaker_voices=speaker_voices)
         if raw.exists() and meta_f.exists() and not force:
             have = json.loads(meta_f.read_text())
             if {k: v for k, v in have.items() if k != "samples"} == \
@@ -588,7 +637,7 @@ def build(proj: Path, script: Script, opts: dict, only: str | None = None,
         changed = True
         cfg.say(f"section {sec.stem}: {len(sents)} sentences "
                 f"({opts['voice']} @ {opts['speed']:g}x)")
-        pcm, cues = synthesise(sents, opts["voice"], opts["speed"], pauses)
+        pcm, cues = synthesise(sents, opts["voice"], opts["speed"], pauses, speaker_voices=speaker_voices)
 
         with tempfile.TemporaryDirectory(prefix="prompt2render-tts-") as td:
             native = Path(td) / "native.wav"

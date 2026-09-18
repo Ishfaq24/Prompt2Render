@@ -172,3 +172,85 @@ def test_complete_seed_stays_fixed_across_rotation_attempts(monkeypatch):
     llm.complete("hello", max_tokens=10, seed=7)
 
     assert seeds_seen == [7, 7]
+
+
+def test_backup_key_sort_supports_underscore():
+    assert llm._backup_key_sort(("GEMINI_API_KEY_BACKUP1", "k1")) == (1, "GEMINI_API_KEY_BACKUP1")
+    assert llm._backup_key_sort(("GEMINI_API_KEY_BACKUP_1", "k1")) == (1, "GEMINI_API_KEY_BACKUP_1")
+    assert llm._backup_key_sort(("GEMINI_API_KEY_BACKUP_10", "k10")) == (10, "GEMINI_API_KEY_BACKUP_10")
+    assert llm._backup_key_sort(("OTHER_KEY", "val")) == (10**9, "OTHER_KEY")
+
+
+def test_keys_ordering_with_underscore(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "primary")
+    monkeypatch.setenv("GEMINI_API_KEY_BACKUP_2", "backup-2")
+    monkeypatch.setenv("GEMINI_API_KEY_BACKUP_1", "backup-1")
+    monkeypatch.setenv("GEMINI_API_KEY_BACKUP3", "backup-3")
+
+    ordered = llm.keys()
+    assert ordered == ["primary", "backup-1", "backup-2", "backup-3"]
+
+
+def test_endpoint_resolution(monkeypatch):
+    monkeypatch.delenv("P2R_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    assert llm.endpoint() == llm.ENDPOINT
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    assert llm.endpoint() == "https://api.openai.com/v1"
+
+    monkeypatch.setenv("P2R_LLM_BASE_URL", "http://localhost:11434/v1")
+    assert llm.endpoint() == "http://localhost:11434/v1"
+
+
+def test_keys_multi_provider_and_local(monkeypatch):
+    import os
+    for k in list(os.environ.keys()):
+        if "API_KEY" in k:
+            monkeypatch.delenv(k, raising=False)
+
+    # Localhost fallback when no keys are provided
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+    assert llm.keys() == ["local-token"]
+
+    # Provider key recognized
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test1234")
+    monkeypatch.setenv("OPENAI_API_KEY_BACKUP_1", "sk-proj-backup1")
+    assert llm.keys() == ["sk-proj-test1234", "sk-proj-backup1"]
+
+
+def test_model_chain_custom_endpoint(monkeypatch):
+    monkeypatch.delenv("P2R_LLM_MODELS", raising=False)
+    monkeypatch.delenv("P2R_GEMINI_MODELS", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("P2R_SCENE_MODEL", "qwen2.5-coder:14b")
+
+    chain = llm.model_chain("P2R_SCENE_MODEL", "gemini-3.7-flash")
+    assert chain == ["qwen2.5-coder:14b"]
+
+
+def test_completion_reasoning_effort_retry_on_unsupported_model(monkeypatch):
+    monkeypatch.setenv("P2R_REASONING", "medium")
+    attempts = []
+
+    class _FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    attempts.append(dict(kwargs))
+                    if "extra_body" in kwargs:
+                        raise Exception("400 Unrecognized request argument: reasoning_effort")
+                    res = MagicMock()
+                    choice = MagicMock()
+                    choice.message.content = "recovered"
+                    res.choices = [choice]
+                    return res
+
+    res = llm._completion(_FakeClient(), "gpt-4o", "hi", 100)
+    assert res.choices[0].message.content == "recovered"
+    assert len(attempts) == 2
+    assert "extra_body" in attempts[0]
+    assert "extra_body" not in attempts[1]
+
+

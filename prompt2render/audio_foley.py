@@ -127,7 +127,9 @@ def render_foley_track(
 
 def extract_foley_events_from_code(
     code_text: str,
-    total_duration_s: float,
+    total_duration_s: float = 10.0,
+    *,
+    offset_s: float = 0.0,
 ) -> list[tuple[float, str]]:
     """Extract chronological animation acoustic events from scene code."""
     import re
@@ -143,8 +145,7 @@ def extract_foley_events_from_code(
     events: list[tuple[float, str]] = []
     step_duration = max(0.2, (total_duration_s - 0.6) / max(1, len(matches)))
     for i, anim_name in enumerate(matches):
-        ts = round(0.3 + i * step_duration, 2)
-        if ts < total_duration_s:
-            events.append((ts, anim_name))
+        ts = round(offset_s + 0.3 + i * step_duration, 2)
+        events.append((ts, anim_name))
 
     return events

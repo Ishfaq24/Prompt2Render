@@ -90,6 +90,24 @@ DEFAULT_MIN_MOTION_DELTA = 0.001
 _RUN_TIME_MARGIN = 0.1
 
 
+def _load_image(frame_path: Path) -> np.ndarray | None:
+    """Load an image array using cv2 if available, or Pillow as fallback."""
+    try:
+        import cv2
+        img = cv2.imread(str(frame_path))
+        if img is not None:
+            return img
+    except Exception:
+        pass
+
+    try:
+        from PIL import Image
+        with Image.open(frame_path) as pil_img:
+            return np.array(pil_img.convert("RGB"))
+    except Exception:
+        return None
+
+
 def ink_fraction(
     frame_path: Path,
     *,
@@ -97,23 +115,15 @@ def ink_fraction(
 ) -> float | None:
     """Share of one decoded frame that is not background.
 
-    Returns ``None`` (never raises) when cv2 is unavailable or the frame
-    fails to decode -- both are legitimate "cannot observe" outcomes that a
-    caller degrades to ``status: skip`` for, not pipeline failures.
+    Returns ``None`` (never raises) when neither cv2 nor Pillow is available
+    or the frame fails to decode.
     """
-
-    try:
-        import cv2
-    except ImportError:
-        return None
-
-    img = cv2.imread(str(frame_path))
+    img = _load_image(frame_path)
 
     if img is None:
         return None
 
-    # cv2 decodes BGR; a symmetric per-channel distance against a black
-    # background is order-independent, so no channel reorder is needed.
+    # A symmetric per-channel distance against a black background is order-independent
     mask = np.zeros(img.shape[:2], dtype=bool)
 
     for channel, bg in enumerate(_BG_RGB):
@@ -134,18 +144,10 @@ def frame_delta(
 
     Same per-channel-distance arithmetic as ``ink_fraction``, but between two
     frames instead of one frame and a fixed background -- this is what makes
-    it a *motion* signal rather than a presence signal. Returns ``None``
-    (never raises) when cv2 is unavailable, either frame fails to decode, or
-    the two frames have different dimensions.
+    it a *motion* signal rather than a presence signal.
     """
-
-    try:
-        import cv2
-    except ImportError:
-        return None
-
-    img_a = cv2.imread(str(frame_a))
-    img_b = cv2.imread(str(frame_b))
+    img_a = _load_image(frame_a)
+    img_b = _load_image(frame_b)
 
     if img_a is None or img_b is None:
         return None
