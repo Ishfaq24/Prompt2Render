@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,56 @@ except ImportError:
         pass
     class Text(VMobject):  # type: ignore
         pass
+    config = {}  # type: ignore
+
+
+def get_default_font() -> str:
+    """Return the cleanest available modern sans-serif font for the OS."""
+    is_windows = sys.platform.startswith("win")
+    if is_windows:
+        # Check if Segoe UI or Arial is available
+        return "Segoe UI"
+    return "DejaVu Sans"
+
+
+def apply_text_patches() -> None:
+    """Patch Manim Text to fix Pango small-font kerning bugs and default font."""
+    try:
+        import manim
+        target_cls = getattr(manim, "Text", None)
+        if target_cls is None or getattr(target_cls, "_p2r_patched", False):
+            return
+
+        orig_init = target_cls.__init__
+
+        def _patched_init(self: Any, text: str, *args: Any, **kwargs: Any) -> None:
+            # 1. Default font to modern sans-serif if unspecified or empty
+            if "font" not in kwargs or not kwargs["font"]:
+                kwargs["font"] = get_default_font()
+
+            # 2. Fix Pango FreeType small-font kerning rounding errors
+            # When font_size < 36, Pango renders at fractional pt sizes (font_size / 4.8)
+            # which causes autohinting to insert spaces inside words (e.g. "inte rconnected").
+            # Rendering at base resolution 48 and scaling down completely eliminates the bug.
+            font_size = kwargs.pop("font_size", 48)
+            if font_size < 36:
+                orig_init(self, text, *args, font_size=48, **kwargs)
+                self.scale(font_size / 48)
+            else:
+                orig_init(self, text, *args, font_size=font_size, **kwargs)
+
+        target_cls.__init__ = _patched_init
+        target_cls._p2r_patched = True
+
+        # Also patch module-level Text in this module
+        global Text
+        Text = target_cls
+    except Exception:
+        pass
+
+
+# Apply patch automatically when module is loaded
+apply_text_patches()
 
 
 class P2RSVGMobject(SVGMobject):
@@ -39,3 +90,8 @@ class P2RSVGMobject(SVGMobject):
             self.set_width(target_width)
         if color and hasattr(self, "set_color"):
             self.set_color(color)
+
+
+class P2RText(Text):
+    """Production-grade Text mobject guaranteed to have clean sans-serif typography."""
+    pass

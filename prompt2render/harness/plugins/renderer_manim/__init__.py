@@ -2630,6 +2630,9 @@ RULES:
         if match:
             code = match.group(1)
 
+        from ....scenes import heal_manim_source
+        code = heal_manim_source(code)
+
         return _normalize_manim19(
             code
         ).strip()

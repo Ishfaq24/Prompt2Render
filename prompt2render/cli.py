@@ -201,14 +201,18 @@ def _run_pipeline(d, s, a) -> int:
         for sec in s.sections
     )
     if is_manim:
-        from prompt2render.scenes import _render_manim, heal_manim_source
+        from prompt2render.scenes import _render_manim, heal_manim_source, render_manim_parallel
         from prompt2render.video_conform import conform_video_for_section
-        clips = {}
+
+        # Render Manim sections concurrently across CPU cores
+        parallel_clips = render_manim_parallel(d, s)
+        clips = dict(parallel_clips)
+
         for sec in s.sections:
             rend = scenes.select_renderer(sec)
             section_dir = d / "build" / "scenes" / sec.stem
             class_name = f"Scene{sec.stem}"
-            clip_path = section_dir / f"scene_{sec.stem}.mp4"
+            clip_path = clips.get(sec.stem) or (section_dir / f"scene_{sec.stem}.mp4")
             if not clip_path.exists():
                 sec_cand = d / "sections" / f"{sec.stem}.mp4"
                 if sec_cand.exists():

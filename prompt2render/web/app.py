@@ -368,6 +368,11 @@ def dashboard_html() -> str:
         </div>
         """ if sections else ""
 
+        review_btn = (
+            f'<button class="btn btn-secondary" onclick="toggleReview(\'{slug}\')">Review Sections ({len(sections)})</button>'
+            if sections else ""
+        )
+
         cards_html += f"""
         <div class="card">
             <div class="card-header">
@@ -385,7 +390,7 @@ def dashboard_html() -> str:
             </div>
             <div class="card-actions">
                 {video_btn}
-                {f'<button class="btn btn-secondary" onclick="toggleReview(\'{slug}\')">Review Sections ({len(sections)})</button>' if sections else ''}
+                {review_btn}
             </div>
             {sections_panel}
         </div>

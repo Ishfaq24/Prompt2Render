@@ -54,3 +54,41 @@ class Scene01(Scene):
 """
     healed = heal_manim_source(code)
     assert ".scale_to_fit_width(12.0)" in healed
+
+
+def test_heal_camera_frame_promotes_to_moving_camera_scene():
+    code = """
+class Scene01(Scene):
+    def construct(self):
+        self.play(focus_on(self.camera.frame, target))
+"""
+    healed = heal_manim_source(code)
+    assert "class Scene01(MovingCameraScene):" in healed
+
+
+def test_heal_unicode_math_symbols_in_mathtex():
+    code = 'formula = MathTex(r"\\min_{θ \\in ℝ^d} \\mathcal{L}(θ)")\ncomp = Tex("x × y ≤ z")'
+    healed = heal_manim_source(code)
+    assert r"\theta" in healed
+    assert r"\mathbb{R}" in healed
+    assert r"\times" in healed
+    assert r"\le" in healed
+    assert "θ" not in healed
+    assert "ℝ" not in healed
+    assert "×" not in healed
+    assert "≤" not in healed
+
+
+def test_generator_manim_plugin_clean_applies_healing():
+    from prompt2render.harness.plugins.renderer_manim import GeneratorManimPlugin
+    plugin = GeneratorManimPlugin()
+    raw = """
+```python
+class Scene02(Scene):
+    def construct(self):
+        self.play(reset_frame(self.camera.frame))
+```
+"""
+    cleaned = plugin._clean_generated_code(raw)
+    assert "class Scene02(MovingCameraScene):" in cleaned
+
