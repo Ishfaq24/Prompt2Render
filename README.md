@@ -131,6 +131,7 @@ script.md ──> voice ──> align ──> scenes ──> stills ──> plan
 | **LLM Reasoning & Storyboard** | Google Gemini | `2.5 / 1.5 Pro / Flash` | Script structuring, pedagogical breakdown, and SceneKit generation |
 | **Video & Audio Encoding** | FFmpeg / FFprobe | `6.0+` (NVENC / x264) | Hardware-accelerated clip encoding, dissolve transitions, and muxing |
 | **Typography & Math Layout** | MiKTeX / TeX Live (dvisvgm) | LaTeX 2e | Vector rendering of LaTeX equations via `MathTex` / `Tex` |
+| **Multilingual Engine** | Pango / HarfBuzz / Devanagari / RTL | Multi-script | English, Hindi, Urdu, Arabic, and Kashmiri video synthesis |
 | **Audio Mastering** | Custom LUFS Limiter (FFmpeg) | EBU R128 | Static gain mastering to YouTube standard `-14 LUFS` |
 | **AST & Layout Validation** | Python AST & Pillow / Shapely | Native | Static code validation and pixel-space polygon collision detection |
 | **Execution Environment** | Python & PowerShell / Bash | `3.10+` / `3.12` | Cross-platform orchestration, process isolation, and CLI runtime |
@@ -434,6 +435,13 @@ python prompt2render.py auto "<slug>" --harness --strict --manim
 - Targets **Manim Community 0.21.0**, with `P2R_MANIM_VERSION` available for reproducible comparison runs.
 - The Manim harness renderer performs source validation, render checks, and layout verification before accepting generated scenes.
 - Keep the pinned dependency in `requirements.txt` aligned with `prompt2render/manimver.py`.
+
+### 5.1 `prompt2render/multilingual` — Multilingual Video Generation Pipeline
+- **Language Registry:** First-class support for English (`en`), Hindi (`hi`), Urdu (`ur`), Arabic (`ar`), and Kashmiri (`ks`) with dual-script selection (Perso-Arabic `Arab` vs Devanagari `Deva`).
+- **Pango & Complex Text Shaping:** Integrates platform font mapping (`Nirmala UI` for Devanagari; `Arial` / `Segoe UI` for Arabic/Urdu RTL) with automated bidirectional text handling.
+- **Terminology & Formula Preservation:** Context-aware translation masks LaTeX equations (`$...$`), variable tokens, and code blocks before translation, guaranteeing mathematical accuracy.
+- **Visual Quality Assurance (`visual_qa.py`):** Closed-loop post-render inspection detecting blank frames, low ink fraction, text clipping, and caption safe-zone collisions with automated targeted repair (`repair.py`).
+- **Interactive Studio UI & CLI:** Web dashboard multilingual generator modal and CLI commands: `python prompt2render.py languages` and `python prompt2render.py multilingual "<topic>" --lang <lang>`.
 
 ### 6. `prompt2render/encode.py` & `finish.py` — Encoding & Assembly
 - **Hardware-Accelerated Encoding:** Detects NVENC GPUs automatically, launching multi-process encoding jobs (`--jobs 3`) with head dissolve transitions.

@@ -144,6 +144,8 @@ def _front_matter(
     ai: bool = False,
     topic: str | None = None,
     aspect: str = "16:9",
+    language: str = "en",
+    script: str | None = None,
 ) -> str:
     """Render the canonical script front matter."""
     title = str(title).strip()
@@ -158,11 +160,14 @@ def _front_matter(
         "This is a starting outline"
     )
 
+    script_line = f"\nscript: {script}" if script else ""
+
     return f"""---
 title: {title}
 topic: {topic}
 audience: undergraduate computer science
 aspect: {aspect}
+language: {language}{script_line}
 ---
 
 <!-- HOW THIS FILE WORKS
@@ -182,6 +187,8 @@ def render_template(
     minutes: float | None = None,
     sections: int | None = None,
     aspect: str = "16:9",
+    language: str = "en",
+    script: str | None = None,
 ) -> str:
     """Render the deterministic starter script."""
     n, minutes = _resolve_outline(minutes, sections)
@@ -199,6 +206,8 @@ def render_template(
             ai=False,
             topic=title,
             aspect=aspect,
+            language=language,
+            script=script,
         )
     ]
 
@@ -308,6 +317,8 @@ def render_from_sections(
     minutes: float | None = None,
     topic: str | None = None,
     aspect: str = "16:9",
+    language: str = "en",
+    script: str | None = None,
 ) -> str:
     """Render script.md from an explicit ``[{"title", "anim"}, ...]`` list.
 
@@ -347,6 +358,8 @@ def render_from_sections(
             ai=True,
             topic=topic or title,
             aspect=aspect,
+            language=language,
+            script=script,
         )
     ]
 
@@ -712,6 +725,8 @@ def new_project(
     minutes: float | None = None,
     sections: int | None = None,
     aspect: str = "16:9",
+    language: str = "en",
+    script: str | None = None,
 ) -> Path:
     """Create a new project workspace directory with an initial script.md."""
     if any(sep in str(slug) for sep in ('/', '\\', '..', ':', '\0')):
@@ -726,17 +741,19 @@ def new_project(
         else slug.replace("-", " ").title()
     )
 
-    script = render_template(
+    script_content = render_template(
         title,
         minutes=minutes,
         sections=sections,
         aspect=aspect,
+        language=language,
+        script=script,
     )
 
     script_path = d / "script.md"
 
     script_path.write_text(
-        script,
+        script_content,
         encoding="utf-8",
     )
 
@@ -750,6 +767,8 @@ def new_project_from_sections(
     minutes: float | None = None,
     topic: str | None = None,
     aspect: str = "16:9",
+    language: str = "en",
+    script: str | None = None,
 ) -> Path:
     """Create a project whose section structure is already decided.
 
@@ -761,18 +780,20 @@ def new_project_from_sections(
         slug = cfg.slugify(slug)
     d = _scaffold_dirs(slug)
 
-    script = render_from_sections(
+    script_content = render_from_sections(
         title,
         sections,
         minutes=minutes,
         topic=topic,
         aspect=aspect,
+        language=language,
+        script=script,
     )
 
     script_path = d / "script.md"
 
     script_path.write_text(
-        script,
+        script_content,
         encoding="utf-8",
     )
 

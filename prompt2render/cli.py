@@ -27,6 +27,7 @@ Run `python prompt2render.py doctor` first; it will tell you what is missing.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -95,6 +96,48 @@ def cmd_voices(a):
     print(f"{len(names)} kokoro voices:\n")
     for i in range(0, len(names), 6):
         print("  " + "  ".join(n.ljust(12) for n in names[i:i + 6]))
+
+
+def cmd_languages(a):
+    from prompt2render.multilingual import LanguageRegistry
+    langs = LanguageRegistry.list_languages()
+    print("\nSupported Multilingual Video Languages & Writing Scripts:")
+    print("---------------------------------------------------------")
+    for l in langs:
+        scripts_desc = ", ".join(f"{s['code']} ({s['name']}, {s['direction'].upper()}, font: {s['font']})" for s in l['scripts'])
+        print(f"  • {l['name']} [{l['code']}] - Native: {l['native_name']}")
+        print(f"    Default Script: {l['default_script']} | Available: {scripts_desc}")
+    print()
+
+
+def cmd_multilingual(a):
+    from prompt2render.multilingual import MultilingualPipeline
+    prompt = a.prompt.strip()
+    target_lang = (a.lang or "en").strip().lower()
+    target_script = a.script
+    input_lang = a.input_lang
+    slug = a.slug or cfg.slugify(prompt[:30])
+
+    print(f"\n[prompt2render] Starting Multilingual Generation:")
+    print(f"  Prompt:          {prompt}")
+    print(f"  Target Language: {target_lang}")
+    print(f"  Target Script:   {target_script or 'default'}")
+    print(f"  Project Slug:    {slug}\n")
+
+    res = MultilingualPipeline.execute_pipeline(
+        prompt=prompt,
+        target_lang=target_lang,
+        target_script=target_script,
+        input_lang=input_lang,
+        slug=slug,
+        duration_minutes=a.minutes or 2.0,
+        enable_narration=not a.no_narration,
+        enable_subtitles=not a.no_subtitles,
+    )
+
+    print(f"SUCCESS: Generated {len(res['scenes'])} scenes for project '{slug}'.")
+    print(f"Specification saved to: {res['project_dir']}/multilingual_spec.json")
+    print(f"To render video: python prompt2render.py build {slug} --manim\n")
 
 
 def cmd_serve(a):
@@ -212,20 +255,25 @@ def _run_pipeline(d, s, a) -> int:
             rend = scenes.select_renderer(sec)
             section_dir = d / "build" / "scenes" / sec.stem
             class_name = f"Scene{sec.stem}"
+            src = None
+            for cand in [d / "scenes" / f"scene_{sec.stem}.py", d / "scenes" / f"{sec.stem}.py"]:
+                if cand.exists():
+                    src = cand
+                    break
+            if not src:
+                src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
             clip_path = clips.get(sec.stem) or (section_dir / f"scene_{sec.stem}.mp4")
-            if not clip_path.exists():
+            if os.environ.get("P2R_NO_CACHE") == "1":
+                clip_path = clips.get(sec.stem)
+            elif clip_path and clip_path.exists() and src.exists() and src.stat().st_mtime > clip_path.stat().st_mtime:
+                clip_path = None
+            if not clip_path or not clip_path.exists():
                 sec_cand = d / "sections" / f"{sec.stem}.mp4"
-                if sec_cand.exists():
+                if os.environ.get("P2R_NO_CACHE") != "1" and sec_cand.exists() and (not src.exists() or src.stat().st_mtime <= sec_cand.stat().st_mtime):
                     clip_path = sec_cand
                 elif rend == "video" or getattr(sec, "media_type", "") == "video":
-                    clip_path = conform_video_for_section(d, s, sec, clip_path)
+                    clip_path = conform_video_for_section(d, s, sec, clip_path or (section_dir / f"scene_{sec.stem}.mp4"))
                 else:
-                    src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
-                    if not src.exists():
-                        for cand in [d / "scenes" / f"{sec.stem}.py", d / "scenes" / f"scene_{sec.stem}.py"]:
-                            if cand.exists():
-                                src = cand
-                                break
                     if src.exists():
                         code = src.read_text(encoding="utf-8")
                         healed = heal_manim_source(code)
@@ -249,12 +297,13 @@ def _run_pipeline(d, s, a) -> int:
                     import json
                     amap = json.loads(amap_path.read_text(encoding="utf-8"))
                 for sec in s.sections:
-                    sec_src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
-                    if not sec_src.exists():
-                        for cand in [d / "scenes" / f"{sec.stem}.py", d / "scenes" / f"scene_{sec.stem}.py"]:
-                            if cand.exists():
-                                sec_src = cand
-                                break
+                    sec_src = None
+                    for cand in [d / "scenes" / f"scene_{sec.stem}.py", d / "scenes" / f"{sec.stem}.py"]:
+                        if cand.exists():
+                            sec_src = cand
+                            break
+                    if not sec_src or not sec_src.exists():
+                        sec_src = d / "build" / "scenes" / f"scene_{sec.stem}.py"
                     if sec_src.exists():
                         code_txt = sec_src.read_text(encoding="utf-8")
                         sec_start = float(amap.get("sections", {}).get(sec.stem, {}).get("start", 0.0))
@@ -1359,6 +1408,17 @@ def main() -> None:
     m.add_argument("--force", action="store_true")
 
     add("voices", cmd_voices, "list the available kokoro voices")
+    add("languages", cmd_languages, "list supported multilingual languages and scripts")
+
+    ml_cmd = add("multilingual", cmd_multilingual, "generate multilingual educational video from prompt")
+    ml_cmd.add_argument("prompt", help="educational topic or prompt in any language")
+    ml_cmd.add_argument("--lang", default="en", help="target video language (en, hi, ur, ar, ks)")
+    ml_cmd.add_argument("--script", default=None, help="target script (e.g. Arab or Deva for Kashmiri)")
+    ml_cmd.add_argument("--input-lang", dest="input_lang", default=None, help="input prompt language (auto-detected if omitted)")
+    ml_cmd.add_argument("--slug", default=None, help="project slug name")
+    ml_cmd.add_argument("--minutes", type=float, default=2.0, help="duration in minutes")
+    ml_cmd.add_argument("--no-narration", action="store_true", help="disable narration audio")
+    ml_cmd.add_argument("--no-subtitles", action="store_true", help="disable subtitles")
 
     sv = add("serve", cmd_serve, "start the local web dashboard")
     sv.add_argument("--host", default="127.0.0.1",
@@ -1575,6 +1635,13 @@ def main() -> None:
 
     an = add("animate", cmd_animate, "(retired — use `scenes`)")
     an.add_argument("slug", nargs="?")
+
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     a = p.parse_args()
     try:

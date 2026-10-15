@@ -159,17 +159,35 @@ class FormulaCard(VGroup):
         rendered_steps = []
         for i, step_str in enumerate(steps):
             is_hl = (highlight_step == i)
-            c_text = Text(
-                step_str,
-                font_size=15,
-                weight="BOLD" if is_hl else "NORMAL",
-                color=AMBER if is_hl else TEXT_PRIMARY,
-            )
+            color = AMBER if is_hl else TEXT_PRIMARY
+            has_latex = any(c in step_str for c in (r"\\", r"^", r"_", r"{", r"}", r"=", r"+", r"-", r"\cdot", r"\sum", r"\nabla", r"\sigma", r"\delta"))
+            if has_latex:
+                try:
+                    c_text = MathTex(step_str, font_size=18, color=color)
+                except Exception:
+                    c_text = Text(step_str, font_size=14, weight="BOLD" if is_hl else "NORMAL", color=color)
+            else:
+                c_text = Text(
+                    step_str,
+                    font_size=14,
+                    weight="BOLD" if is_hl else "NORMAL",
+                    color=color,
+                )
+            if c_text.width > width - 0.5:
+                c_text.scale_to_fit_width(width - 0.5)
             c_text.move_to((0, height / 2.0 - 0.65 - i * step_height, 0))
             rendered_steps.append(c_text)
 
         self.step_group = VGroup(*rendered_steps)
         self.add(self.card, header, self.step_group)
+
+    def set_highlight(self, index: int) -> None:
+        """Highlight a specific step index in AMBER and unhighlight others."""
+        for i, elem in enumerate(self.step_group):
+            if i == index:
+                elem.set_color(AMBER)
+            else:
+                elem.set_color(TEXT_PRIMARY)
 
 
 class KeyBadge(VGroup):

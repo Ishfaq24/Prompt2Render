@@ -1667,16 +1667,8 @@ def heal_manim_source(code: str) -> str:
     # Fix move_to(..., corner=...) -> remove corner parameter
     code = re.sub(r',?\s*corner=[^,)]+', '', code)
 
-    # 1. SPATIAL AUTO-LAYOUT GUARD: Clamp long Text and MathTex width to prevent horizontal overflow (> 12.5 width)
-    # If a Text instantiation has a literal string longer than 45 chars and doesn't scale_to_fit_width, clamp it
-    def _clamp_wide_text(m):
-        txt_call = m.group(0)
-        content = m.group(1)
-        if len(content) > 42 and "scale_to_fit_width" not in txt_call:
-            return f"{txt_call}.scale_to_fit_width(12.0)"
-        return txt_call
-
-    code = re.sub(r'Text\s*\(\s*([\'"][^\'"]{43,}[\'"])[^)]*\)', _clamp_wide_text, code)
+    # 1. SPATIAL AUTO-LAYOUT GUARD: Remove any chained or injected scale_to_fit_width calls
+    code = re.sub(r'(\.scale_to_fit_width\([^)]*\))+', '', code)
 
     # 2. SPATIAL AUTO-LAYOUT GUARD: Clamp non-caption elements from moving into bottom caption zone (y < -2.5)
     def _clamp_caption_trespass(m):
@@ -1977,9 +1969,12 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
         "-m",
         "manim",
         quality,
+        "--fps",
+        str(cfg.FPS),
         "-r",
         f"{cfg.WIDTH},{cfg.HEIGHT}",
         "--disable_caching",
+        "--flush_cache",
         "--media_dir",
         str(media_dir.resolve()),
         str(src.resolve()),
@@ -2066,29 +2061,41 @@ def render_manim_parallel(
     if not sections:
         return {}
 
-    workers = max_workers or min(len(sections), (os.cpu_count() or 4))
+    workers = max_workers or int(os.environ.get("P2R_MANIM_WORKERS", min(len(sections), 4)))
     cfg.say(f"Rendering {len(sections)} Manim scenes in parallel ({workers} worker threads)...")
 
     results: dict[str, Path] = {}
 
     def _render_worker(sec) -> tuple[str, Path]:
-        src = outdir / f"scene_{sec.stem}.py"
+        src = None
+        for cand in [proj / "scenes" / f"scene_{sec.stem}.py", proj / "scenes" / f"{sec.stem}.py"]:
+            if cand.exists():
+                src = cand
+                break
+        if not src:
+            src = outdir / f"scene_{sec.stem}.py"
         if not src.exists() and (manim_dir / f"scene_{sec.stem}.py").exists():
             src = manim_dir / f"scene_{sec.stem}.py"
-        if not src.exists():
-            for cand in [proj / "scenes" / f"{sec.stem}.py", proj / "scenes" / f"scene_{sec.stem}.py"]:
-                if cand.exists():
-                    src = cand
-                    break
 
         section_dir = outdir / sec.stem
         mp4_path = section_dir / f"scene_{sec.stem}.mp4"
         sec_cand = proj / "sections" / f"{sec.stem}.mp4"
 
-        if mp4_path.exists() and mp4_path.stat().st_size > 1024:
-            return sec.stem, mp4_path
-        if sec_cand.exists() and sec_cand.stat().st_size > 1024:
-            return sec.stem, sec_cand
+        is_stale = False
+        if os.environ.get("P2R_NO_CACHE") == "1":
+            is_stale = True
+        elif src and src.exists():
+            src_mtime = src.stat().st_mtime
+            if mp4_path.exists() and src_mtime > mp4_path.stat().st_mtime:
+                is_stale = True
+            if sec_cand.exists() and src_mtime > sec_cand.stat().st_mtime:
+                is_stale = True
+
+        if not is_stale:
+            if mp4_path.exists() and mp4_path.stat().st_size > 1024:
+                return sec.stem, mp4_path
+            if sec_cand.exists() and sec_cand.stat().st_size > 1024:
+                return sec.stem, sec_cand
 
         if src.exists():
             code = src.read_text(encoding="utf-8")
@@ -2626,14 +2633,19 @@ def generate_all(proj: Path, script: Script, index: int | None = None,
             cfg.say(f"section {sec.stem}: video/b-roll media section, skipping code generation")
             continue
         if is_manim_renderer(rend):
-            if dst.exists():
-                cfg.say(f"section {sec.stem}: Manim scene already written, skipping (delete it to regenerate)")
-                continue
-            elif alt_dst.exists():
+            pre_authored = None
+            for cand in [proj / "scenes" / f"scene_{sec.stem}.py", proj / "scenes" / f"{sec.stem}.py"]:
+                if cand.exists():
+                    pre_authored = cand
+                    break
+            if pre_authored is not None:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 import shutil
-                shutil.copyfile(alt_dst, dst)
-                cfg.say(f"section {sec.stem}: using pre-authored scene from {alt_dst}")
+                shutil.copyfile(pre_authored, dst)
+                cfg.say(f"section {sec.stem}: using pre-authored scene from {pre_authored}")
+                continue
+            elif dst.exists():
+                cfg.say(f"section {sec.stem}: Manim scene already written, skipping (delete it to regenerate)")
                 continue
         # dst.exists() alone isn't "done": generate() writes the .py file
         # before the audit runs, so a section that exhausted its retries

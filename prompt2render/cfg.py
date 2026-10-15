@@ -144,7 +144,7 @@ CAPTION_CPS = 20.0
 
 CAPTION_FONT = "Segoe UI" if IS_WINDOWS else "DejaVu Sans"
 DEFAULT_MANIM_FONT = "Segoe UI" if IS_WINDOWS else "DejaVu Sans"
-CAPTION_FONT_SIZE = 34
+CAPTION_FONT_SIZE = 28
 
 _FONT_CANDIDATES = (
     r"C:\Windows\Fonts\segoeui.ttf",

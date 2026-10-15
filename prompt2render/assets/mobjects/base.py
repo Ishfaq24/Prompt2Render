@@ -25,11 +25,25 @@ except ImportError:
     config = {}  # type: ignore
 
 
-def get_default_font() -> str:
-    """Return the cleanest available modern sans-serif font for the OS."""
+def get_default_font(text: str | None = None) -> str:
+    """Return the cleanest available modern font for the OS and script."""
+    if text:
+        # Check script of text
+        for ch in text:
+            code = ord(ch)
+            if 0x0900 <= code <= 0x097F or 0x1CD0 <= code <= 0x1CFF:
+                # Devanagari script (Hindi / Kashmiri Devanagari)
+                if sys.platform.startswith("win"):
+                    return "Nirmala UI"
+                return "Lohit Devanagari"
+            elif 0x0600 <= code <= 0x06FF or 0x0750 <= code <= 0x077F or 0x08A0 <= code <= 0x08FF:
+                # Arabic / Urdu / Kashmiri Perso-Arabic script
+                if sys.platform.startswith("win"):
+                    return "Arial"
+                return "DejaVu Sans"
+
     is_windows = sys.platform.startswith("win")
     if is_windows:
-        # Check if Segoe UI or Arial is available
         return "Segoe UI"
     return "DejaVu Sans"
 
@@ -45,9 +59,9 @@ def apply_text_patches() -> None:
         orig_init = target_cls.__init__
 
         def _patched_init(self: Any, text: str, *args: Any, **kwargs: Any) -> None:
-            # 1. Default font to modern sans-serif if unspecified or empty
+            # 1. Default font to script-appropriate modern font if unspecified or empty
             if "font" not in kwargs or not kwargs["font"]:
-                kwargs["font"] = get_default_font()
+                kwargs["font"] = get_default_font(text)
 
             # 2. Fix Pango FreeType small-font kerning rounding errors
             # When font_size < 36, Pango renders at fractional pt sizes (font_size / 4.8)
