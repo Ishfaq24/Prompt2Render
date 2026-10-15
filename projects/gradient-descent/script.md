@@ -4,6 +4,8 @@ topic: Mathematical Optimization, Vector Calculus, and Deep Learning Algorithms
 audience: undergraduate computer science and AI practitioners
 aspect: 16:9
 voice: am_eric
+renderer: manim
+assets: false
 ---
 
 ## 1 - The Optimization Landscape and Objective Function

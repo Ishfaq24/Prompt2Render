@@ -114,7 +114,7 @@
         "ekg",
         "stemi",
         "st-segment",
-        "elevation",
+        "st-elevation",
         "electrocardiogram",
         "arrhythmia",
         "conduction",

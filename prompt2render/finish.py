@@ -688,14 +688,16 @@ def finish(
         else:
             vf = (
                 f"subtitles={cfg.filter_path(subtitle)}:"
+                f"original_size={cfg.WIDTH}x{cfg.HEIGHT}:"
                 "force_style='"
                 f"FontName={cfg.CAPTION_FONT},"
-                "FontSize=22,"
+                "FontSize=26,"
+                "Bold=1,"
                 "PrimaryColour=&HFFFFFF&,"
                 "OutlineColour=&H80000000&,"
                 "BorderStyle=3,"
                 "Outline=1,"
-                "MarginV=40'"
+                "MarginV=36'"
             )
 
         burned = build / "video_burned.mp4"
@@ -817,15 +819,47 @@ def finish_manim(
         exist_ok=True,
     )
 
+    amap = voice.audio_map(proj)
     filenames: list[str] = []
 
     for section in script.sections:
         destination = stage / f"{section.stem}.mp4"
-        shutil.copyfile(
-            section_clips[section.stem],
-            destination,
-        )
+        src_clip = section_clips[section.stem]
+        sec_info = amap.get("sections", {}).get(section.stem, {})
+        target_dur = float(sec_info.get("dur", 0.0))
+        clip_dur = cfg.duration(src_clip)
+
+        target_frames = round(target_dur * cfg.FPS) if target_dur > 0 else 0
+        filters = [
+            f"scale={cfg.WIDTH}:{cfg.HEIGHT}:force_original_aspect_ratio=decrease,pad={cfg.WIDTH}:{cfg.HEIGHT}:(ow-iw)/2:(oh-ih)/2",
+            f"fps={cfg.FPS}",
+        ]
+        if target_dur > 0 and clip_dur < target_dur - 0.01:
+            pad = target_dur - clip_dur + 0.2
+            filters.append(f"tpad=stop_mode=clone:stop_duration={pad:.3f}")
+
+        filters.append("setpts=PTS-STARTPTS")
+
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-i", str(src_clip),
+            "-vf", ",".join(filters),
+            "-an",
+            *cfg.pick_vopts(),
+        ]
+        if target_frames > 0:
+            cmd.extend(["-frames:v", str(target_frames)])
+        cmd.append(str(destination))
+        cfg.say(f"conforming manim clip section {section.stem} ({clip_dur:.2f}s -> {target_dur or clip_dur:.2f}s, {cfg.FPS}fps)")
+        cfg.run(cmd)
         filenames.append(destination.name)
+
+        sec_out = proj / "sections" / f"{section.stem}.mp4"
+        sec_out.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copyfile(destination, sec_out)
+        except Exception:
+            pass
 
     video = build / "video.mp4"
     _concat(
@@ -883,14 +917,16 @@ def finish_manim(
         else:
             vf = (
                 f"subtitles={cfg.filter_path(subtitle)}:"
+                f"original_size={cfg.WIDTH}x{cfg.HEIGHT}:"
                 "force_style='"
                 f"FontName={cfg.CAPTION_FONT},"
-                "FontSize=22,"
+                "FontSize=26,"
+                "Bold=1,"
                 "PrimaryColour=&HFFFFFF&,"
                 "OutlineColour=&H80000000&,"
                 "BorderStyle=3,"
                 "Outline=1,"
-                "MarginV=40'"
+                "MarginV=36'"
             )
 
         burned = build / "video_burned.mp4"

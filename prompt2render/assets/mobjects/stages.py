@@ -441,18 +441,19 @@ class SafeCaptionZone(VGroup):
 class CaptionDock(VGroup):
     """Safe, persistent caption dock banner positioned at the bottom of the canvas.
     
-    Guarantees no caption text ever overflows the screen or card boundaries.
+    Guarantees no caption text ever overflows the screen or card boundaries,
+    with modern glassmorphic styling and crisp, readable sans-serif typography.
     """
 
     def __init__(
         self,
         initial_text: str = "",
         width: float = 12.6,
-        height: float = 0.95,
+        height: float = 1.0,
         y_pos: float = -3.2,
-        corner_radius: float = 0.12,
-        fill_color: str = "#0F172A",
-        stroke_color: str = "#1E293B",
+        corner_radius: float = 0.14,
+        fill_color: str = "#090D16",
+        stroke_color: str = "#2A364F",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -463,24 +464,38 @@ class CaptionDock(VGroup):
             width=width,
             height=height,
             fill_color=fill_color,
-            fill_opacity=0.88,
+            fill_opacity=0.92,
             stroke_color=stroke_color,
-            stroke_width=1.5,
+            stroke_width=1.8,
         ).move_to([0, y_pos, 0])
         self.elements = [self.box]
 
-        self.text_mobj = self.create_caption(initial_text) if initial_text else Text("", font_size=12).move_to(self.box.get_center())
+        # Subtle top accent highlight line
+        if hasattr(self.box, "get_corner"):
+            try:
+                accent_line = Line(
+                    self.box.get_corner(UL) + RIGHT * 0.4,
+                    self.box.get_corner(UR) + LEFT * 0.4,
+                    stroke_color="#38BDF8",
+                    stroke_width=1.5,
+                    stroke_opacity=0.4,
+                )
+                self.elements.append(accent_line)
+            except Exception:
+                pass
+
+        self.text_mobj = self.create_caption(initial_text) if initial_text else Text("", font_size=18).move_to(self.box.get_center())
         self.elements.append(self.text_mobj)
         self.add(*self.elements)
 
     def create_caption(self, text: str) -> Any:
         """Create a new formatted Text mobject aligned and scaled to this dock."""
         import textwrap
-        chars_per_line = 76 if len(text) > 85 else 92
+        chars_per_line = 54 if len(text) > 60 else 64
         wrapped = textwrap.fill(text, width=chars_per_line)
-        t = Text(wrapped, font_size=12, color=TEXT_PRIMARY, line_spacing=1.15)
-        max_t_w = self.dock_width - 0.6
-        max_t_h = self.dock_height - 0.22
+        t = Text(wrapped, font_size=18, color="#F1F5F9", weight="MEDIUM", line_spacing=1.2)
+        max_t_w = self.dock_width - 0.8
+        max_t_h = self.dock_height - 0.18
         if hasattr(t, "width") and t.width > max_t_w:
             t.scale_to_fit_width(max_t_w)
         if hasattr(t, "height") and t.height > max_t_h:

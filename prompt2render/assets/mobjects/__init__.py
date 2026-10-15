@@ -1,6 +1,6 @@
 """Prompt2Render universal Manim Mobject component & layout stage library."""
 
-from .base import P2RSVGMobject
+from .base import P2RSVGMobject, P2RText, apply_text_patches, get_default_font
 from .hardware import MemoryBankMobject
 from .data_structures import BinaryTreeMobject
 from .math_widgets import CoordinateGridMobject
@@ -31,6 +31,9 @@ from .algo_math_widgets import (
 
 __all__ = [
     "P2RSVGMobject",
+    "P2RText",
+    "apply_text_patches",
+    "get_default_font",
     "MemoryBankMobject",
     "BinaryTreeMobject",
     "CoordinateGridMobject",

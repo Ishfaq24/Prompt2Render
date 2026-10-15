@@ -626,12 +626,13 @@ def assemble(
             f"{subtitle_name}:"
             "force_style="
             f"'FontName={cfg.CAPTION_FONT},"
-            "FontSize=22,"
+            f"FontSize={cfg.CAPTION_FONT_SIZE},"
+            "Bold=1,"
             "PrimaryColour=&HFFFFFF&,"
             "OutlineColour=&H80000000&,"
             "BorderStyle=3,"
             "Outline=1,"
-            "MarginV=40'"
+            "MarginV=48'"
         )
 
         cfg.run(

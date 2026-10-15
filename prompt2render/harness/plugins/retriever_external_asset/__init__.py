@@ -142,6 +142,19 @@ class RetrieverExternalAssetPlugin(Plugin):
                 if len(scene_hits) >= max_assets_per_scene:
                     break
 
+            if not scene_hits and allow_mock:
+                mock_prov = [p for p in get_available_providers(allow_mock_fallback=True) if p.name == "mock"]
+                if mock_prov:
+                    fallback_query = derived_queries[0]["query"] if derived_queries else "server"
+                    found = search_all_providers(
+                        query=fallback_query,
+                        providers=mock_prov,
+                        orientation="landscape",
+                        asset_type="photo",
+                        limit_per_provider=max_assets_per_scene,
+                    )
+                    scene_hits = list(found[:max_assets_per_scene])
+
             for hit in scene_hits:
                 role = derived_queries[0].get("role", "background")
                 try:

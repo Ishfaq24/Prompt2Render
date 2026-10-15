@@ -10,7 +10,7 @@
       "license": "MIT",
       "source_url": "https://prompt2render.internal/assets/lottie/packet_stream.json",
       "author": "Prompt2Render Team",
-      "keywords": ["packet", "network", "router", "packets", "stream", "data transfer", "transmission", "tcp", "ip"],
+      "keywords": ["packet", "computer network", "router", "packets", "packet stream", "data transfer", "transmission", "tcp", "ip"],
       "description": "Smooth continuous vector animation of animated data packets traveling across a high-speed data stream.",
       "asset_file": "lottie/packet_stream.json",
       "duration_seconds": 2.0,

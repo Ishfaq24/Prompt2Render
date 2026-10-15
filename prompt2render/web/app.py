@@ -79,10 +79,42 @@ def _get_project_summary(slug: str) -> dict[str, Any] | None:
         except Exception:
             pass
 
+    # Multilingual metadata
+    lang = "en"
+    script = "Latn"
+    spec_file = proj_dir / "multilingual_spec.json"
+    if spec_file.is_file():
+        try:
+            sdata = json.loads(spec_file.read_text(encoding="utf-8"))
+            lang = sdata.get("target_language", lang)
+            script = sdata.get("target_script", script)
+        except Exception:
+            pass
+    elif script_path.is_file():
+        try:
+            s = project.parse_script(script_path)
+            lang = s.meta.get("language", lang)
+            script = s.meta.get("script", script)
+        except Exception:
+            pass
+
+    from prompt2render.multilingual import FontManager, LanguageRegistry
+    is_rtl = False
+    font_name = "Segoe UI"
+    try:
+        is_rtl = LanguageRegistry.is_rtl(lang, script)
+        font_name = FontManager.resolve_best_font(lang, script)
+    except Exception:
+        pass
+
     return {
         "slug": clean_slug,
         "title": title,
         "topic": topic,
+        "language": lang,
+        "script": script,
+        "is_rtl": is_rtl,
+        "font": font_name,
         "sections_count": sections_count,
         "has_audio": has_audio,
         "align_count": align_count,
@@ -292,6 +324,68 @@ def get_project_audio(slug: str):
     raise HTTPException(status_code=404, detail="No master audio found")
 
 
+@app.get("/api/multilingual/languages")
+def api_get_supported_languages() -> list[dict[str, Any]]:
+    """Return registry of supported languages, scripts, fonts, and text direction."""
+    from prompt2render.multilingual import LanguageRegistry
+    return LanguageRegistry.list_languages()
+
+
+@app.post("/api/multilingual/validate")
+def api_validate_multilingual_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate language and script combination, font availability, and RTL status."""
+    from prompt2render.multilingual import FontManager, LanguageRegistry
+    lang = payload.get("language", "en")
+    script = payload.get("script")
+
+    try:
+        lspec = LanguageRegistry.get_language(lang)
+        sspec = lspec.get_script(script)
+        best_font = FontManager.resolve_best_font(lang, script)
+        return {
+            "valid": True,
+            "language": lspec.name,
+            "script": sspec.name,
+            "direction": sspec.direction,
+            "font": best_font,
+            "font_installed": FontManager.verify_font_availability(best_font),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/multilingual/generate")
+def api_generate_multilingual(payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate multilingual educational scenes and specification."""
+    prompt = payload.get("prompt", "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    target_lang = payload.get("target_language", "en").strip().lower()
+    target_script = payload.get("target_script")
+    input_lang = payload.get("input_language")
+    slug = payload.get("slug")
+    duration = float(payload.get("duration_minutes", 2.0))
+    enable_narr = bool(payload.get("enable_narration", True))
+    enable_sub = bool(payload.get("enable_subtitles", True))
+
+    from prompt2render.multilingual import MultilingualPipeline
+    try:
+        result = MultilingualPipeline.execute_pipeline(
+            prompt=prompt,
+            target_lang=target_lang,
+            target_script=target_script,
+            input_lang=input_lang,
+            slug=slug,
+            duration_minutes=duration,
+            enable_narration=enable_narr,
+            enable_subtitles=enable_sub,
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Multilingual generation failed: {exc}")
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard_html() -> str:
     """Render the responsive studio dashboard HTML."""
@@ -368,13 +462,18 @@ def dashboard_html() -> str:
         </div>
         """ if sections else ""
 
+        review_btn = (
+            f'<button class="btn btn-secondary" onclick="toggleReview(\'{slug}\')">Review Sections ({len(sections)})</button>'
+            if sections else ""
+        )
+
         cards_html += f"""
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">{p["title"]}</h3>
                 <div>{status_badge}</div>
             </div>
-            <p class="card-slug"><code>{slug}</code> &bull; {p["sections_count"]} sections</p>
+            <p class="card-slug"><code>{slug}</code> &bull; <span class="badge badge-lang">{p.get("language", "en").upper()}-{p.get("script", "Latn")} ({p.get("font", "Segoe UI")})</span> &bull; {p["sections_count"]} sections</p>
             <p class="card-topic">{p["topic"] or "Topic unassigned"}</p>
             <div class="pipeline-progress">
                 <span class="step {'step-done' if p['sections_count'] else ''}">Script</span> &rarr;
@@ -385,7 +484,7 @@ def dashboard_html() -> str:
             </div>
             <div class="card-actions">
                 {video_btn}
-                {f'<button class="btn btn-secondary" onclick="toggleReview(\'{slug}\')">Review Sections ({len(sections)})</button>' if sections else ''}
+                {review_btn}
             </div>
             {sections_panel}
         </div>
@@ -488,6 +587,14 @@ def dashboard_html() -> str:
         .sec-narr {{ color: var(--dim); font-size: 0.78rem; }}
         .sec-link {{ color: var(--accent); text-decoration: none; font-weight: 500; }}
         .hitl-ctrls {{ display: flex; gap: 0.4rem; align-items: center; }}
+        .badge-lang {{ background: rgba(56, 139, 253, 0.2); color: #60A5FA; border: 1px solid rgba(56, 139, 253, 0.4); }}
+        .generator-card {{ background: #151D33; border: 1px solid #2B3A5A; border-radius: 8px; padding: 1.5rem; margin-bottom: 2rem; }}
+        .form-row {{ display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1rem; align-items: end; }}
+        .form-group {{ display: flex; flex-direction: column; gap: 0.35rem; }}
+        .form-group label {{ font-size: 0.8rem; color: var(--dim); font-weight: 500; }}
+        .form-control {{ background: #0B0F19; border: 1px solid var(--border); border-radius: 6px; color: #FFF; padding: 0.5rem 0.75rem; font-size: 0.875rem; }}
+        .toggles-row {{ display: flex; gap: 1.5rem; align-items: center; margin-bottom: 1.2rem; font-size: 0.85rem; color: #CBD5E1; }}
+        .preview-box {{ background: #0B0F19; border: 1px dashed #334155; border-radius: 6px; padding: 0.75rem; font-size: 0.85rem; color: #94A3B8; margin-bottom: 1rem; }}
         .input-reason {{ background: #0F172A; border: 1px solid #334155; border-radius: 4px; color: #FFF; padding: 0.25rem 0.5rem; font-size: 0.8rem; flex-grow: 1; }}
         .empty-text {{ color: var(--dim); text-align: center; padding: 3rem 0; }}
         .dim {{ color: #64748B; }}
@@ -497,6 +604,58 @@ def dashboard_html() -> str:
         function toggleReview(slug) {{
             const p = document.getElementById('review-' + slug);
             p.style.display = p.style.display === 'none' ? 'block' : 'none';
+        }}
+        function updateScriptOptions() {{
+            const lang = document.getElementById('target-lang').value;
+            const scriptSel = document.getElementById('target-script');
+            scriptSel.innerHTML = '';
+            if (lang === 'hi') {{
+                scriptSel.innerHTML = '<option value="Deva">Devanagari (Standard)</option>';
+                document.getElementById('preview-text').innerText = 'रैखिक प्रतिगमन और न्यूरल नेटवर्क की कार्यप्रणाली';
+            }} else if (lang === 'ur') {{
+                scriptSel.innerHTML = '<option value="Arab">Urdu Nastaliq / Arabic (RTL)</option>';
+                document.getElementById('preview-text').innerText = 'بائنری سرچ الگورتھم اور ڈیٹا ڈھانچے';
+            }} else if (lang === 'ar') {{
+                scriptSel.innerHTML = '<option value="Arab">Arabic (RTL)</option>';
+                document.getElementById('preview-text').innerText = 'الانحدار الخطي وشبكات الأعصاب الاصطناعية';
+            }} else if (lang === 'ks') {{
+                scriptSel.innerHTML = '<option value="Arab">Perso-Arabic (RTL)</option><option value="Deva">Devanagari</option>';
+                document.getElementById('preview-text').innerText = 'کٲشُر زَبانہِ مَنٛز الگورتھم / कॉशुर ज़बानि मंज़ एल्गोरिदम';
+            }} else {{
+                scriptSel.innerHTML = '<option value="Latn">Latin (Standard)</option>';
+                document.getElementById('preview-text').innerText = 'Gradient Descent Optimization and Neural Networks';
+            }}
+        }}
+        async function runMultilingualGen() {{
+            const prompt = document.getElementById('gen-prompt').value.trim();
+            if (!prompt) return alert('Please enter an educational topic or prompt.');
+            const targetLang = document.getElementById('target-lang').value;
+            const targetScript = document.getElementById('target-script').value;
+            const btn = document.getElementById('gen-btn');
+            btn.disabled = true;
+            btn.innerText = 'Synthesizing Multilingual Video...';
+            try {{
+                const res = await fetch('/api/multilingual/generate', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        prompt: prompt,
+                        target_language: targetLang,
+                        target_script: targetScript,
+                        enable_narration: true,
+                        enable_subtitles: true
+                    }})
+                }});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Generation failed');
+                alert('Multilingual video project created: ' + data.slug + ' (' + data.scenes.length + ' scenes)');
+                window.location.reload();
+            }} catch(err) {{
+                alert('Generation error: ' + err.message);
+            }} finally {{
+                btn.disabled = false;
+                btn.innerText = 'Generate Multilingual Video';
+            }}
         }}
         async function sendHitl(slug, stem, status) {{
             const reasonInput = document.getElementById('reason-' + slug + '-' + stem);
@@ -523,9 +682,45 @@ def dashboard_html() -> str:
 <body>
     <div class="header">
         <h1>🎬 Prompt2Render Studio</h1>
-        <p>Industrial, frame-accurate mathematical explainer video workbench</p>
+        <p>Industrial, frame-accurate multilingual educational video workbench</p>
     </div>
     <div class="container">
+        <div class="generator-card">
+            <h3 style="margin-top:0;margin-bottom:1rem;color:#FFF;">🌐 Generate Multilingual Educational Video</h3>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Educational Topic / Prompt</label>
+                    <input type="text" id="gen-prompt" class="form-control" placeholder="e.g. Explain linear regression with gradient descent" />
+                </div>
+                <div class="form-group">
+                    <label>Target Language</label>
+                    <select id="target-lang" class="form-control" onchange="updateScriptOptions()">
+                        <option value="en">English (en)</option>
+                        <option value="hi">Hindi (hi)</option>
+                        <option value="ur">Urdu (ur)</option>
+                        <option value="ar">Arabic (ar)</option>
+                        <option value="ks">Kashmiri (ks)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Writing Script</label>
+                    <select id="target-script" class="form-control">
+                        <option value="Latn">Latin (Standard)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <button id="gen-btn" class="btn btn-primary" onclick="runMultilingualGen()" style="height:38px;">Generate Video</button>
+                </div>
+            </div>
+            <div class="toggles-row">
+                <label><input type="checkbox" id="chk-narr" checked /> Neural Audio Narration</label>
+                <label><input type="checkbox" id="chk-subs" checked /> Frame-Synchronized Subtitles</label>
+                <label><input type="checkbox" id="chk-audit" checked /> Closed-Loop Visual QA & Collision Repair</label>
+            </div>
+            <div class="preview-box">
+                <strong>Language Script Preview:</strong> <span id="preview-text">Gradient Descent Optimization and Neural Networks</span>
+            </div>
+        </div>
         {cards_html}
     </div>
 </body>

@@ -142,11 +142,13 @@ CAPTION_MIN_S = 0.833
 CAPTION_MAX_S = 7.0
 CAPTION_CPS = 20.0
 
-CAPTION_FONT = "Arial" if IS_WINDOWS else "DejaVu Sans"
+CAPTION_FONT = "Segoe UI" if IS_WINDOWS else "DejaVu Sans"
+DEFAULT_MANIM_FONT = "Segoe UI" if IS_WINDOWS else "DejaVu Sans"
+CAPTION_FONT_SIZE = 28
 
 _FONT_CANDIDATES = (
-    r"C:\Windows\Fonts\arial.ttf",
     r"C:\Windows\Fonts\segoeui.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
     "/Library/Fonts/Arial.ttf",
@@ -795,11 +797,13 @@ __all__ = [
     "AAC_BITRATE",
     "CAPTION_CPS",
     "CAPTION_FONT",
+    "CAPTION_FONT_SIZE",
     "CAPTION_LINE",
     "CAPTION_LINES",
     "CAPTION_MAX_S",
     "CAPTION_MIN_S",
     "CRF",
+    "DEFAULT_MANIM_FONT",
     "FPS",
     "HEIGHT",
     "IS_WINDOWS",

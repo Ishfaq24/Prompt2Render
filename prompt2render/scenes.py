@@ -216,6 +216,16 @@ def stage_external_assets_for_section(proj: Path, sec) -> tuple[str, str]:
     if getattr(sec, "assets", True) is False:
         return "", ""
 
+    try:
+        from .project import parse_script
+        script_file = proj / "script.md"
+        if script_file.exists():
+            s_parsed = parse_script(script_file)
+            if s_parsed.meta.get("assets") is False or str(s_parsed.meta.get("assets", "")).lower() in ("false", "0", "no", "off"):
+                return "", ""
+    except Exception:
+        pass
+
     import shutil
 
     anim_text = getattr(sec, "anim", "") or ""
@@ -310,7 +320,11 @@ def stage_external_assets_for_section(proj: Path, sec) -> tuple[str, str]:
     # -------------------------------------------------------------------------
     # Tier 3: External stock providers with strict semantic relevance gating
     # -------------------------------------------------------------------------
-    if not manim_hints and not matplot_hints:
+    rend = select_renderer(sec)
+    is_manim = is_manim_renderer(rend) or rend in {"manim", "manim_3d"}
+    wants_photo = any(tag in anim_text.lower() for tag in ["[photo]", "[stock]", "[image]", "[asset]", "photo", "photograph"])
+
+    if not manim_hints and not matplot_hints and (not is_manim or wants_photo):
         try:
             from .assets.providers import get_available_providers, search_all_providers
             from .assets.cache import AssetCache
@@ -1428,6 +1442,14 @@ CINEMATIC AESTHETICS & DESIGN TOKENS:
     - Success / Verified (Emerald): "#10B981" or GREEN_B
     - Warning / Overload (Coral/Red): "#EF4444" or RED_B
 
+  * Typography & Legibility Hierarchy:
+    - Main Scene Title: font_size=22 to 26, weight=BOLD, color=WHITE.
+    - Subtitles / Category Tags: font_size=13 to 14, weight=BOLD, color=CYAN.
+    - Section Headings / Card Titles: font_size=16 to 18, weight=BOLD, color=WHITE.
+    - Body Labels / Metrics: font_size=12 to 14, weight=MEDIUM.
+    - Subtitle / Narration Captions: Use CaptionDock(narration_text) for bottom caption bar.
+    - Always use clean modern sans-serif fonts; never manually set serif fonts.
+
 CANVAS & 4-SLOT LAYOUT CONTRACT:
   * 16:9 landscape, designed for 1920x1080 (Manim units ≈14.22 x 8).
   * 4 CANONICAL SLOTS:
@@ -1511,7 +1533,8 @@ COGNITIVE ATTENTION SIGNALING (MAYER-SWELLER PRINCIPLES):
   * REDUNDANCY PRINCIPLE: Never duplicate verbatim narration sentences in on-screen Text cards. Keep on-screen text to concise labels, data values, code snippets, or formulas. Full text cards overload the learner's phonological loop.
 
 CINEMATIC CHOREOGRAPHY & NEURO-SYMBOLIC TOOLS:
-  * For MovingCameraScene or zooming into hero components:
+  * For zooming into hero components or camera frame control, inherit from MovingCameraScene:
+    - class SceneXX(MovingCameraScene):
     - Use self.play(focus_on(self.camera.frame, target, scale=0.6)) to guide the learner's focus into details.
     - Use self.play(reset_frame(self.camera.frame)) to restore the full overview.
     - Use GlowAura(target, color=YELLOW) to give key active elements a soft glowing presence.
@@ -1540,6 +1563,7 @@ def heal_manim_source(code: str) -> str:
         "AutoVStack",
         "AutoHStack",
         "SafeCaptionZone",
+        "CaptionDock",
         "AnnotatedCard",
         "ServerNode",
         "ClientCluster",
@@ -1643,16 +1667,8 @@ def heal_manim_source(code: str) -> str:
     # Fix move_to(..., corner=...) -> remove corner parameter
     code = re.sub(r',?\s*corner=[^,)]+', '', code)
 
-    # 1. SPATIAL AUTO-LAYOUT GUARD: Clamp long Text and MathTex width to prevent horizontal overflow (> 12.5 width)
-    # If a Text instantiation has a literal string longer than 45 chars and doesn't scale_to_fit_width, clamp it
-    def _clamp_wide_text(m):
-        txt_call = m.group(0)
-        content = m.group(1)
-        if len(content) > 42 and "scale_to_fit_width" not in txt_call:
-            return f"{txt_call}.scale_to_fit_width(12.0)"
-        return txt_call
-
-    code = re.sub(r'Text\s*\(\s*([\'"][^\'"]{43,}[\'"])[^)]*\)', _clamp_wide_text, code)
+    # 1. SPATIAL AUTO-LAYOUT GUARD: Remove any chained or injected scale_to_fit_width calls
+    code = re.sub(r'(\.scale_to_fit_width\([^)]*\))+', '', code)
 
     # 2. SPATIAL AUTO-LAYOUT GUARD: Clamp non-caption elements from moving into bottom caption zone (y < -2.5)
     def _clamp_caption_trespass(m):
@@ -1713,12 +1729,40 @@ def heal_manim_source(code: str) -> str:
                 return f"ImageMobject('{resolved}')"
         return m.group(0)
 
-    # 4. COGNITIVE SIGNALING HEALING: Fix invalid kwargs on attention animators
-    # duration= -> run_time= for Indicate, Circumscribe, Flash, Wiggle
-    code = re.sub(r'\b(Indicate|Circumscribe|Flash|Wiggle)\s*\(([^)]*?)\bduration\s*=', r'\1(\2run_time=', code)
-    # Fix shape string argument in Circumscribe (e.g. shape="circle" or shape="rectangle")
-    code = re.sub(r'Circumscribe\s*\(([^)]*?)\bshape\s*=\s*[\'"]circle[\'"]', r'Circumscribe(\1Circle', code)
-    code = re.sub(r'Circumscribe\s*\(([^)]*?)\bshape\s*=\s*[\'"]rectangle[\'"]', r'Circumscribe(\1Rectangle', code)
+    # 5. CAMERA SCENE PROMOTION: Auto-promote Scene -> MovingCameraScene if camera.frame or zoom helpers are used
+    if re.search(r'\b(?:camera\.frame|focus_on|reset_frame)\b', code):
+        if not re.search(r'\bThreeDScene\b', code):
+            code = re.sub(r'\bclass\s+([A-Za-z0-9_]+)\s*\(\s*Scene\s*\)\s*:', r'class \1(MovingCameraScene):', code)
+
+    # 6. LATEX MATH NORMALIZATION: Translate raw Unicode math & Greek glyphs to LaTeX commands
+    _UNICODE_LATEX_MAP = {
+        "θ": r"\theta ", "α": r"\alpha ", "β": r"\beta ", "γ": r"\gamma ",
+        "δ": r"\delta ", "ε": r"\epsilon ", "λ": r"\lambda ", "μ": r"\mu ",
+        "π": r"\pi ", "σ": r"\sigma ", "ω": r"\omega ", "Δ": r"\Delta ",
+        "Σ": r"\Sigma ", "Ω": r"\Omega ", "≤": r"\le ", "≥": r"\ge ",
+        "≠": r"\ne ", "×": r"\times ", "÷": r"\div ", "→": r"\to ",
+        "←": r"\leftarrow ", "⇒": r"\Rightarrow ", "⇔": r"\Leftrightarrow ",
+        "∞": r"\infty ", "≈": r"\approx ", "±": r"\pm ", "∈": r"\in ",
+        "∉": r"\notin ", "⊂": r"\subset ", "⊆": r"\subseteq ",
+        "∪": r"\cup ", "∩": r"\cap ", "∀": r"\forall ", "∃": r"\exists ",
+        "ℝ": r"\mathbb{R}", "ℤ": r"\mathbb{Z}", "ℕ": r"\mathbb{N}", "ℂ": r"\mathbb{C}",
+    }
+
+    def _fix_latex_unicode(m):
+        prefix = m.group(1)
+        quote = m.group(2)
+        content = m.group(3)
+        for uchar, repl in _UNICODE_LATEX_MAP.items():
+            if uchar in content:
+                content = content.replace(uchar, repl)
+        return f"{prefix}{quote}{content}{quote}"
+
+    code = re.sub(
+        r'(\b(?:MathTex|Tex)\s*\(\s*r?)([\'"]{1,3})(.*?)([\'"]{1,3})',
+        _fix_latex_unicode,
+        code,
+        flags=re.DOTALL,
+    )
 
     return code
 
@@ -1925,9 +1969,12 @@ def _render_manim(proj: Path, src: Path, section_dir: Path,
         "-m",
         "manim",
         quality,
+        "--fps",
+        str(cfg.FPS),
         "-r",
         f"{cfg.WIDTH},{cfg.HEIGHT}",
         "--disable_caching",
+        "--flush_cache",
         "--media_dir",
         str(media_dir.resolve()),
         str(src.resolve()),
@@ -2014,18 +2061,49 @@ def render_manim_parallel(
     if not sections:
         return {}
 
-    workers = max_workers or min(len(sections), (os.cpu_count() or 4))
+    workers = max_workers or int(os.environ.get("P2R_MANIM_WORKERS", min(len(sections), 4)))
     cfg.say(f"Rendering {len(sections)} Manim scenes in parallel ({workers} worker threads)...")
 
     results: dict[str, Path] = {}
 
     def _render_worker(sec) -> tuple[str, Path]:
-        src = outdir / f"scene_{sec.stem}.py"
+        src = None
+        for cand in [proj / "scenes" / f"scene_{sec.stem}.py", proj / "scenes" / f"{sec.stem}.py"]:
+            if cand.exists():
+                src = cand
+                break
+        if not src:
+            src = outdir / f"scene_{sec.stem}.py"
         if not src.exists() and (manim_dir / f"scene_{sec.stem}.py").exists():
             src = manim_dir / f"scene_{sec.stem}.py"
+
         section_dir = outdir / sec.stem
+        mp4_path = section_dir / f"scene_{sec.stem}.mp4"
+        sec_cand = proj / "sections" / f"{sec.stem}.mp4"
+
+        is_stale = False
+        if os.environ.get("P2R_NO_CACHE") == "1":
+            is_stale = True
+        elif src and src.exists():
+            src_mtime = src.stat().st_mtime
+            if mp4_path.exists() and src_mtime > mp4_path.stat().st_mtime:
+                is_stale = True
+            if sec_cand.exists() and src_mtime > sec_cand.stat().st_mtime:
+                is_stale = True
+
+        if not is_stale:
+            if mp4_path.exists() and mp4_path.stat().st_size > 1024:
+                return sec.stem, mp4_path
+            if sec_cand.exists() and sec_cand.stat().st_size > 1024:
+                return sec.stem, sec_cand
+
+        if src.exists():
+            code = src.read_text(encoding="utf-8")
+            healed = heal_manim_source(code)
+            if healed != code:
+                src.write_text(healed, encoding="utf-8")
+
         _render_manim(proj, src, section_dir, f"Scene{sec.stem}", quality=quality)
-        mp4_path = section_dir / f"{src.stem}.mp4"
         return sec.stem, mp4_path
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
@@ -2166,13 +2244,11 @@ def _generate_manim(proj: Path, script: Script, index: int,
                     raw = nudged
                     errors = validate_manim_source(raw)
                     if not errors:
-                        dst.write_text(raw, encoding="utf-8")
-                        cfg.say(f"Manim section {sec.stem}: nudge resolved all errors — skipping LLM retry")
-                        attempt += 1
-                        continue
+                        cfg.say(f"Manim section {sec.stem}: nudge resolved all errors — proceeding to render")
             except Exception as _nudge_err:
                 cfg.warn(f"Manim section {sec.stem}: nudge skipped ({_nudge_err})")
 
+        if errors:
             feedback = (
                 "\n\nRETURN THE COMPLETE CORRECTED MANIM MODULE.\n"
                 "Do not return a patch or explanation.\n\n"
@@ -2218,15 +2294,31 @@ def _generate_manim(proj: Path, script: Script, index: int,
                 f"Manim section {sec.stem}: render rejected — {err[:120]}"
             )
             # Try source-level nudge on overlap errors before LLM retry
+            re_render_ok = False
             if any(kw in err.lower() for kw in ("overlap", "collision", "next_to", "same y")):
                 try:
                     from .manim_nudge import nudge_source
                     nudged, n_fixes = nudge_source(dst.read_text(encoding="utf-8"))
                     if n_fixes > 0:
-                        cfg.say(f"Manim section {sec.stem}: nudge applied {n_fixes} fixes to overlap error")
+                        cfg.say(f"Manim section {sec.stem}: nudge applied {n_fixes} fixes to overlap error — re-testing render")
                         dst.write_text(nudged, encoding="utf-8")
+                        with _RENDER_LOCK:
+                            verify_q = os.environ.get("P2R_MANIM_VERIFY_QUALITY", "-ql")
+                            frames = _render_manim(
+                                proj,
+                                dst,
+                                section_dir,
+                                f"Scene{sec.stem}",
+                                quality=verify_q,
+                                timeout=360,
+                            )
+                        re_render_ok = True
                 except Exception:
                     pass
+            if re_render_ok:
+                cfg.say(f"Manim section {sec.stem}: nudge re-render passed — {len(frames)} rendered frames")
+                return dst
+
             feedback = (
                 "\n\nRETURN THE COMPLETE CORRECTED MANIM MODULE.\n\n"
                 "RUNTIME/RENDER FAILURE:\n"
@@ -2541,14 +2633,19 @@ def generate_all(proj: Path, script: Script, index: int | None = None,
             cfg.say(f"section {sec.stem}: video/b-roll media section, skipping code generation")
             continue
         if is_manim_renderer(rend):
-            if dst.exists():
-                cfg.say(f"section {sec.stem}: Manim scene already written, skipping (delete it to regenerate)")
-                continue
-            elif alt_dst.exists():
+            pre_authored = None
+            for cand in [proj / "scenes" / f"scene_{sec.stem}.py", proj / "scenes" / f"{sec.stem}.py"]:
+                if cand.exists():
+                    pre_authored = cand
+                    break
+            if pre_authored is not None:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 import shutil
-                shutil.copyfile(alt_dst, dst)
-                cfg.say(f"section {sec.stem}: using pre-authored scene from {alt_dst}")
+                shutil.copyfile(pre_authored, dst)
+                cfg.say(f"section {sec.stem}: using pre-authored scene from {pre_authored}")
+                continue
+            elif dst.exists():
+                cfg.say(f"section {sec.stem}: Manim scene already written, skipping (delete it to regenerate)")
                 continue
         # dst.exists() alone isn't "done": generate() writes the .py file
         # before the audit runs, so a section that exhausted its retries

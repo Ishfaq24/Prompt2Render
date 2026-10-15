@@ -82,6 +82,7 @@ def match_assets(
     max_matches: int = 3,
     mode: str = "hybrid",
     vectorizer: Any = None,
+    min_score: float = 0.0,
 ) -> list[AssetDefinition]:
     """Find matching catalog assets for given text using keyword, embedding, or hybrid matching."""
     norm_text = _normalize(text)
@@ -118,7 +119,7 @@ def match_assets(
         for aid, sim in emb_hits:
             scored_matches[aid] = scored_matches.get(aid, 0.0) + (sim * 15.0)
 
-    ranked = sorted(scored_matches.items(), key=lambda item: item[1], reverse=True)
+    ranked = [(aid, sc) for aid, sc in sorted(scored_matches.items(), key=lambda item: item[1], reverse=True) if sc >= min_score]
     return [catalog[aid] for aid, _ in ranked[:max_matches] if aid in catalog]
 
 

@@ -202,7 +202,7 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
     work.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "manim", "-qh", "--format", "mp4", "--fps", str(cfg.FPS),
+        sys.executable, "-m", "manim", "-qh", "--format", "mp4", "--fps", str(cfg.FPS),
         "-r", f"{cfg.WIDTH},{cfg.HEIGHT}",
         "--media_dir", str(work), str(py_file), scene,
     ]

@@ -199,6 +199,29 @@ def _gate_layout(g: Gates, proj: Path, script: Script) -> None:
             manim_checked += 1
 
     total_scenes = n + manim_checked
+
+    # 3. Multilingual Visual QA gate if project has multilingual spec
+    spec_path = proj / "multilingual_spec.json"
+    if spec_path.is_file():
+        try:
+            from prompt2render.multilingual import MultilingualVisualQA
+            spec_data = json.loads(spec_path.read_text(encoding="utf-8"))
+            lang = spec_data.get("target_language", "en")
+            script_code = spec_data.get("target_script")
+            for stem in manim_stems:
+                for cand in (
+                    proj / "build" / "scenes" / stem / f"scene_{stem}.mp4",
+                    proj / "sections" / f"{stem}.mp4",
+                ):
+                    if cand.is_file():
+                        rep = MultilingualVisualQA.audit_scene_clip(cand, scene_stem=stem, lang_code=lang, script_code=script_code)
+                        for err in rep.errors:
+                            fails.append(f"multilingual QA section {stem}: {err}")
+                        warns += len(rep.warnings)
+                        break
+        except Exception:
+            pass
+
     if not total_scenes:
         if manim_stems:
             g.add(PASS, "layout", "Manim vector, 3D, and video media verified")
@@ -424,7 +447,7 @@ def _gate_dead_air(g: Gates, starts: list[float]) -> None:
         g.add(PASS, "dead air", "none over 1.5s")
 
 
-def _gate_black(g: Gates, hits: list[float]) -> None:
+def _gate_black(g: Gates, hits: list[float], n_sections: int = 1) -> None:
     # pix_th must sit below scenekit.BG's own luma (~6.5% for #0d1117) or
     # every sparse, mostly-background state -- a title card, a closing
     # teaser -- reads as "black" on nothing but its dark theme, not because
@@ -433,11 +456,12 @@ def _gate_black(g: Gates, hits: list[float]) -> None:
     # single 0.1s hit, verified against a shipped render) while clearing
     # every dark-but-populated state.
     #
-    # A dip to black is intentional only at the opening fade.
-    if len(hits) > 1:
+    # A dip to black is intentional at opening and section boundary fades.
+    max_allowed = max(1, n_sections)
+    if len(hits) > max_allowed:
         g.add(WARN, "black frames", f"{len(hits)} black stretches")
     else:
-        g.add(PASS, "black frames", f"{len(hits)} (opening fade)")
+        g.add(PASS, "black frames", f"{len(hits)} (opening/section fades)")
 
 
 def _gate_freeze(g: Gates, hits: list[float]) -> None:
@@ -572,7 +596,7 @@ def check(proj: Path, script: Script, strict: bool = False) -> int:
         _run_gate("loudness", _gate_loudness, g, final, target, a.get("loudness"))
         _run_gate("clipping", _gate_clipping, g, final, a)
         _run_gate("dead air", _gate_dead_air, g, a["silences"])
-        _run_gate("black frames", _gate_black, g, v["black"])
+        _run_gate("black frames", _gate_black, g, v["black"], len(script.sections))
         _run_gate("frozen picture", _gate_freeze, g, v["freeze"])
         _run_gate("caption drift", _gate_caption_drift, g, proj, script, final)
 
