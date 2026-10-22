@@ -19,6 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dvipng \
     libcairo2-dev \
     libpango1.0-dev \
+    fonts-noto-core \
+    fonts-noto-ui-core \
+    fonts-noto-extra \
+    fonts-dejavu-core \
     pkg-config \
     build-essential \
     curl \

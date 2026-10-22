@@ -217,3 +217,63 @@ class KeyBadge(VGroup):
         )
         val = Text(name, font_size=14, color=TEXT_PRIMARY).move_to((0, -0.15, 0))
         self.add(self.pill, tag, val)
+
+
+class CodeBlockCard(VGroup):
+    """Syntax-styled code block card with title bar, line numbers, and active line highlight."""
+
+    def __init__(
+        self,
+        code_lines: list[str],
+        title: str = "algorithm.py",
+        width: float = 7.0,
+        font_size: int = 15,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        h = max(2.0, 0.9 + len(code_lines) * 0.42)
+        self.card = RoundedRectangle(
+            width=width,
+            height=h,
+            corner_radius=0.18,
+            stroke_color=SLATE_BORDER,
+            stroke_width=1.5,
+            fill_color=SLATE_BG,
+            fill_opacity=0.95,
+        )
+
+        header = RoundedRectangle(
+            width=width,
+            height=0.45,
+            corner_radius=0.18,
+            stroke_color=SLATE_BORDER,
+            stroke_width=1.0,
+            fill_color="#1E293B",
+            fill_opacity=1.0,
+        ).move_to((0, h / 2 - 0.225, 0))
+
+        title_text = Text(title, font_size=12, color=TEXT_MUTED).move_to((0, h / 2 - 0.225, 0))
+
+        self.line_mobjects: list[VGroup] = []
+        y_start = h / 2 - 0.75
+        for i, raw_line in enumerate(code_lines, start=1):
+            num = Text(f"{i:2d}", font_size=font_size - 3, color="#64748B")
+            num.move_to((-width / 2 + 0.45, y_start - (i - 1) * 0.42, 0))
+
+            txt = Text(raw_line, font="monospace", font_size=font_size, color=TEXT_PRIMARY)
+            txt.move_to((-width / 2 + 0.95 + txt.width / 2, y_start - (i - 1) * 0.42, 0))
+
+            line_grp = VGroup(num, txt)
+            self.line_mobjects.append(line_grp)
+
+        self.lines_vgroup = VGroup(*self.line_mobjects)
+        self.add(self.card, header, title_text, self.lines_vgroup)
+
+    def highlight_line(self, line_num: int) -> None:
+        """Highlight active execution line in CYAN and dim others."""
+        for i, grp in enumerate(self.line_mobjects, start=1):
+            txt = grp.submobjects[1]
+            if i == line_num:
+                txt.set_color(CYAN)
+            else:
+                txt.set_color(TEXT_MUTED)

@@ -24,6 +24,9 @@ projects/*/out/
 /*.gif
 /*.webm
 
+# Local generated results
+/Final Results/
+
 # Python & test artifacts
 __pycache__/
 *.py[cod]
@@ -44,4 +47,3 @@ tools/kokoro/*.bin
 .DS_Store
 Thumbs.db
 self_correction_report.json
-

@@ -17,6 +17,7 @@ from ....assets.cache import AssetCache
 from ....assets.preprocessor import prepare_scene_asset
 from ....assets.providers import (
     AssetHit,
+    MockProvider,
     get_available_providers,
     search_all_providers,
 )
@@ -94,11 +95,13 @@ class RetrieverExternalAssetPlugin(Plugin):
         build_assets_dir.mkdir(parents=True, exist_ok=True)
 
         cache = AssetCache()
+        allow_mock = bool(self.config.get("allow_mock_fallback", True))
         providers = get_available_providers(allow_mock_fallback=False)
+        mock_prov = [MockProvider()] if allow_mock else []
+
         if not providers:
             # If no API keys are active, allow mock fallback if configured
-            allow_mock = bool(self.config.get("allow_mock_fallback", True))
-            providers = get_available_providers(allow_mock_fallback=allow_mock)
+            providers = list(mock_prov)
 
         if not providers:
             return context
@@ -142,24 +145,23 @@ class RetrieverExternalAssetPlugin(Plugin):
                 if len(scene_hits) >= max_assets_per_scene:
                     break
 
-            if not scene_hits and allow_mock:
-                mock_prov = [p for p in get_available_providers(allow_mock_fallback=True) if p.name == "mock"]
-                if mock_prov:
-                    fallback_query = derived_queries[0]["query"] if derived_queries else "server"
-                    found = search_all_providers(
-                        query=fallback_query,
-                        providers=mock_prov,
-                        orientation="landscape",
-                        asset_type="photo",
-                        limit_per_provider=max_assets_per_scene,
-                    )
-                    scene_hits = list(found[:max_assets_per_scene])
+            if not scene_hits and allow_mock and mock_prov:
+                fallback_query = derived_queries[0]["query"] if derived_queries else "server"
+                found = search_all_providers(
+                    query=fallback_query,
+                    providers=mock_prov,
+                    orientation="landscape",
+                    asset_type="photo",
+                    limit_per_provider=max_assets_per_scene,
+                )
+                scene_hits = list(found[:max_assets_per_scene])
 
+            all_providers = {p.name: p for p in (providers + mock_prov)}
             for hit in scene_hits:
                 role = derived_queries[0].get("role", "background")
                 try:
                     # 1. Fetch raw asset to cache
-                    prov = next((p for p in providers if p.name == hit.provider), providers[0])
+                    prov = all_providers.get(hit.provider, providers[0])
                     cached_raw = cache.fetch_or_download(hit, prov)
 
                     # 2. Condition/process asset

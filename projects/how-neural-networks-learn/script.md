@@ -33,7 +33,7 @@ At the final layer, raw scores are normalized into a probability distribution vi
 Learning is an optimization problem over a high-dimensional loss surface. By calculating the error between the model's prediction and the ground truth, gradient descent computes partial derivatives through backpropagation, adjusting every weight to guide the network toward the global error minimum.
 
 ## 8 - Real-World Applications: From Theory to Autonomous Systems
-> VIDEO: assets/videos/computer_vision_broll.mp4
+> ANIM: Real-world AI applications: autonomous driving obstacle detection bounding boxes, medical imaging diagnostics scan, and robotic decision automation
 Today, this core architecture powers modern artificial intelligence across the globe. From real-time obstacle detection in autonomous vehicles and medical imaging diagnostics to facial recognition and robotic automation, multi-layer networks transform raw sensor streams into real-time decisions.
 
 ## 9 - Summary: The Architecture of Artificial Thought

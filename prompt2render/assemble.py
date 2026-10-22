@@ -619,20 +619,20 @@ def assemble(
         # filter is sensitive to working-directory assumptions and Windows
         # drive-letter escaping, so use the existing output cwd and filename
         # where possible.
-        subtitle_name = srt.name
+        srt_escaped = str(srt.resolve()).replace("\\", "/").replace(":", r"\:")
 
         subtitle_filter = (
-            "subtitles="
-            f"{subtitle_name}:"
+            f"subtitles='{srt_escaped}':"
             "force_style="
             f"'FontName={cfg.CAPTION_FONT},"
-            f"FontSize={cfg.CAPTION_FONT_SIZE},"
+            "FontSize=9,"
             "Bold=1,"
-            "PrimaryColour=&HFFFFFF&,"
-            "OutlineColour=&H80000000&,"
-            "BorderStyle=3,"
-            "Outline=1,"
-            "MarginV=48'"
+            "PrimaryColour=&H00FFFFFF&,"
+            "OutlineColour=&HB0000000&,"
+            "BorderStyle=1,"
+            "Outline=1.0,"
+            "Shadow=0.5,"
+            "MarginV=8'"
         )
 
         cfg.run(

@@ -21,7 +21,7 @@ python-multipart>=0.0.9  # required by Starlette's UploadFile (audio upload)
 Jinja2>=3.1              # already a transitive dep elsewhere; used directly here
 
 # --- optional ---
-# edge-tts>=6.1.9        # online voice; kokoro is the supported default
+edge-tts>=6.1.9        # neural voice synthesis supporting 40+ multilingual voices
 
 # --- Manim scene backend (`--manim`, and the `prompt2render manim` escape hatch) ---
 # Pinned, not commented out: with this line absent, `pip install -r

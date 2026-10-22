@@ -5,12 +5,18 @@ audio mastering verification, and QC gate reports.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+import subprocess
+import sys
+import threading
+import time
 from typing import Any
+import uuid
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from prompt2render import cfg, project
 
@@ -19,6 +25,73 @@ app = FastAPI(
     description="Local studio dashboard for mathematical explainer video synthesis",
     version="1.0.0",
 )
+
+
+class StudioJob:
+    def __init__(self, job_id: str, command: list[str], description: str):
+        self.job_id = job_id
+        self.command = command
+        self.description = description
+        self.status = "queued"
+        self.exit_code: int | None = None
+        self.logs: list[str] = []
+        self.listeners: list[asyncio.Queue] = []
+        self.created_at = time.time()
+        self.started_at: float | None = None
+        self.completed_at: float | None = None
+
+
+class StudioJobManager:
+    def __init__(self):
+        self.jobs: dict[str, StudioJob] = {}
+        self.lock = threading.Lock()
+
+    def create_job(self, command: list[str], description: str) -> StudioJob:
+        job_id = str(uuid.uuid4())[:8]
+        job = StudioJob(job_id, command, description)
+        with self.lock:
+            self.jobs[job_id] = job
+        thread = threading.Thread(target=self._run_job, args=(job,), daemon=True)
+        thread.start()
+        return job
+
+    def _run_job(self, job: StudioJob):
+        job.status = "running"
+        job.started_at = time.time()
+        self._broadcast(job, f"[START] {job.description}\n")
+        try:
+            proc = subprocess.Popen(
+                job.command,
+                cwd=str(cfg.ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in iter(proc.stdout.readline, ""):
+                job.logs.append(line)
+                self._broadcast(job, line)
+            proc.stdout.close()
+            job.exit_code = proc.wait()
+            job.status = "completed" if job.exit_code == 0 else "failed"
+        except Exception as exc:
+            job.logs.append(f"\n[ERROR] Execution failed: {exc}\n")
+            self._broadcast(job, f"\n[ERROR] {exc}\n")
+            job.status = "failed"
+            job.exit_code = -1
+        finally:
+            job.completed_at = time.time()
+            self._broadcast(job, f"[DONE] Status: {job.status} (exit code: {job.exit_code})\n")
+
+    def _broadcast(self, job: StudioJob, text: str):
+        for q in list(job.listeners):
+            try:
+                q.put_nowait(text)
+            except Exception:
+                pass
+
+
+job_manager = StudioJobManager()
 
 
 def _get_project_summary(slug: str) -> dict[str, Any] | None:
@@ -324,6 +397,113 @@ def get_project_audio(slug: str):
     raise HTTPException(status_code=404, detail="No master audio found")
 
 
+@app.get("/api/jobs/{job_id}/stream")
+async def api_stream_job(job_id: str):
+    """Server-Sent Events stream for real-time process logs."""
+    job = job_manager.jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def event_generator():
+        for line in list(job.logs):
+            yield f"data: {json.dumps({'text': line, 'status': job.status})}\n\n"
+
+        if job.status in ("completed", "failed"):
+            yield f"data: {json.dumps({'text': '', 'status': job.status, 'exit_code': job.exit_code, 'done': True})}\n\n"
+            return
+
+        q = asyncio.Queue()
+        job.listeners.append(q)
+        try:
+            while True:
+                line = await q.get()
+                yield f"data: {json.dumps({'text': line, 'status': job.status})}\n\n"
+                if job.status in ("completed", "failed") and q.empty():
+                    yield f"data: {json.dumps({'text': '', 'status': job.status, 'exit_code': job.exit_code, 'done': True})}\n\n"
+                    break
+        finally:
+            if q in job.listeners:
+                job.listeners.remove(q)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/projects/{slug}/build")
+def api_trigger_project_build(slug: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Trigger background build/repair pipeline with real-time SSE streaming."""
+    try:
+        clean_slug = cfg.validate_slug(slug, exit_on_error=False)
+    except (ValueError, SystemExit):
+        raise HTTPException(status_code=400, detail="Invalid project slug")
+
+    payload = payload or {}
+    mode = str(payload.get("mode", "build")).strip()
+    use_manim = bool(payload.get("manim", True))
+    use_harness = bool(payload.get("harness", True))
+    section = payload.get("section")
+
+    allowed_modes = {"build", "auto", "repair", "voice", "stills", "encode", "finish", "check"}
+    if mode not in allowed_modes:
+        raise HTTPException(status_code=400, detail=f"Mode must be one of {allowed_modes}")
+
+    cmd = [sys.executable, "prompt2render.py", mode, clean_slug]
+    if use_manim and mode in ("build", "auto", "repair"):
+        cmd.append("--manim")
+    if use_harness and mode in ("build", "auto", "repair"):
+        cmd.append("--harness")
+    if section is not None:
+        cmd.extend(["--section", str(section)])
+
+    job = job_manager.create_job(cmd, f"Running 'prompt2render {mode}' on {clean_slug}")
+    return {"ok": True, "job_id": job.job_id, "command": cmd}
+
+
+@app.get("/api/projects/{slug}/sections/{stem}/code")
+def api_get_section_code(slug: str, stem: str) -> dict[str, Any]:
+    """Retrieve scene drawing code for in-browser editing."""
+    try:
+        clean_slug = cfg.validate_slug(slug, exit_on_error=False)
+    except (ValueError, SystemExit):
+        raise HTTPException(status_code=400, detail="Invalid project slug")
+
+    proj_dir = cfg.PROJECTS / clean_slug
+    clean_stem = "".join(c for c in stem if c.isalnum())
+    cand1 = proj_dir / "build" / "scenes" / f"scene_{clean_stem}.py"
+    cand2 = proj_dir / "scenes" / f"scene_{clean_stem}.py"
+
+    target_file = cand1 if cand1.is_file() else (cand2 if cand2.is_file() else None)
+    if not target_file:
+        raise HTTPException(status_code=404, detail=f"No scene code found for section {stem}")
+
+    return {
+        "slug": clean_slug,
+        "stem": clean_stem,
+        "path": str(target_file.relative_to(cfg.ROOT)),
+        "code": target_file.read_text(encoding="utf-8"),
+    }
+
+
+@app.put("/api/projects/{slug}/sections/{stem}/code")
+def api_save_section_code(slug: str, stem: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Save updated scene drawing code from in-browser editor."""
+    try:
+        clean_slug = cfg.validate_slug(slug, exit_on_error=False)
+    except (ValueError, SystemExit):
+        raise HTTPException(status_code=400, detail="Invalid project slug")
+
+    code = payload.get("code", "")
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Code cannot be empty")
+
+    clean_stem = "".join(c for c in stem if c.isalnum())
+    proj_dir = cfg.PROJECTS / clean_slug
+    target_file = proj_dir / "build" / "scenes" / f"scene_{clean_stem}.py"
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text(code, encoding="utf-8")
+
+    return {"ok": True, "saved": True, "stem": clean_stem}
+
+
 @app.get("/api/multilingual/languages")
 def api_get_supported_languages() -> list[dict[str, Any]]:
     """Return registry of supported languages, scripts, fonts, and text direction."""
@@ -437,6 +617,7 @@ def dashboard_html() -> str:
                         <button class="btn btn-sm btn-accept" onclick="sendHitl('{slug}', '{stem}', 'accept')">&#10003; Accept</button>
                         <input type="text" id="reason-{slug}-{stem}" placeholder="Repair instructions..." value="{s['hitl_reason']}" class="input-reason" />
                         <button class="btn btn-sm btn-reject" onclick="sendHitl('{slug}', '{stem}', 'reject')">&#8634; Reject</button>
+                        <button class="btn btn-sm btn-secondary" onclick="openCodeEditor('{slug}', '{stem}')">&#9998; Code</button>
                     </div>
                 </td>
             </tr>
@@ -452,7 +633,7 @@ def dashboard_html() -> str:
                         <th>Title & Narration</th>
                         <th width="90">Media</th>
                         <th width="100">Status</th>
-                        <th width="360">Feedback Action</th>
+                        <th width="420">Feedback & Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -485,6 +666,8 @@ def dashboard_html() -> str:
             <div class="card-actions">
                 {video_btn}
                 {review_btn}
+                <button class="btn btn-primary" onclick="triggerBuild('{slug}', 'build')">&#9889; Build</button>
+                <button class="btn btn-warning" onclick="triggerBuild('{slug}', 'auto')">&#8635; Auto Repair</button>
             </div>
             {sections_panel}
         </div>
@@ -599,6 +782,95 @@ def dashboard_html() -> str:
         .empty-text {{ color: var(--dim); text-align: center; padding: 3rem 0; }}
         .dim {{ color: #64748B; }}
         code {{ background: #0F172A; padding: 0.2rem 0.4rem; border-radius: 4px; color: #388BFD; }}
+        .terminal-drawer {{
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 320px;
+            background: #090D16;
+            border-top: 2px solid var(--accent);
+            box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.6);
+            display: flex;
+            flex-direction: column;
+            z-index: 1000;
+        }}
+        .terminal-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 1.2rem;
+            background: #111827;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85rem;
+        }}
+        .terminal-output {{
+            flex-grow: 1;
+            padding: 1rem 1.2rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.82rem;
+            line-height: 1.45;
+            color: #38BDF8;
+            background: #050811;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }}
+        .modal-backdrop {{
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }}
+        .modal-box {{
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            width: 800px;
+            max-width: 90vw;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+        }}
+        .modal-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+        }}
+        .modal-body {{
+            padding: 1.2rem 1.5rem;
+            flex-grow: 1;
+            overflow-y: auto;
+        }}
+        .code-editor-textarea {{
+            width: 100%;
+            height: 380px;
+            box-sizing: border-box;
+            background: #090D16;
+            color: #E2E8F0;
+            font-family: ui-monospace, monospace;
+            font-size: 0.88rem;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 1rem;
+            line-height: 1.5;
+            resize: vertical;
+        }}
+        .modal-footer {{
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.75rem;
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--border);
+        }}
     </style>
     <script>
         function toggleReview(slug) {{
@@ -677,6 +949,101 @@ def dashboard_html() -> str:
                 alert('Error submitting feedback: ' + e.message);
             }}
         }}
+
+        let activeEventSource = null;
+        let currentEditingSlug = null;
+        let currentEditingStem = null;
+
+        async function triggerBuild(slug, mode) {{
+            const term = document.getElementById('terminal-drawer');
+            const termOut = document.getElementById('terminal-output');
+            const jobStatus = document.getElementById('job-status');
+            term.style.display = 'flex';
+            termOut.innerText = 'Initializing ' + mode + ' pipeline for ' + slug + '...\\n';
+            jobStatus.innerText = 'STARTING';
+            jobStatus.className = 'badge badge-warning';
+
+            try {{
+                const res = await fetch('/api/projects/' + slug + '/build', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ mode: mode, manim: true, harness: true }})
+                }});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Build start failed');
+                
+                if (activeEventSource) activeEventSource.close();
+                activeEventSource = new EventSource('/api/jobs/' + data.job_id + '/stream');
+                activeEventSource.onmessage = function(e) {{
+                    const msg = JSON.parse(e.data);
+                    if (msg.text) {{
+                        termOut.innerText += msg.text;
+                        termOut.scrollTop = termOut.scrollHeight;
+                    }}
+                    if (msg.status === 'completed') {{
+                        jobStatus.innerText = 'COMPLETED';
+                        jobStatus.className = 'badge badge-success';
+                    }} else if (msg.status === 'failed') {{
+                        jobStatus.innerText = 'FAILED';
+                        jobStatus.className = 'badge badge-reject';
+                    }}
+                    if (msg.done) {{
+                        activeEventSource.close();
+                        activeEventSource = null;
+                    }}
+                }};
+            }} catch (err) {{
+                termOut.innerText += '\\n[ERROR] ' + err.message + '\\n';
+                jobStatus.innerText = 'ERROR';
+                jobStatus.className = 'badge badge-reject';
+            }}
+        }}
+
+        function closeTerminal() {{
+            document.getElementById('terminal-drawer').style.display = 'none';
+        }}
+
+        async function openCodeEditor(slug, stem) {{
+            currentEditingSlug = slug;
+            currentEditingStem = stem;
+            try {{
+                const res = await fetch('/api/projects/' + slug + '/sections/' + stem + '/code');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to load code');
+                document.getElementById('modal-title').innerText = 'Edit Scene Code (' + slug + ' / Section ' + stem + ')';
+                document.getElementById('code-editor-text').value = data.code;
+                document.getElementById('code-modal').style.display = 'flex';
+            }} catch (e) {{
+                alert('Could not open code: ' + e.message);
+            }}
+        }}
+
+        function closeCodeEditor() {{
+            document.getElementById('code-modal').style.display = 'none';
+        }}
+
+        async function saveSectionCode() {{
+            if (!currentEditingSlug || !currentEditingStem) return;
+            const code = document.getElementById('code-editor-text').value;
+            try {{
+                const res = await fetch('/api/projects/' + currentEditingSlug + '/sections/' + currentEditingStem + '/code', {{
+                    method: 'PUT',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ code: code }})
+                }});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Save failed');
+                alert('Code saved successfully for Section ' + currentEditingStem);
+            }} catch (e) {{
+                alert('Save failed: ' + e.message);
+            }}
+        }}
+
+        async function saveAndRerender() {{
+            await saveSectionCode();
+            closeCodeEditor();
+            triggerBuild(currentEditingSlug, 'repair');
+        }}
     </script>
 </head>
 <body>
@@ -722,6 +1089,31 @@ def dashboard_html() -> str:
             </div>
         </div>
         {cards_html}
+    </div>
+
+    <div id="terminal-drawer" class="terminal-drawer" style="display:none;">
+        <div class="terminal-header">
+            <div><strong>⚡ Live Build Terminal</strong> &bull; <span id="job-status" class="badge badge-warning">RUNNING</span></div>
+            <button class="btn btn-sm btn-secondary" onclick="closeTerminal()">Close</button>
+        </div>
+        <div id="terminal-output" class="terminal-output"></div>
+    </div>
+
+    <div id="code-modal" class="modal-backdrop" style="display:none;">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h3 id="modal-title" style="margin:0;">Edit Scene Code</h3>
+                <button class="btn btn-sm btn-secondary" onclick="closeCodeEditor()">✕</button>
+            </div>
+            <div class="modal-body">
+                <textarea id="code-editor-text" class="code-editor-textarea" spellcheck="false"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeCodeEditor()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveSectionCode()">Save Changes</button>
+                <button class="btn btn-warning" onclick="saveAndRerender()">Save & Re-render</button>
+            </div>
+        </div>
     </div>
 </body>
 </html>"""

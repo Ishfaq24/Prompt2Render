@@ -405,6 +405,17 @@ def _mux_final(
     foley = master.with_name("foley.wav")
     has_foley = foley.exists() and foley.stat().st_size > 44
 
+    # Detect optional background music track (in build/ or project root)
+    proj_dir = master.parent.parent
+    bgm_candidates = [
+        master.with_name("bgm.wav"),
+        master.with_name("bgm.mp3"),
+        proj_dir / "bgm.wav",
+        proj_dir / "bgm.mp3",
+    ]
+    bgm_file = next((b for b in bgm_candidates if b.exists() and b.stat().st_size > 1024), None)
+    has_bgm = bgm_file is not None
+
     cmd = [
         "ffmpeg",
         "-y",
@@ -415,10 +426,59 @@ def _mux_final(
         "-i", str(srt),
         "-i", str(metadata),
     ]
+
+    extra_idx = 4
     if has_foley:
         cmd.extend(["-i", str(foley)])
+        foley_idx = extra_idx
+        extra_idx += 1
+    else:
+        foley_idx = -1
+
+    if has_bgm:
+        cmd.extend(["-stream_loop", "-1", "-i", str(bgm_file)])
+        bgm_idx = extra_idx
+        extra_idx += 1
+    else:
+        bgm_idx = -1
+
+    if has_foley and has_bgm:
+        fc = (
+            f"[{bgm_idx}:a]volume=0.18[bgm_base]; "
+            f"[bgm_base][1:a]sidechaincompress=threshold=0.08:ratio=6:attack=100:release=600[bgm_ducked]; "
+            f"[1:a][bgm_ducked][{foley_idx}:a]amix=inputs=3:duration=first:weights=1.0 0.85 0.25:normalize=0[aout]"
+        )
         cmd.extend([
-            "-filter_complex", "[1:a][4:a]amix=inputs=2:duration=first:weights=1.0 0.25:normalize=0[aout]",
+            "-filter_complex", fc,
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-map", "2:s:0",
+            "-map_metadata", "3",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", cfg.AAC_BITRATE,
+            "-c:s", "mov_text",
+        ])
+    elif has_bgm:
+        fc = (
+            f"[{bgm_idx}:a]volume=0.18[bgm_base]; "
+            f"[bgm_base][1:a]sidechaincompress=threshold=0.08:ratio=6:attack=100:release=600[bgm_ducked]; "
+            f"[1:a][bgm_ducked]amix=inputs=2:duration=first:weights=1.0 0.85:normalize=0[aout]"
+        )
+        cmd.extend([
+            "-filter_complex", fc,
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-map", "2:s:0",
+            "-map_metadata", "3",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", cfg.AAC_BITRATE,
+            "-c:s", "mov_text",
+        ])
+    elif has_foley:
+        cmd.extend([
+            "-filter_complex", f"[1:a][{foley_idx}:a]amix=inputs=2:duration=first:weights=1.0 0.25:normalize=0[aout]",
             "-map", "0:v:0",
             "-map", "[aout]",
             "-map", "2:s:0",
@@ -691,13 +751,14 @@ def finish(
                 f"original_size={cfg.WIDTH}x{cfg.HEIGHT}:"
                 "force_style='"
                 f"FontName={cfg.CAPTION_FONT},"
-                "FontSize=26,"
+                "FontSize=22,"
                 "Bold=1,"
                 "PrimaryColour=&HFFFFFF&,"
-                "OutlineColour=&H80000000&,"
-                "BorderStyle=3,"
-                "Outline=1,"
-                "MarginV=36'"
+                "OutlineColour=&H00000000&,"
+                "BorderStyle=1,"
+                "Outline=2,"
+                "Shadow=1,"
+                "MarginV=32'"
             )
 
         burned = build / "video_burned.mp4"
@@ -920,13 +981,14 @@ def finish_manim(
                 f"original_size={cfg.WIDTH}x{cfg.HEIGHT}:"
                 "force_style='"
                 f"FontName={cfg.CAPTION_FONT},"
-                "FontSize=26,"
+                "FontSize=22,"
                 "Bold=1,"
                 "PrimaryColour=&HFFFFFF&,"
-                "OutlineColour=&H80000000&,"
-                "BorderStyle=3,"
-                "Outline=1,"
-                "MarginV=36'"
+                "OutlineColour=&H00000000&,"
+                "BorderStyle=1,"
+                "Outline=2,"
+                "Shadow=1,"
+                "MarginV=32'"
             )
 
         burned = build / "video_burned.mp4"
