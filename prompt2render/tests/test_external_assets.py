@@ -139,6 +139,67 @@ def test_retriever_external_asset_plugin(tmp_path: Path):
     assert len(updated_ctx.asset_provenance["01"]) >= 1
 
 
+def test_retriever_external_asset_plugin_mock_fallback_when_real_providers_miss(tmp_path: Path, monkeypatch):
+    from prompt2render.assets.providers.base import AssetProvider
+
+    class EmptyRealProvider(AssetProvider):
+        name = "empty_real"
+
+        def is_configured(self) -> bool:
+            return True
+
+        def search(self, *args, **kwargs):
+            return []
+
+        def download(self, *args, **kwargs):
+            raise NotImplementedError
+
+    monkeypatch.setattr(
+        "prompt2render.harness.plugins.retriever_external_asset.get_available_providers",
+        lambda allow_mock_fallback=True: [EmptyRealProvider()],
+    )
+
+    proj_dir = tmp_path / "test_project_fallback"
+    proj_dir.mkdir(parents=True)
+
+    ctx = SceneContext(
+        project_dir=proj_dir,
+        scene_plan=[
+            ScenePlanEntry(
+                index=0,
+                stem="01",
+                title="Binary Search Range",
+                anim="ANIM: binary search midpoint",
+                narration_text="We divide the search space in half each step.",
+            )
+        ],
+    )
+
+    # When allow_mock_fallback is True, should fall back to mock without raising UnboundLocalError
+    plugin = RetrieverExternalAssetPlugin({"allow_mock_fallback": True, "max_assets_per_scene": 1})
+    updated_ctx = plugin.run(ctx)
+    assert "01" in updated_ctx.retrieval_context
+    assert len(updated_ctx.retrieval_context["01"]) >= 1
+    assert updated_ctx.retrieval_context["01"][0]["provider"] == "mock"
+
+    # When allow_mock_fallback is False, should not fall back to mock
+    ctx_no_fallback = SceneContext(
+        project_dir=proj_dir,
+        scene_plan=[
+            ScenePlanEntry(
+                index=0,
+                stem="02",
+                title="Binary Search Range",
+                anim="ANIM: binary search midpoint",
+                narration_text="We divide the search space in half each step.",
+            )
+        ],
+    )
+    plugin_no_mock = RetrieverExternalAssetPlugin({"allow_mock_fallback": False, "max_assets_per_scene": 1})
+    updated_ctx_no_mock = plugin_no_mock.run(ctx_no_fallback)
+    assert "02" not in updated_ctx_no_mock.retrieval_context
+
+
 def test_scenekit_draw_real_image(tmp_path: Path):
     test_img = tmp_path / "sample_asset.png"
     img = Image.new("RGB", (200, 200), color=(50, 100, 150))

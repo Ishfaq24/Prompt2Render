@@ -207,7 +207,7 @@ def manim_scene(proj: Path, script: Script, py_file: Path, scene: str,
         "--media_dir", str(work), str(py_file), scene,
     ]
 
-    timeout = cfg.env_int("P2R_MANIM_TIMEOUT", 360)
+    timeout = cfg.env_int("P2R_MANIM_TIMEOUT", 900)
 
     try:
         # Capture output because the repair router can use the actual Manim

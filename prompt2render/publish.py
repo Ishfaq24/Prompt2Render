@@ -244,8 +244,116 @@ def _validate_output_references(proj: Path) -> list[str]:
     ]
 
 
+def generate_high_ctr_thumbnail(
+    proj: Path,
+    script: Script,
+    dst: Path | None = None,
+) -> Path:
+    """Composite a high-converting 1280x720 YouTube thumbnail with bold typography."""
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+
+    out_dir = proj / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = dst or (out_dir / "thumbnail_master.png")
+
+    candidates = [
+        out_dir / "thumbnail.png",
+        out_dir / "thumb_source.png",
+        proj / "media" / "thumbnail.png",
+    ]
+    candidates.extend(sorted((proj / "stills").glob("*.png")) if (proj / "stills").is_dir() else [])
+
+    base_img = None
+    for cand in candidates:
+        if cand.is_file() and cand.stat().st_size > 1024:
+            try:
+                base_img = Image.open(cand).convert("RGBA")
+                break
+            except Exception:
+                continue
+
+    target_w, target_h = 1280, 720
+    if base_img is None:
+        base_img = Image.new("RGBA", (target_w, target_h), (15, 23, 42, 255))
+    else:
+        base_w, base_h = base_img.size
+        scale = max(target_w / base_w, target_h / base_h)
+        new_w = int(base_w * scale)
+        new_h = int(base_h * scale)
+        base_img = base_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        left = (new_w - target_w) // 2
+        top = (new_h - target_h) // 2
+        base_img = base_img.crop((left, top, left + target_w, top + target_h))
+
+    rgb = base_img.convert("RGB")
+    enhancer = ImageEnhance.Contrast(rgb)
+    enhanced = enhancer.enhance(1.15)
+    base_img = enhanced.convert("RGBA")
+
+    # Dark gradient overlay on the left to make text crisp
+    overlay = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+    d_over = ImageDraw.Draw(overlay)
+    for x in range(int(target_w * 0.65)):
+        alpha = int(190 * (1.0 - (x / (target_w * 0.65))))
+        d_over.line([(x, 0), (x, target_h)], fill=(10, 15, 26, alpha))
+    composite = Image.alpha_composite(base_img, overlay)
+
+    draw = ImageDraw.Draw(composite)
+
+    font_paths = [
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    title_font = None
+    badge_font = None
+    for fp in font_paths:
+        if Path(fp).is_file():
+            try:
+                title_font = ImageFont.truetype(fp, 54)
+                badge_font = ImageFont.truetype(fp, 22)
+                break
+            except Exception:
+                pass
+    if title_font is None:
+        title_font = ImageFont.load_default()
+        badge_font = ImageFont.load_default()
+
+    # Draw Category Badge
+    topic = (script.meta.get("topic") or script.title).upper()
+    badge_text = f"  {topic[:26]}  "
+    bbox = draw.textbbox((60, 60), badge_text, font=badge_font)
+    draw.rounded_rectangle([bbox[0] - 6, bbox[1] - 4, bbox[2] + 6, bbox[3] + 4], radius=6, fill=(56, 139, 253, 230))
+    draw.text((60, 60), badge_text, fill=(255, 255, 255), font=badge_font)
+
+    # Wrap title into lines
+    words = script.title.split()
+    lines: list[str] = []
+    curr: list[str] = []
+    for w in words:
+        curr.append(w)
+        if len(" ".join(curr)) > 20:
+            lines.append(" ".join(curr[:-1]))
+            curr = [w]
+    if curr:
+        lines.append(" ".join(curr))
+
+    y_offset = 135
+    for line in lines[:3]:
+        draw.text((64, y_offset + 4), line, fill=(0, 0, 0, 220), font=title_font)
+        draw.text((60, y_offset), line, fill=(255, 255, 255), font=title_font)
+        y_offset += 66
+
+    composite.convert("RGB").save(str(target), "PNG", quality=95)
+    return target
+
+
 def build_packet(proj: Path, script: Script) -> Path:
     """Build ``out/upload.md`` for a completed or nearly completed project."""
+    try:
+        generate_high_ctr_thumbnail(proj, script)
+    except Exception:
+        pass
     if not script.sections:
         raise SystemExit(
             "[prompt2render] cannot create upload packet: script has no sections"

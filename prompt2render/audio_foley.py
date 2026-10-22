@@ -125,16 +125,121 @@ def render_foley_track(
     return output_wav
 
 
+def synthesize_ambient_bgm(
+    duration_s: float,
+    output_wav: Path,
+    *,
+    sample_rate: int = 48000,
+    volume: float = 0.08,
+) -> Path:
+    """Synthesize warm harmonic ambient background bed for educational narration backing."""
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    num_samples = int(duration_s * sample_rate)
+    buffer = [0.0] * num_samples
+
+    # Fundamental chord frequencies (C major 9th suspended / peaceful harmonic pad)
+    freqs = [130.81, 196.00, 261.63, 329.63, 392.00, 493.88]
+    for idx, f in enumerate(freqs):
+        phase = 0.0
+        lfo_rate = 0.15 + idx * 0.04
+        detune = 1.0 + (idx - 2.5) * 0.0015
+        f_eff = f * detune
+        for i in range(num_samples):
+            t = i / sample_rate
+            fade = min(1.0, t / 1.5) * min(1.0, max(0.0, (duration_s - t) / 2.0))
+            lfo = 1.0 + 0.08 * math.sin(2.0 * math.pi * lfo_rate * t)
+            phase += 2.0 * math.pi * f_eff / sample_rate
+            val = math.sin(phase) + 0.3 * math.sin(phase * 2.0)
+            buffer[i] += val * fade * (volume / len(freqs)) * lfo
+
+    with wave.open(str(output_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        packed = bytearray()
+        for sample in buffer:
+            clamped = max(-1.0, min(1.0, sample))
+            packed.extend(struct.pack("<h", int(clamped * 32767.0)))
+        wf.writeframes(packed)
+
+    return output_wav
+
+
 def extract_foley_events_from_code(
     code_text: str,
     total_duration_s: float = 10.0,
     *,
     offset_s: float = 0.0,
 ) -> list[tuple[float, str]]:
-    """Extract chronological animation acoustic events from scene code."""
+    """Extract chronological animation acoustic events from scene code.
+    
+    Uses AST analysis of self.play(..., run_time=...) and self.wait(...) for
+    frame-accurate animation cues. Falls back to keyword extraction for non-Manim code.
+    """
+    import ast
     import re
 
-    # Match animation constructor calls inside scene source
+    events: list[tuple[float, str]] = []
+
+    # Attempt AST-based Manim timeline reconstruction
+    try:
+        tree = ast.parse(code_text)
+        ast_events: list[tuple[float, str]] = []
+
+        class ManimTimelineVisitor(ast.NodeVisitor):
+            def __init__(self):
+                self.curr_t = 0.0
+                self.found_play = False
+
+            def visit_Call(self, node: ast.Call):
+                # Check for self.wait(...)
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "wait":
+                    wait_time = 1.0
+                    if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, (int, float)):
+                        wait_time = float(node.args[0].value)
+                    self.curr_t += wait_time
+                    return
+
+                # Check for self.play(...)
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "play":
+                    self.found_play = True
+                    play_time = 1.0
+                    for kw in node.keywords:
+                        if kw.arg == "run_time" and isinstance(kw.value, ast.Constant) and isinstance(kw.value, (int, float)):
+                            play_time = float(kw.value.value)
+
+                    # Extract animation constructors in args
+                    for arg in node.args:
+                        anim_name = None
+                        if isinstance(arg, ast.Call):
+                            if isinstance(arg.func, ast.Name):
+                                anim_name = arg.func.id
+                            elif isinstance(arg.func, ast.Attribute):
+                                anim_name = arg.func.attr
+                        if anim_name and anim_name in FOLEY_PRESETS:
+                            ast_events.append((round(self.curr_t, 3), anim_name))
+
+                    self.curr_t += play_time
+                    return
+
+                self.generic_visit(node)
+
+        visitor = ManimTimelineVisitor()
+        visitor.visit(tree)
+
+        if visitor.found_play and ast_events:
+            total_anim_t = max(0.5, visitor.curr_t)
+            time_scale = min(1.2, max(0.8, (total_duration_s - 0.2) / total_anim_t)) if total_duration_s > 0 else 1.0
+            for t, cue in ast_events:
+                adjusted_t = round(offset_s + t * time_scale, 2)
+                if total_duration_s <= 0 or adjusted_t < offset_s + total_duration_s:
+                    events.append((adjusted_t, cue))
+            return events
+
+    except Exception:
+        pass
+
+    # Fallback to regex-based heuristic if AST is unavailable or non-Manim
     matches = re.findall(
         r"\b(Create|Write|FadeIn|Transform|ReplacementTransform|MoveTo|Indicate|Circumscribe|Highlight|pulse_signal)\b",
         code_text,
@@ -142,7 +247,6 @@ def extract_foley_events_from_code(
     if not matches:
         return []
 
-    events: list[tuple[float, str]] = []
     step_duration = max(0.2, (total_duration_s - 0.6) / max(1, len(matches)))
     for i, anim_name in enumerate(matches):
         ts = round(offset_s + 0.3 + i * step_duration, 2)

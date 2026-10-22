@@ -38,8 +38,77 @@ class KokoroTTSProvider(TTSProvider):
         return np.asarray(pcm, dtype=np.float32), sr
 
 
+class EdgeTTSProvider(TTSProvider):
+    """High-fidelity Microsoft Edge neural TTS provider supporting 40+ languages."""
+
+    DEFAULT_VOICES = {
+        "hi": "hi-IN-SwaraNeural",
+        "ur": "ur-PK-UzmaNeural",
+        "ar": "ar-SA-ZariyahNeural",
+        "ks": "ur-PK-UzmaNeural",
+        "en": "en-US-JennyNeural",
+    }
+
+    def resolve_voice(self, lang_code: str, text: str, user_voice: str | None = None) -> str:
+        if user_voice:
+            return user_voice
+        target_tl = lang_code.split("-")[0].lower()
+        if target_tl == "ks":
+            # Devanagari script Kashmiri maps to Hindi neural voice, Perso-Arabic to Urdu
+            if any(0x0900 <= ord(c) <= 0x097F for c in text):
+                return "hi-IN-SwaraNeural"
+            return "ur-PK-UzmaNeural"
+        return self.DEFAULT_VOICES.get(target_tl, "en-US-JennyNeural")
+
+    def synthesise_sentence(self, text: str, lang_code: str, voice: str | None = None) -> tuple[np.ndarray, int]:
+        import asyncio
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        import wave
+        import edge_tts
+
+        clean_text = text.strip()
+        if not clean_text:
+            return np.zeros(24000, dtype=np.float32), 24000
+
+        chosen_voice = self.resolve_voice(lang_code, clean_text, voice)
+
+        async def _synthesise(output_path: str):
+            comm = edge_tts.Communicate(clean_text, chosen_voice)
+            await comm.save(output_path)
+
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                mp3_path = Path(td) / "edge_audio.mp3"
+                wav_path = Path(td) / "edge_audio.wav"
+                asyncio.run(_synthesise(str(mp3_path)))
+
+                subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", str(mp3_path), "-ar", "24000", "-ac", "1", str(wav_path)],
+                    check=True,
+                    capture_output=True,
+                )
+                with wave.open(str(wav_path), "rb") as wf:
+                    sr = wf.getframerate()
+                    nframes = wf.getnframes()
+                    raw = wf.readframes(nframes)
+                    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                    return samples, sr
+        except Exception:
+            # Fallback to secondary online provider or mock silence
+            try:
+                online = OnlineTTSProvider()
+                return online.synthesise_sentence(text, lang_code, voice)
+            except Exception:
+                sr = 24000
+                duration_s = max(1.5, len(clean_text.split()) * 0.45)
+                samples = int(sr * duration_s)
+                return np.zeros(samples, dtype=np.float32), sr
+
+
 class OnlineTTSProvider(TTSProvider):
-    """Universal online neural TTS provider supporting Urdu, Hindi, Arabic, and other languages."""
+    """Fallback online neural TTS provider supporting Urdu, Hindi, Arabic, and other languages."""
 
     def synthesise_sentence(self, text: str, lang_code: str, voice: str | None = None) -> tuple[np.ndarray, int]:
         import subprocess
@@ -115,10 +184,10 @@ class MultilingualVoiceManager:
         if cls._ACTIVE_PROVIDER is not None:
             return cls._ACTIVE_PROVIDER
 
-        # Non-English languages default to OnlineTTSProvider
+        # Non-English languages default to high-fidelity EdgeTTSProvider
         clean_lang = lang_code.split("-")[0].lower()
         if clean_lang != "en":
-            return OnlineTTSProvider()
+            return EdgeTTSProvider()
 
         # Check if kokoro is available for English
         try:
@@ -130,7 +199,7 @@ class MultilingualVoiceManager:
         except Exception:
             pass
 
-        return OnlineTTSProvider()
+        return EdgeTTSProvider()
 
     @classmethod
     def set_provider(cls, provider: TTSProvider) -> None:
