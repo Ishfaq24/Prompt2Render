@@ -413,8 +413,12 @@ def build_prompt(script: Script, sec, sents: list[dict],
     # Give the model the clock, not just the words. Without timings it cannot
     # tell that two adjacent cues are 30 seconds apart, and it leaves frames
     # sitting on screen long past the point they stop being interesting.
+    def _spk_tag(s: dict) -> str:
+        spk = s.get("speaker")
+        return f"[{spk}] " if spk else ""
+
     numbered = "\n".join(
-        f"  [{i}] t={s['start']:6.1f}s  {s['text']}" for i, s in enumerate(sents))
+        f"  [{i}] t={s['start']:6.1f}s  {_spk_tag(s)}{s['text']}" for i, s in enumerate(sents))
     total = sents[-1]["end"] if sents else 0.0
     return textwrap.dedent(f"""
     You are the Coder agent for an educational video pipeline. Write Python that
@@ -469,6 +473,9 @@ def build_prompt(script: Script, sec, sents: list[dict],
         semantic state, not decoration.
       * INTENTIONAL RULE DEMONSTRATION: If the narration explicitly explains an illegal move or anti-pattern for the topic, you MUST actually draw the physically illegal state to show what NOT to do. You MUST also clearly mark it as illegal (e.g., use `k.title(ax, "ILLEGAL MOVE", color=k.BAD)` or `k.badge(ax, x, y, "X", color=k.BAD)`). Do NOT just draw a legal state and label it illegal.
       * CONTINUITY: If this is not the first section, you MUST maintain the same coordinates (`x`, `y`) for persistent data structures (like the main array or tree) that were used in the previous section. Do not let the main visualization jump up and down between scenes.
+      * MULTI-VOICE PEDAGOGICAL DIALOGUE: If sentence cues specify different speakers (such as [Teacher] and [Student]), coordinate the visuals with the dialogue turn:
+        - When the Student speaks/asks a question, visually emphasize the point of inquiry (e.g. highlight the queried element, display an inquiry badge, or focus attention on the edge case).
+        - When the Teacher explains, demonstrate the resolution with step-by-step visual progression.
       * LAYOUT IS THE THING THAT USUALLY FAILS. Two elements in the same
         horizontal band will overlap and ruin the frame.
       * k.curves fills its whole w x h box. Never draw a k.table, k.array or

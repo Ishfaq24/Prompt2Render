@@ -251,7 +251,7 @@ def reconcile(sentences: list[textseg.Sentence], asr: list[dict],
             words.append({"w": w.raw, "s": round(st, 3),
                           "e": round(max(en, st + MIN_WORD), 3)})
             wi += len(pieces)
-        out.append({"i": s.i, "text": s.text,
+        out.append({"i": s.i, "text": s.text, "speaker": s.speaker,
                     "start": round(slice_t[0], 3),
                     "end": round(max(slice_t[-1] + MIN_WORD, slice_t[0]), 3),
                     "words": words})
@@ -328,7 +328,7 @@ def _spread(sentences: list[textseg.Sentence], dur: float) -> list[dict]:
             words.append({"w": w.raw, "s": round(wtime, 3),
                           "e": round(wtime + wspan, 3)})
             wtime += wspan
-        out.append({"i": s.i, "text": s.text, "start": round(t, 3),
+        out.append({"i": s.i, "text": s.text, "speaker": s.speaker, "start": round(t, 3),
                     "end": round(t + span, 3), "words": words})
         t += span
     return out
@@ -376,6 +376,8 @@ def clamp_to_prior(sents: list[dict], prior: list[voice.Cue]) -> list[dict]:
     for s, p in zip(sents, prior):
         lo, hi = p.start, p.end
         s["start"], s["end"] = round(lo, 3), round(hi, 3)
+        if getattr(p, "speaker", None) and not s.get("speaker"):
+            s["speaker"] = p.speaker
         for w in s["words"]:
             start = min(max(float(w["s"]), lo), hi)
             end = min(max(float(w["e"]), start + MIN_WORD), hi)
@@ -426,8 +428,8 @@ def load(proj: Path, stem: str) -> dict:
     data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, list):
         return {"version": 1, "source": "synth", "confidence": 0.0,
-                "sentences": [{"i": i, "text": c["text"], "start": c["start"],
-                               "end": c["end"], "words": []}
+                "sentences": [{"i": i, "text": c["text"], "speaker": c.get("speaker"),
+                               "start": c["start"], "end": c["end"], "words": []}
                               for i, c in enumerate(data)]}
     return data
 
@@ -621,7 +623,9 @@ def align(proj: Path, script: Script, only: str | None = None,
             cfg.say(f"section {sec.stem}: narration or audio changed since "
                     "last align, redoing")
 
-        sents = textseg.sentences(sec.narration)
+        meta_voices = script.meta.get("voices") or script.meta.get("speakers") if hasattr(script, "meta") and isinstance(script.meta, dict) else None
+        known_speakers = set(str(k) for k in meta_voices.keys()) if isinstance(meta_voices, dict) else None
+        sents = textseg.sentences(sec.narration, known_speakers=known_speakers)
         prior = voice.section_cues(proj, sec.stem)
         asr = _window(tokens, start, dur)
 

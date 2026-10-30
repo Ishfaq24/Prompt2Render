@@ -177,3 +177,141 @@ def test_voice_synthesise_multi_speaker(monkeypatch: pytest.MonkeyPatch):
     assert captured_voices[0] == ("Hello from narrator.", "am_adam")
     assert captured_voices[1] == ("Hello from student.", "af_bella")
     assert captured_voices[2] == ("Default voice line.", "am_eric")
+
+
+def test_align_spread_preserves_speaker():
+    from prompt2render import align
+    sents = [
+        textseg.Sentence(i=0, text="First statement.", speaker="Teacher", words=textseg.words("First statement.")),
+        textseg.Sentence(i=1, text="Second query.", speaker="Student", words=textseg.words("Second query.")),
+    ]
+    out = align._spread(sents, 5.0)
+    assert len(out) == 2
+    assert out[0]["speaker"] == "Teacher"
+    assert out[1]["speaker"] == "Student"
+
+
+def test_align_clamp_to_prior_copies_speaker():
+    from prompt2render import align
+    sents = [
+        {"i": 0, "text": "A", "start": 0.0, "end": 1.0, "words": []},
+        {"i": 1, "text": "B", "start": 1.0, "end": 2.0, "words": []},
+    ]
+    priors = [
+        voice.Cue(i=0, text="A", start=0.0, end=1.0, speaker="Teacher"),
+        voice.Cue(i=1, text="B", start=1.0, end=2.0, speaker="Student"),
+    ]
+    clamped = align.clamp_to_prior(sents, priors)
+    assert clamped[0]["speaker"] == "Teacher"
+    assert clamped[1]["speaker"] == "Student"
+
+
+def test_captions_write_srt_speaker_prefix(tmp_path):
+    from prompt2render import captions
+    class DummyScript:
+        sections = []
+    
+    # Mock cards_for
+    cards = [
+        {"start": 0.0, "end": 2.0, "text": "Welcome to class.", "speaker": "Teacher"},
+        {"start": 2.2, "end": 4.5, "text": "What is an array?", "speaker": "Student"},
+        {"start": 4.6, "end": 6.0, "text": "[Student] Already prefixed.", "speaker": "Student"},
+    ]
+    dst = tmp_path / "captions.srt"
+    
+    # Monkeypatch cards_for
+    import unittest.mock as mock
+    with mock.patch("prompt2render.captions.cards_for", return_value=cards):
+        captions.write_srt(tmp_path, DummyScript(), dst)
+    
+    content = dst.read_text(encoding="utf-8")
+    assert "[Teacher] Welcome to class." in content
+    assert "[Student] What is an array?" in content
+    assert "[Student] Already prefixed." in content
+    # Ensure no double prefix
+    assert "[Student] [Student]" not in content
+
+
+def test_captions_write_ass_speaker_and_style(tmp_path):
+    from prompt2render import captions
+    class DummyScript:
+        sections = []
+    
+    cards = [
+        {"start": 0.0, "end": 2.0, "text": "Hello.", "words": [], "speaker": "Teacher"},
+        {"start": 2.0, "end": 4.0, "text": "Hi.", "words": [], "speaker": "Student"},
+    ]
+    dst = tmp_path / "captions.ass"
+    
+    import unittest.mock as mock
+    with mock.patch("prompt2render.captions.cards_for", return_value=cards):
+        captions.write_ass(tmp_path, DummyScript(), dst)
+    
+    content = dst.read_text(encoding="utf-8")
+    assert "Style: Teacher," in content
+    assert "Style: Student," in content
+    assert "Dialogue: 0,0:00:00.00,0:00:02.00,Teacher,Teacher,0,0,0,,Hello." in content
+    assert "Dialogue: 0,0:00:02.00,0:00:04.00,Student,Student,0,0,0,,Hi." in content
+
+
+def test_multilingual_edge_tts_speaker_voices():
+    from prompt2render.multilingual.voice_service import EdgeTTSProvider
+    provider = EdgeTTSProvider()
+    
+    # Defaults for English
+    assert provider.resolve_voice("en", "Hello", speaker="Teacher") == "en-US-ChristopherNeural"
+    assert provider.resolve_voice("en", "Why?", speaker="Student") == "en-US-JennyNeural"
+    
+    # Defaults for Urdu
+    assert provider.resolve_voice("ur", "آداب", speaker="Teacher") == "ur-PK-AsadNeural"
+    assert provider.resolve_voice("ur", "سوال", speaker="Student") == "ur-PK-UzmaNeural"
+    
+    # Defaults for Hindi
+    assert provider.resolve_voice("hi", "नमस्ते", speaker="Teacher") == "hi-IN-MadhurNeural"
+    assert provider.resolve_voice("hi", "सवाल", speaker="Student") == "hi-IN-SwaraNeural"
+    
+    # Custom mapping override
+    custom_map = {"Teacher": "en-GB-RyanNeural", "Student": "en-GB-SoniaNeural"}
+    assert provider.resolve_voice("en", "Test", speaker="Teacher", speaker_voices=custom_map) == "en-GB-RyanNeural"
+    assert provider.resolve_voice("en", "Test", speaker="Student", speaker_voices=custom_map) == "en-GB-SoniaNeural"
+
+
+def test_scenes_build_prompt_includes_speaker_tag():
+    from prompt2render import scenes
+    class DummySec:
+        index = 1
+        title = "Introduction"
+        anim = "Show array"
+    
+    class DummyScript:
+        title = "Pointers"
+        meta = {"audience": "undergrads"}
+    
+    sents = [
+        {"start": 0.0, "end": 2.0, "text": "Pointers hold memory addresses.", "speaker": "Teacher"},
+        {"start": 2.5, "end": 5.0, "text": "Can a pointer be null?", "speaker": "Student"},
+    ]
+    prompt = scenes.build_prompt(DummyScript(), DummySec(), sents)
+    assert "[Teacher] Pointers hold memory addresses." in prompt
+    assert "[Student] Can a pointer be null?" in prompt
+    assert "MULTI-VOICE PEDAGOGICAL DIALOGUE" in prompt
+
+
+def test_draft_build_prompt_dialogue_rules():
+    from prompt2render import draft
+    class DummySec:
+        index = 1
+        title = "Stack Frames"
+        anim = "Push frame"
+        narration = ""
+    
+    class DummyScript:
+        title = "Call Stack"
+        meta = {"topic": "Call Stack", "audience": "students", "voices": {"Teacher": "af_heart", "Student": "am_adam"}}
+        sections = [DummySec()]
+    
+    prompt = draft.build_prompt(DummyScript(), [DummySec()], dialogue=True)
+    assert "PEDAGOGICAL DIALOGUE (MANDATORY FORMAT)" in prompt
+    assert "[Teacher]" in prompt
+    assert "[Student]" in prompt
+

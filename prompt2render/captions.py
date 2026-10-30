@@ -446,6 +446,7 @@ def cards_for(
                             for group in line_groups
                         ),
                         "words": [],
+                        "speaker": sentence.get("speaker"),
                     }
                 )
                 continue
@@ -529,6 +530,7 @@ def cards_for(
                             }
                             for word in group
                         ],
+                        "speaker": sentence.get("speaker"),
                     }
                 )
 
@@ -559,6 +561,10 @@ def write_srt(
         cards,
         start=1,
     ):
+        text = card["text"]
+        spk = card.get("speaker")
+        if spk and not text.lower().startswith(f"[{spk.lower()}]") and not text.lower().startswith(f"{spk.lower()}:"):
+            text = f"[{spk}] {text}"
         lines.extend(
             [
                 str(number),
@@ -566,7 +572,7 @@ def write_srt(
                     f"{_ts(card['start'])} --> "
                     f"{_ts(card['end'])}"
                 ),
-                card["text"],
+                text,
                 "",
             ]
         )
@@ -602,6 +608,8 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: prompt2render,{font},54,&H00FFFFFF,&H0000C8FF,&H00101010,&H80000000,-1,0,0,0,100,100,0,0,3,3,0,2,80,80,64,1
+Style: Teacher,{font},54,&H00FFFFFF,&H0000C8FF,&H00101010,&H80000000,-1,0,0,0,100,100,0,0,3,3,0,2,80,80,64,1
+Style: Student,{font},54,&H00D0FFFF,&H0000C8FF,&H00101010,&H80000000,-1,0,0,0,100,100,0,0,3,3,0,2,80,80,64,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -698,11 +706,13 @@ def write_ass(
                 card["text"]
             )
 
+        spk = card.get("speaker") or ""
+        style = spk if spk in {"Teacher", "Student"} else "prompt2render"
         body.append(
             "Dialogue: 0,"
             f"{_ass_ts(card['start'])},"
             f"{_ass_ts(card['end'])},"
-            f"prompt2render,,0,0,0,,{text}"
+            f"{style},{spk},0,0,0,,{text}"
         )
 
     dst.parent.mkdir(
