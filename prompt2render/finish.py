@@ -531,6 +531,21 @@ def _mux_final(
         raise
 
 
+def _export_to_library(proj: Path, script: Script, final: Path) -> None:
+    """Copy `out/final.mp4` into `Final Results/` when `proj` is a workspace project."""
+    try:
+        real_projects = (cfg.ROOT / "projects").resolve()
+        if proj.resolve().parent != real_projects:
+            return
+        from .web import library
+        title = str(script.meta.get("title") or "").strip() or None
+        exported = library.export_project_video(proj, final, title=title)
+        if exported:
+            cfg.say(f"library: exported to Final Results/{exported['filename']}")
+    except Exception:
+        pass
+
+
 def finish(
     proj: Path,
     script: Script,
@@ -813,6 +828,8 @@ def finish(
         f"({total / 60:.2f} min)"
     )
 
+    _export_to_library(proj, script, final)
+
     return final
 
 
@@ -1058,6 +1075,8 @@ def finish_manim(
         f"final (manim): {final}  "
         f"({total / 60:.2f} min)"
     )
+
+    _export_to_library(proj, script, final)
 
     return final
 

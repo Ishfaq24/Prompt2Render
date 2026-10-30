@@ -523,6 +523,7 @@ If a candidate repair fixes a syntax error but causes a new spatial collision or
 
 ### 2. Acoustic Narration & Audio Mastering
 * **`prompt2render/voice.py`:** Sentence-by-sentence synthesis using Kokoro-82M or Edge-TTS with programmatic inter-sentence pauses.
+* **Multi-Voice Pedagogical Dialogue:** Alternates neural speaker personas per sentence/turn (`[Teacher]: ...` vs `[Student]: ...`). Seamlessly dispatches Kokoro and Edge-TTS voices with distinct subtitle attribution and visual inquiry coordination.
 * **`prompt2render/mathspeech.py`:** Normalizes LaTeX math expressions (`$\frac{a}{b}$`, `$\sum_{i=1}^n$`) into natural spoken phonetic equivalents.
 * **EBU R128 Mastering:** Masters total programme loudness to **-14.0 LUFS** (YouTube standard) with a lookahead true-peak limiter.
 
@@ -803,7 +804,7 @@ Prompt2Render is tuned for maximum throughput on local desktop workstations:
 - [x] **Interactive Web Studio Dashboard (`prompt2render serve`):** FastAPI + SSE streaming dashboard with preview player and job manager.
 - [x] **Containerized Docker Pipeline:** Pre-packaged Debian Bookworm container with CUDA, FFmpeg, TeX Live, and Manim.
 - [x] **Automated CI Quality Suite:** Cross-platform GitHub Actions workflow.
-- [ ] **Multi-Voice Pedagogical Dialogue:** Support for multi-speaker conversational teacher-student pedagogy.
+- [x] **Multi-Voice Pedagogical Dialogue:** Conversational teacher-student synthesis with per-character neural voice dispatch (Kokoro & Edge-TTS), Socratic LLM drafting, and multi-speaker subtitle styling.
 - [ ] **Distributed Cloud Rendering:** Worker pool rendering support across multiple remote GPU nodes.
 
 ---

@@ -101,6 +101,8 @@ def _word_target(script: Script, todo: list) -> tuple[int, int]:
 def build_prompt(
     script: Script,
     todo: list,
+    dialogue: bool = False,
+    speakers: dict[str, str] | None = None,
 ) -> str:
     """Build the single video-level narration drafting prompt."""
     if not todo:
@@ -123,6 +125,30 @@ def build_prompt(
 
     first_index = todo[0].index
 
+    is_dialogue = dialogue or (
+        isinstance(script.meta, dict)
+        and (
+            script.meta.get("format") == "dialogue"
+            or bool(script.meta.get("voices"))
+            or bool(script.meta.get("speakers"))
+        )
+    )
+
+    dialogue_rules = ""
+    if is_dialogue:
+        spk_dict = speakers or script.meta.get("voices") or script.meta.get("speakers") or {}
+        spk_keys = list(spk_dict.keys()) if isinstance(spk_dict, dict) and spk_dict else ["Teacher", "Student"]
+        spk1 = spk_keys[0]
+        spk2 = spk_keys[1] if len(spk_keys) > 1 else "Student"
+        dialogue_rules = textwrap.dedent(f"""
+          * PEDAGOGICAL DIALOGUE (MANDATORY FORMAT):
+            - Write the narration as an engaging pedagogical conversation between [{spk1}] and [{spk2}].
+            - Prefix every spoken turn with either `[{spk1}]: ` or `[{spk2}]: `.
+            - [{spk2}] represents the learner: asking probing questions, pointing out non-obvious details, and raising intuitive pitfalls.
+            - [{spk1}] represents the instructor: explaining the intuition clearly, directing attention to the visual animations, and verifying understanding.
+            - Alternate naturally between [{spk1}] and [{spk2}] (1-3 sentences per turn).
+        """).strip()
+
     return textwrap.dedent(
         f"""
         You are drafting the narration script for an educational explainer
@@ -141,6 +167,7 @@ def build_prompt(
         {outline}
 
         Rules:
+          {dialogue_rules}
           * Target approximately 140 spoken words per minute.
           * Aim for approximately {minimum}-{maximum} words across these
             section(s), weighted by the amount of material each section must
@@ -397,6 +424,8 @@ def _atomic_write(
 def draft(
     proj: Path,
     force: bool = False,
+    dialogue: bool = False,
+    speakers: dict[str, str] | None = None,
 ) -> Path:
     """Draft narration for placeholder sections in ``proj/script.md``."""
     path = proj / "script.md"
@@ -444,6 +473,8 @@ def draft(
     prompt = build_prompt(
         script,
         todo,
+        dialogue=dialogue,
+        speakers=speakers,
     )
 
     try:
@@ -484,6 +515,12 @@ def draft(
             section.index,
             by_index[section.index],
         )
+
+    if (dialogue or script.meta.get("format") == "dialogue") and "voices:" not in updated and "speakers:" not in updated:
+        default_voices = speakers or {"Teacher": "af_heart", "Student": "am_adam"}
+        voices_yaml = "voices:\n" + "".join(f"  {k}: {v}\n" for k, v in default_voices.items())
+        if updated.startswith("---\n"):
+            updated = "---\n" + voices_yaml + updated[4:]
 
     _atomic_write(
         path,

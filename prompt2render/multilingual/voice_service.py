@@ -22,7 +22,14 @@ class TTSProvider(ABC):
     """Abstract interface for text-to-speech providers."""
 
     @abstractmethod
-    def synthesise_sentence(self, text: str, lang_code: str, voice: str | None = None) -> tuple[np.ndarray, int]:
+    def synthesise_sentence(
+        self,
+        text: str,
+        lang_code: str,
+        voice: str | None = None,
+        speaker: str | None = None,
+        speaker_voices: dict[str, str] | None = None,
+    ) -> tuple[np.ndarray, int]:
         """Synthesise text into PCM float32 audio and sample rate."""
         pass
 
@@ -30,10 +37,25 @@ class TTSProvider(ABC):
 class KokoroTTSProvider(TTSProvider):
     """Local Kokoro neural voice synthesis provider."""
 
-    def synthesise_sentence(self, text: str, lang_code: str, voice: str | None = None) -> tuple[np.ndarray, int]:
+    def synthesise_sentence(
+        self,
+        text: str,
+        lang_code: str,
+        voice: str | None = None,
+        speaker: str | None = None,
+        speaker_voices: dict[str, str] | None = None,
+    ) -> tuple[np.ndarray, int]:
         from prompt2render import voice as voice_mod
         k = voice_mod.kokoro()
         chosen_voice = voice or "af_heart"
+        if speaker and speaker_voices:
+            if speaker in speaker_voices:
+                chosen_voice = speaker_voices[speaker]
+            else:
+                for spk_name, v in speaker_voices.items():
+                    if spk_name.lower() == speaker.lower():
+                        chosen_voice = v
+                        break
         pcm, sr = k.create(text, voice=chosen_voice, speed=1.0, lang="en-us")
         return np.asarray(pcm, dtype=np.float32), sr
 
@@ -49,7 +71,36 @@ class EdgeTTSProvider(TTSProvider):
         "en": "en-US-JennyNeural",
     }
 
-    def resolve_voice(self, lang_code: str, text: str, user_voice: str | None = None) -> str:
+    DEFAULT_SPEAKER_VOICES = {
+        "en": {"Teacher": "en-US-ChristopherNeural", "Student": "en-US-JennyNeural"},
+        "hi": {"Teacher": "hi-IN-MadhurNeural", "Student": "hi-IN-SwaraNeural"},
+        "ur": {"Teacher": "ur-PK-AsadNeural", "Student": "ur-PK-UzmaNeural"},
+        "ar": {"Teacher": "ar-SA-HamedNeural", "Student": "ar-SA-ZariyahNeural"},
+        "ks": {"Teacher": "ur-PK-AsadNeural", "Student": "ur-PK-UzmaNeural"},
+    }
+
+    def resolve_voice(
+        self,
+        lang_code: str,
+        text: str,
+        user_voice: str | None = None,
+        speaker: str | None = None,
+        speaker_voices: dict[str, str] | None = None,
+    ) -> str:
+        if speaker and speaker_voices:
+            if speaker in speaker_voices:
+                return speaker_voices[speaker]
+            for spk_name, v in speaker_voices.items():
+                if spk_name.lower() == speaker.lower():
+                    return v
+
+        if speaker:
+            target_tl = lang_code.split("-")[0].lower()
+            spk_defaults = self.DEFAULT_SPEAKER_VOICES.get(target_tl, {})
+            for spk_name, v in spk_defaults.items():
+                if spk_name.lower() == speaker.lower():
+                    return v
+
         if user_voice:
             return user_voice
         target_tl = lang_code.split("-")[0].lower()
@@ -60,7 +111,14 @@ class EdgeTTSProvider(TTSProvider):
             return "ur-PK-UzmaNeural"
         return self.DEFAULT_VOICES.get(target_tl, "en-US-JennyNeural")
 
-    def synthesise_sentence(self, text: str, lang_code: str, voice: str | None = None) -> tuple[np.ndarray, int]:
+    def synthesise_sentence(
+        self,
+        text: str,
+        lang_code: str,
+        voice: str | None = None,
+        speaker: str | None = None,
+        speaker_voices: dict[str, str] | None = None,
+    ) -> tuple[np.ndarray, int]:
         import asyncio
         import subprocess
         import tempfile
@@ -72,7 +130,7 @@ class EdgeTTSProvider(TTSProvider):
         if not clean_text:
             return np.zeros(24000, dtype=np.float32), 24000
 
-        chosen_voice = self.resolve_voice(lang_code, clean_text, voice)
+        chosen_voice = self.resolve_voice(lang_code, clean_text, voice, speaker=speaker, speaker_voices=speaker_voices)
 
         async def _synthesise(output_path: str):
             comm = edge_tts.Communicate(clean_text, chosen_voice)
@@ -110,7 +168,14 @@ class EdgeTTSProvider(TTSProvider):
 class OnlineTTSProvider(TTSProvider):
     """Fallback online neural TTS provider supporting Urdu, Hindi, Arabic, and other languages."""
 
-    def synthesise_sentence(self, text: str, lang_code: str, voice: str | None = None) -> tuple[np.ndarray, int]:
+    def synthesise_sentence(
+        self,
+        text: str,
+        lang_code: str,
+        voice: str | None = None,
+        speaker: str | None = None,
+        speaker_voices: dict[str, str] | None = None,
+    ) -> tuple[np.ndarray, int]:
         import subprocess
         import tempfile
         import urllib.parse
@@ -164,7 +229,14 @@ class OnlineTTSProvider(TTSProvider):
 class MockTTSProvider(TTSProvider):
     """Lightweight test provider generating clean synthetic silence/tone."""
 
-    def synthesise_sentence(self, text: str, lang_code: str, voice: str | None = None) -> tuple[np.ndarray, int]:
+    def synthesise_sentence(
+        self,
+        text: str,
+        lang_code: str,
+        voice: str | None = None,
+        speaker: str | None = None,
+        speaker_voices: dict[str, str] | None = None,
+    ) -> tuple[np.ndarray, int]:
         # Generate 1.5 seconds of clean silence at 24000 Hz
         sr = 24000
         duration_s = max(1.0, len(text.split()) * 0.4)
@@ -225,6 +297,9 @@ class MultilingualVoiceManager:
             start_str = format_timestamp(cue["start"])
             end_str = format_timestamp(cue["end"])
             text = cue["text"].strip()
+            speaker = cue.get("speaker")
+            if speaker and not text.lower().startswith(f"[{speaker.lower()}]") and not text.lower().startswith(f"{speaker.lower()}:"):
+                text = f"[{speaker}] {text}"
             srt_blocks.append(f"{idx}\n{start_str} --> {end_str}\n{text}\n")
 
         content = "\n".join(srt_blocks)

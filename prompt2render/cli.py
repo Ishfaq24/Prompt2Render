@@ -65,6 +65,18 @@ def cmd_new(a):
                                               minutes=a.minutes, topic=out["topic"], aspect=aspect)
     else:
         d = project.new_project(slug, default_title, minutes=a.minutes, sections=a.sections, aspect=aspect)
+
+    if getattr(a, "dialogue", False):
+        spk_dict = _parse_speakers(getattr(a, "speakers", None)) or {"Teacher": "af_heart", "Student": "am_adam"}
+        script_path = d / "script.md"
+        if script_path.exists():
+            content = script_path.read_text(encoding="utf-8")
+            if "voices:" not in content and "speakers:" not in content:
+                voices_yaml = "voices:\n" + "".join(f"  {k}: {v}\n" for k, v in spk_dict.items())
+                if content.startswith("---\n"):
+                    content = "---\n" + voices_yaml + content[4:]
+                    script_path.write_text(content, encoding="utf-8")
+
     print(f"\ncreated {d}\n\nNext: open {d/'script.md'} and write the narration.\n"
           "That script is the whole moat — it is the part no tool makes for you.\n")
 
@@ -74,10 +86,23 @@ def cmd_doctor(a):
     sys.exit(doctor.doctor(render_test=getattr(a, "render_test", False)))
 
 
+def _parse_speakers(arg: str | None) -> dict[str, str] | None:
+    if not arg:
+        return None
+    out = {}
+    for part in str(arg).split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out or None
+
+
 def cmd_draft(a):
     from prompt2render import draft
     d = cfg.project_dir(a.slug)
-    draft.draft(d, force=a.force)
+    dialogue = getattr(a, "dialogue", False)
+    speakers = _parse_speakers(getattr(a, "speakers", None))
+    draft.draft(d, force=a.force, dialogue=dialogue, speakers=speakers)
 
 
 def cmd_models(a):
@@ -1275,8 +1300,19 @@ def cmd_auto(a):
         cfg.say(f"normalized slug: '{raw_slug}' -> '{slug}'")
         a.slug = slug
     d = cfg.PROJECTS / a.slug
+    target_lang = (getattr(a, "lang", None) or "en").strip().lower()
     if d.exists():
         cfg.say(f"project {d} already exists — using its current script.md")
+    elif target_lang != "en":
+        from prompt2render.multilingual import MultilingualPipeline
+        default_title = a.title or raw_slug.replace("-", " ").strip().title()
+        MultilingualPipeline.execute_pipeline(
+            prompt=default_title,
+            target_lang=target_lang,
+            slug=a.slug,
+            duration_minutes=float(a.minutes or 3.0),
+        )
+        cfg.say(f"scaffolded multilingual ({target_lang}) project {d}")
     else:
         default_title = a.title or raw_slug.replace("-", " ").strip().title()
         seed = default_title
@@ -1287,7 +1323,10 @@ def cmd_auto(a):
         d = project.new_project_from_sections(a.slug, title, out["sections"],
                                               minutes=a.minutes, topic=out["topic"])
         cfg.say(f"scaffolded {d} with an AI-suggested outline")
-    draft.draft(d, force=a.redraft)
+    dialogue = getattr(a, "dialogue", False)
+    speakers = _parse_speakers(getattr(a, "speakers", None))
+    if target_lang == "en" or dialogue or a.redraft:
+        draft.draft(d, force=a.redraft, dialogue=dialogue, speakers=speakers)
     cfg.warn("narration above was AI-drafted and is about to be voiced and "
              "shipped with no human read -- that's what `auto` means. If "
              "this goes out close to as-is, set the synthetic-content "
@@ -1385,11 +1424,19 @@ def main() -> None:
                         "is still left as a placeholder either way)")
     n.add_argument("--aspect", choices=["16:9", "9:16", "1:1", "portrait", "landscape", "shorts", "square"],
                    default="16:9", help="Video aspect ratio profile (default 16:9; 9:16 for vertical shorts)")
+    n.add_argument("--dialogue", action="store_true",
+                   help="scaffold script with pedagogical teacher-student dialogue template")
+    n.add_argument("--speakers", default=None,
+                   help="comma-separated speaker=voice pairs, e.g. 'Teacher=af_heart,Student=am_adam'")
 
     dr = add("draft", cmd_draft, "ask Gemini to draft narration for script.md")
     dr.add_argument("slug")
     dr.add_argument("--force", action="store_true",
                     help="overwrite sections that already have real narration")
+    dr.add_argument("--dialogue", action="store_true",
+                    help="draft narration as pedagogical conversational dialogue between speakers")
+    dr.add_argument("--speakers", default=None,
+                    help="comma-separated speaker=voice pairs, e.g. 'Teacher=af_heart,Student=am_adam'")
 
     dc = add("doctor", cmd_doctor,
              "check the environment before you spend an hour")
@@ -1614,6 +1661,12 @@ def main() -> None:
     au.add_argument("--redraft", action="store_true",
                     help="redraft every section's narration even if it's "
                          "already written, not just the placeholders")
+    au.add_argument("--dialogue", action="store_true",
+                    help="draft narration as pedagogical conversational dialogue between speakers")
+    au.add_argument("--speakers", default=None,
+                    help="comma-separated speaker=voice pairs, e.g. 'Teacher=af_heart,Student=am_adam'")
+    au.add_argument("--lang", default="en",
+                    help="target language (en, hi, ur, ks, ar)")
     add_pipeline_args(au)
 
     # --- escape hatches -----------------------------------------------------
